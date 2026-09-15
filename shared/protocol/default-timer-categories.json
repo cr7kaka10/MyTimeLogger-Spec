@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "categories": [
+    {"key":"input","name":"输入","icon":"atm:cat_96","color":"#FF5552","group_name":"增益","sort_order":1},
+    {"key":"output","name":"输出","icon":"atm:cat_85","color":"#FF5552","group_name":"增益","sort_order":2},
+    {"key":"side-production","name":"副业生产","icon":"atm:cat_158","color":"#FF9852","group_name":"副业","sort_order":3},
+    {"key":"side-marketing","name":"副业营销","icon":"atm:fs_010","color":"#FF9852","group_name":"副业","sort_order":4},
+    {"key":"side-research","name":"副业研发","icon":"atm:st_024","color":"#FF9852","group_name":"副业","sort_order":5},
+    {"key":"work","name":"工作","icon":"atm:st_058","color":"#FF9852","group_name":"生活","sort_order":6},
+    {"key":"meal","name":"吃饭","icon":"atm:ec_045","color":"#01B1E8","group_name":"生活","sort_order":7},
+    {"key":"childcare","name":"带娃","icon":"atm:fam_021","color":"#01B1E8","group_name":"生活","sort_order":8},
+    {"key":"housework","name":"家务","icon":"atm:hpcd_057","color":"#01B1E8","group_name":"生活","sort_order":9},
+    {"key":"entertainment","name":"娱乐","icon":"atm:cat_116","color":"#01B1E8","group_name":"生活","sort_order":10},
+    {"key":"transport","name":"交通","icon":"atm:cat_205","color":"#01B1E8","group_name":"生活","sort_order":11},
+    {"key":"personal","name":"个人杂事","icon":"atm:hpcd_034","color":"#01B1E8","group_name":"生活","sort_order":12},
+    {"key":"rest","name":"休息","icon":"atm:rph_008","color":"#01B1E8","group_name":"生活","sort_order":13},
+    {"key":"activity","name":"活动","icon":"atm:sp_064","color":"#E372C7","group_name":"生活","sort_order":14},
+    {"key":"exercise","name":"运动","icon":"atm:sp_068","color":"#E372C7","group_name":"生活","sort_order":15},
+    {"key":"squirrel","name":"松鼠病","icon":"atm:cat_79","color":"#A7586D","group_name":"生活","sort_order":16},
+    {"key":"status-switch","name":"状态切换","icon":"atm:cat_5","color":"#A7586D","group_name":"生活","sort_order":17},
+    {"key":"sleep","name":"睡觉","icon":"atm:fam_008","color":"#BC28FF","group_name":"生活","sort_order":18},
+    {"key":"toilet","name":"拉屎","icon":"atm:hpcd_041","color":"#E0C431","group_name":"生活","sort_order":19}
+  ]
+}

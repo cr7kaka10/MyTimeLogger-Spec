@@ -1,0 +1,4 @@
+# Optional OCR profile. The base server does not install this file.
+# Install only when local PaddleOCR screenshot extraction is required.
+paddlepaddle==2.6.2
+paddleocr==2.10.0

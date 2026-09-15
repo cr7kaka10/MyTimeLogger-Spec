@@ -1,0 +1,27 @@
+services:
+  sleep-server:
+    build:
+      context: ..
+      dockerfile: server/Dockerfile
+    container_name: mytimelogger-sleep-server
+    restart: unless-stopped
+    environment:
+      MYTIMELOGGER_SERVER_MODE: "1"
+      MYTIMELOGGER_ENVIRONMENT: "${MYTIMELOGGER_ENVIRONMENT:-development}"
+      SERVER_RUNTIME_OVERWRITE: "1"
+      SERVER_SLEEP_DB_PATH: /app/server/data/mtl_server.db
+      MYTIMELOGGER_SERVER_LOG_DIR: /app/server/log
+      MYTIMELOGGER_REPORTS_DIR: /app/reports
+    ports:
+      - "${SLEEP_SERVER_PORT:-8000}:8000"
+    volumes:
+      - ./data:/app/server/data
+      - ./attachments:/app/server/attachments
+      - ./reports:/app/reports
+      - ./log:/app/server/log
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/ping', timeout=2)"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 10s

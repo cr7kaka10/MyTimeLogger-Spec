@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/widget_root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:gravity="top"
+    android:orientation="vertical"
+    android:padding="@dimen/timer_widget_padding">
+
+    <LinearLayout
+        android:id="@+id/widget_header"
+        android:layout_width="match_parent"
+        android:layout_height="44dp"
+        android:gravity="center_vertical"
+        android:minHeight="44dp"
+        android:orientation="horizontal">
+        <ImageView android:id="@+id/widget_icon" android:layout_width="36dp" android:layout_height="36dp" />
+        <LinearLayout android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:orientation="vertical" android:paddingStart="8dp">
+            <TextView android:id="@+id/widget_title" android:layout_width="match_parent" android:layout_height="wrap_content" android:contentDescription="当前计时分类" android:maxLines="1" android:textColor="@color/timer_widget_text_primary" />
+            <TextView android:id="@+id/widget_status" android:layout_width="match_parent" android:layout_height="wrap_content" android:contentDescription="当前计时状态" android:maxLines="1" android:textColor="@color/timer_widget_text_secondary" />
+            <Chronometer android:id="@+id/widget_chronometer" android:layout_width="match_parent" android:layout_height="wrap_content" android:textColor="@color/timer_widget_text_primary" android:visibility="gone" />
+            <TextView android:id="@+id/widget_note" android:layout_width="match_parent" android:layout_height="wrap_content" android:maxLines="1" android:textColor="@color/timer_widget_text_secondary" android:visibility="gone" />
+        </LinearLayout>
+        <ImageView android:id="@+id/widget_stop" android:layout_width="44dp" android:layout_height="44dp" android:contentDescription="停止当前计时" android:padding="4dp" android:scaleType="centerInside" android:src="@drawable/timer_widget_stop_button" android:visibility="gone" />
+        <ImageView android:id="@+id/widget_sync" android:layout_width="44dp" android:layout_height="44dp" android:contentDescription="同步最新计时状态" android:padding="12dp" android:scaleType="centerInside" android:src="@drawable/ic_widget_sync" />
+    </LinearLayout>
+
+    <TextView
+        android:id="@+id/widget_grid_divider"
+        android:layout_width="match_parent"
+        android:layout_height="@dimen/timer_widget_divider_size"
+        android:background="@drawable/timer_widget_category_divider" />
+
+    <FrameLayout
+        android:id="@+id/widget_grid_frame"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1">
+
+        <TextView
+            android:id="@+id/widget_empty"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:gravity="top"
+            android:text="暂无分类"
+            android:textColor="@color/timer_widget_text_secondary"
+            android:visibility="gone" />
+
+        <GridView
+            android:id="@+id/widget_grid"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:gravity="center"
+            android:horizontalSpacing="0dp"
+            android:numColumns="5"
+            android:paddingBottom="@dimen/timer_widget_grid_edge_padding"
+            android:paddingTop="@dimen/timer_widget_grid_edge_padding"
+            android:stretchMode="columnWidth"
+            android:verticalSpacing="@dimen/timer_widget_grid_row_spacing" />
+    </FrameLayout>
+</LinearLayout>

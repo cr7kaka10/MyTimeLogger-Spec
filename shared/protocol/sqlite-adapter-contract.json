@@ -1,0 +1,22 @@
+[
+  {"name":"schema-crud-unicode-null-ids","steps":[
+    {"exec":"CREATE TABLE items(id INTEGER PRIMARY KEY AUTOINCREMENT, uuid TEXT UNIQUE, label TEXT, note TEXT)"},
+    {"run":"INSERT INTO items(uuid,label,note) VALUES(?,?,?)","params":["uuid-1","中文🚀",null]},
+    {"query":"SELECT id,uuid,label,note FROM items","expect":[{"id":1,"uuid":"uuid-1","label":"中文🚀","note":null}]}
+  ]},
+  {"name":"transaction-commit-rollback","steps":[
+    {"exec":"CREATE TABLE tx(id INTEGER)"},{"exec":"BEGIN"},{"run":"INSERT INTO tx VALUES(?)","params":[1]},{"exec":"COMMIT"},
+    {"exec":"BEGIN"},{"run":"INSERT INTO tx VALUES(?)","params":[2]},{"exec":"ROLLBACK"},
+    {"query":"SELECT id FROM tx ORDER BY id","expect":[{"id":1}]}
+  ]},
+  {"name":"legacy-migration","steps":[
+    {"exec":"CREATE TABLE legacy(id INTEGER PRIMARY KEY, value TEXT)"},{"run":"INSERT INTO legacy VALUES(?,?)","params":[1,"old"]},
+    {"exec":"ALTER TABLE legacy ADD COLUMN updated_at TEXT DEFAULT 'legacy'"},
+    {"query":"SELECT id,value,updated_at FROM legacy","expect":[{"id":1,"value":"old","updated_at":"legacy"}]}
+  ]},
+  {"name":"durable-outbox","steps":[
+    {"exec":"CREATE TABLE sync_outbox(id INTEGER PRIMARY KEY AUTOINCREMENT, change_id TEXT UNIQUE, payload_json TEXT, status TEXT DEFAULT 'pending')"},
+    {"run":"INSERT INTO sync_outbox(change_id,payload_json) VALUES(?,?)","params":["change-1","{\"title\":\"A\"}"]},
+    {"query":"SELECT id,change_id,payload_json,status FROM sync_outbox","expect":[{"id":1,"change_id":"change-1","payload_json":"{\"title\":\"A\"}","status":"pending"}]}
+  ]}
+]

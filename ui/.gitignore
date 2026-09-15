@@ -1,0 +1,9 @@
+node_modules/
+dist/
+coverage/
+playwright-report/
+test-results/
+test-screenshot.png
+
+# aTimeLogger APK 图标仅限本机私用，许可证未授权再分发
+public/icons/atm/

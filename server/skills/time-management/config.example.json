@@ -1,0 +1,10 @@
+{
+  "atimelogger": {
+    "base_url": "https://example.invalid",
+    "username": "",
+    "password": ""
+  },
+  "huawei_health": {
+    "data_directory": ""
+  }
+}

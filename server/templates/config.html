@@ -1,0 +1,557 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MyTimeLogger 我的服务配置</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f6f7f9;
+      --panel: #ffffff;
+      --text: #172033;
+      --muted: #647084;
+      --line: #d8dde7;
+      --primary: #2563eb;
+      --danger: #b42318;
+      --ok: #087443;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: var(--bg);
+      color: var(--text);
+      font-family: "Microsoft YaHei", "Segoe UI", sans-serif;
+    }
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 18px 24px;
+      background: var(--panel);
+      border-bottom: 1px solid var(--line);
+    }
+    h1 { margin: 0; font-size: 22px; font-weight: 700; letter-spacing: 0; }
+    .account { color: var(--muted); font-size: 14px; font-weight: 600; }
+    main { width: min(960px, calc(100vw - 32px)); margin: 20px auto 40px; }
+    .status { min-height: 22px; margin-bottom: 14px; color: var(--muted); font-size: 14px; white-space: pre-wrap; }
+    .status.ok { color: var(--ok); }
+    .status.error { color: var(--danger); }
+    .grid { display: grid; gap: 14px; }
+    section {
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: var(--panel);
+    }
+    .section-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 14px 16px;
+      border-bottom: 1px solid var(--line);
+      font-weight: 700;
+    }
+    .badge { color: var(--muted); font-size: 13px; font-weight: 500; }
+    .badge.ok { color: var(--ok); }
+    .fields {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px 14px;
+      padding: 16px;
+    }
+    label { display: grid; gap: 6px; color: var(--muted); font-size: 13px; }
+    input {
+      height: 38px;
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      padding: 0 10px;
+      color: var(--text);
+      font: 14px "Segoe UI", "Microsoft YaHei", sans-serif;
+      outline: none;
+    }
+    input:focus { border-color: var(--primary); box-shadow: 0 0 0 3px rgba(37, 99, 235, .12); }
+    .full { grid-column: 1 / -1; }
+    .actions {
+      display: flex;
+      justify-content: flex-end;
+      align-items: center;
+      gap: 10px;
+      padding: 14px 16px;
+      border-top: 1px solid var(--line);
+      background: #fbfcfe;
+    }
+    .action-group { display: flex; gap: 10px; }
+    button {
+      height: 36px;
+      padding: 0 14px;
+      border: 1px solid var(--primary);
+      border-radius: 6px;
+      background: var(--primary);
+      color: #fff;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    button.secondary { background: #fff; color: var(--primary); }
+    button:disabled { opacity: .55; cursor: not-allowed; }
+    .hint { padding: 0 16px 14px; color: var(--muted); font-size: 13px; line-height: 1.6; }
+    .backup-status { padding: 0 16px 14px; color: var(--muted); font-size: 13px; line-height: 1.6; white-space: pre-wrap; }
+    @media (max-width: 700px) {
+      header { padding: 14px 16px; }
+      h1 { font-size: 18px; }
+      main { width: calc(100vw - 20px); margin-top: 12px; }
+      .fields { grid-template-columns: 1fr; }
+      .actions, .action-group { flex-direction: column; width: 100%; }
+      button { width: 100%; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>MyTimeLogger 我的服务配置</h1>
+    <span id="accountIdentity" class="account" aria-live="polite">当前账号：加载中</span>
+  </header>
+  <main>
+    <div id="status" class="status">正在加载配置...</div>
+    <div class="grid">
+      <section>
+        <div class="section-head">
+          <span>我的 TickTick</span>
+          <span id="ticktickBadge" class="badge">未配置</span>
+        </div>
+        <div class="fields">
+          <label class="full">Access Token
+            <input id="ticktickToken" type="password" autocomplete="off" placeholder="已保存时留空表示不替换">
+          </label>
+          <label>Host
+            <input id="ticktickHost" placeholder="dida365.com">
+          </label>
+          <label>同步间隔
+            <input id="ticktickInterval" placeholder="留空使用默认">
+          </label>
+        </div>
+      </section>
+
+      <section>
+        <div class="section-head">
+          <span>我的 S3</span>
+          <span id="s3Badge" class="badge">未配置</span>
+        </div>
+        <div class="fields">
+          <label>Endpoint
+            <input id="s3Endpoint" placeholder="https://s3.example.com">
+          </label>
+          <label>Bucket
+            <input id="s3Bucket" placeholder="obss3">
+          </label>
+          <label>Region
+            <input id="s3Region" placeholder="us-east-1">
+          </label>
+          <label>Access Key
+            <input id="s3AccessKey" autocomplete="off">
+          </label>
+          <label>Secret Key
+            <input id="s3SecretKey" type="password" autocomplete="off" placeholder="已保存时留空表示不替换">
+          </label>
+          <label>SQLite Prefix
+            <input id="s3SqlitePrefix" placeholder="sqlite">
+          </label>
+          <label>Reports Prefix
+            <input id="s3ReportsPrefix" placeholder="reports">
+          </label>
+        </div>
+        <div id="s3BackupStatus" class="backup-status" aria-live="polite">正在加载备份状态...</div>
+        <div class="actions">
+          <button class="secondary" id="s3BackupNowBtn" type="button" disabled>立即备份</button>
+        </div>
+      </section>
+
+      <section>
+        <div class="section-head">
+          <span>我的大模型</span>
+          <span id="aiBadge" class="badge">未配置</span>
+        </div>
+        <div class="fields">
+          <label>文本模型 Base URL
+            <input id="textBaseUrl" placeholder="https://api.example.com/v1">
+          </label>
+          <label>文本模型
+            <input id="textModel" placeholder="gpt-4.1-mini">
+          </label>
+          <label class="full">文本模型 API Key
+            <input id="textApiKey" type="password" autocomplete="off" placeholder="已保存时留空表示不替换">
+          </label>
+          <label>视觉模型 Base URL
+            <input id="visionBaseUrl" placeholder="https://api.example.com/v1">
+          </label>
+          <label>视觉模型
+            <input id="visionModel" placeholder="gpt-4.1-mini">
+          </label>
+          <label class="full">视觉模型 API Key
+            <input id="visionApiKey" type="password" autocomplete="off" placeholder="已保存时留空表示不替换">
+          </label>
+          <label>文本备用模型 1 Base URL<input id="textBackup1BaseUrl" placeholder="可选"></label>
+          <label>文本备用模型 1<input id="textBackup1Model" placeholder="可选"></label>
+          <label class="full">文本备用模型 1 API Key<input id="textBackup1ApiKey" type="password" autocomplete="off" placeholder="可选；已保存时留空表示不替换"></label>
+          <label>文本备用模型 2 Base URL<input id="textBackup2BaseUrl" placeholder="可选"></label>
+          <label>文本备用模型 2<input id="textBackup2Model" placeholder="可选"></label>
+          <label class="full">文本备用模型 2 API Key<input id="textBackup2ApiKey" type="password" autocomplete="off" placeholder="可选；已保存时留空表示不替换"></label>
+          <label>视觉备用模型 1 Base URL<input id="visionBackup1BaseUrl" placeholder="可选"></label>
+          <label>视觉备用模型 1<input id="visionBackup1Model" placeholder="可选"></label>
+          <label class="full">视觉备用模型 1 API Key<input id="visionBackup1ApiKey" type="password" autocomplete="off" placeholder="可选；已保存时留空表示不替换"></label>
+          <label>视觉备用模型 2 Base URL<input id="visionBackup2BaseUrl" placeholder="可选"></label>
+          <label>视觉备用模型 2<input id="visionBackup2Model" placeholder="可选"></label>
+          <label class="full">视觉备用模型 2 API Key<input id="visionBackup2ApiKey" type="password" autocomplete="off" placeholder="可选；已保存时留空表示不替换"></label>
+        </div>
+        <div class="hint">睡眠 OCR 和报告生成会使用当前登录用户自己的大模型配置，不再读取服务器运行配置里的共享 Key。</div>
+      </section>
+    </div>
+    <div class="actions">
+      <div class="action-group">
+        <button class="secondary" id="importBtn" type="button" disabled>导入配置</button>
+        <button class="secondary" id="exportBtn" type="button" disabled>导出配置</button>
+        <button id="saveBtn" type="button" disabled>保存配置</button>
+      </div>
+      <input id="importFile" type="file" accept="application/json,.json" hidden>
+    </div>
+  </main>
+
+  <script>
+    const $ = id => document.getElementById(id);
+    const statusEl = $("status");
+    const saveBtn = $("saveBtn");
+    const importBtn = $("importBtn");
+    const exportBtn = $("exportBtn");
+    const importFile = $("importFile");
+    const accountIdentity = $("accountIdentity");
+    const s3BackupStatus = $("s3BackupStatus");
+    const s3BackupNowBtn = $("s3BackupNowBtn");
+    const serviceConfigSchema = "mytimelogger.user-service-config.v1";
+    const configApiUrl = new URL("/admin/provider-bindings/config", window.location.origin).toString();
+    const exportApiUrl = new URL("/admin/provider-bindings/export", window.location.origin).toString();
+    const importApiUrl = new URL("/admin/provider-bindings/import", window.location.origin).toString();
+    const s3BackupStatusUrl = new URL("/admin/s3-backup/status", window.location.origin).toString();
+    const s3BackupRunUrl = new URL("/admin/s3-backup/run", window.location.origin).toString();
+
+    function token() {
+      return localStorage.getItem("mtl_token") || localStorage.getItem("mtl_auth_token") || localStorage.getItem("sleep_token") || "";
+    }
+
+    function authHeaders() {
+      const value = token();
+      return value ? { Authorization: `Bearer ${value}` } : {};
+    }
+
+    function setStatus(message, type = "") {
+      statusEl.textContent = message;
+      statusEl.className = `status ${type}`.trim();
+    }
+
+    async function parseError(response) {
+      const data = await response.clone().json().catch(() => null);
+      if (data && data.detail) return data.detail;
+      const text = await response.text().catch(() => "");
+      return text || `请求失败 (${response.status})`;
+    }
+
+    function setBadge(id, configured) {
+      const el = $(id);
+      el.textContent = configured ? "已配置" : "未配置";
+      el.className = `badge ${configured ? "ok" : ""}`.trim();
+    }
+
+    function showS3BackupStatus(state) {
+      const lines = [
+        `状态：${state.status || "未知"}`,
+        `最近尝试：${state.last_attempt || "暂无"}`,
+        `最近成功：${state.last_success || "暂无"}`,
+      ];
+      if (state.last_remote_path) lines.push(`远端路径：${state.last_remote_path}`);
+      if (state.error) {
+        lines.push(`失败原因：${state.error}`);
+        if (/CERTIFICATE_VERIFY_FAILED|certificate verify failed/i.test(state.error)) lines.push("提示：请修复 S3 Endpoint 的可信证书链后再重试；系统不会跳过 TLS 校验。");
+      }
+      s3BackupStatus.textContent = lines.join("\n");
+    }
+
+    async function loadS3BackupStatus() {
+      s3BackupNowBtn.disabled = true;
+      try {
+        const state = await requestJson(s3BackupStatusUrl);
+        if (!state) return;
+        showS3BackupStatus(state);
+        s3BackupNowBtn.disabled = false;
+      } catch (error) {
+        s3BackupStatus.textContent = String(error.message || "备份状态读取失败").includes("仅服务管理者")
+          ? "仅服务管理员可查看和手动触发服务端备份。"
+          : (error.message || "备份状态读取失败");
+      }
+    }
+
+    async function runS3BackupNow() {
+      s3BackupNowBtn.disabled = true;
+      s3BackupStatus.textContent = "正在创建并上传 SQLite 快照...";
+      try {
+        showS3BackupStatus(await requestJson(s3BackupRunUrl, { method: "POST", body: "{}" }));
+      } catch (error) {
+        s3BackupStatus.textContent = error.message || "手动备份失败";
+      } finally {
+        await loadS3BackupStatus();
+      }
+    }
+
+    function fillValue(id, value) {
+      $(id).value = value == null ? "" : String(value);
+    }
+
+    function applyConfig(data) {
+      const username = typeof data?.user?.username === "string" ? data.user.username.trim() : "";
+      accountIdentity.textContent = username ? `当前账号：${username}` : "当前账号：未识别";
+      const ticktick = data.ticktick || {};
+      const s3 = data.s3_backup || {};
+      const ai = data.ai_model || {};
+      setBadge("ticktickBadge", ticktick.token_configured);
+      setBadge("s3Badge", s3.secret_configured && s3.endpoint && s3.bucket);
+      setBadge("aiBadge", ai.text_key_configured && ai.vision_key_configured && ai.text_model && ai.vision_model);
+
+      fillValue("ticktickHost", ticktick.host || "dida365.com");
+      fillValue("ticktickInterval", ticktick.sync_interval || "");
+      $("ticktickToken").placeholder = ticktick.token_configured ? "已保存，输入新 token 可替换" : "请输入 Access Token";
+
+      fillValue("s3Endpoint", s3.endpoint || "");
+      fillValue("s3Bucket", s3.bucket || "obss3");
+      fillValue("s3Region", s3.region || "us-east-1");
+      fillValue("s3AccessKey", s3.access_key || "");
+      fillValue("s3SqlitePrefix", s3.sqlite_prefix || "sqlite");
+      fillValue("s3ReportsPrefix", s3.reports_prefix || "reports");
+      $("s3SecretKey").placeholder = s3.secret_configured ? "已保存，输入新 secret 可替换" : "请输入 Secret Key";
+
+      fillValue("textBaseUrl", ai.text_base_url || "");
+      fillValue("textModel", ai.text_model || "");
+      $("textApiKey").placeholder = ai.text_key_configured ? "已保存，输入新 key 可替换" : "请输入 API Key";
+      fillValue("visionBaseUrl", ai.vision_base_url || "");
+      fillValue("visionModel", ai.vision_model || "");
+      $("visionApiKey").placeholder = ai.vision_key_configured ? "已保存，输入新 key 可替换" : "请输入 API Key";
+      [["textBackup1", "text_backup_1"], ["textBackup2", "text_backup_2"], ["visionBackup1", "vision_backup_1"], ["visionBackup2", "vision_backup_2"]].forEach(([id, key]) => {
+        fillValue(`${id}BaseUrl`, ai[`${key}_base_url`] || ""); fillValue(`${id}Model`, ai[`${key}_model`] || "");
+        $(`${id}ApiKey`).placeholder = ai[`${key}_key_configured`] ? "已保存，输入新 key 可替换" : "可选";
+      });
+    }
+
+    async function requestJson(url, options = {}) {
+      let response;
+      try {
+        response = await fetch(url, {
+          ...options,
+          headers: {
+            "Content-Type": "application/json",
+            ...authHeaders(),
+            ...(options.headers || {}),
+          },
+        });
+      } catch {
+        throw new Error("无法连接服务器配置接口");
+      }
+      if (!response.ok) {
+        if (response.status === 401) {
+          localStorage.removeItem("mtl_token");
+          localStorage.removeItem("mtl_auth_token");
+          localStorage.removeItem("sleep_token");
+          window.location.href = `/login?next=${encodeURIComponent("/config")}&reauth=1`;
+          return null;
+        }
+        throw new Error(await parseError(response));
+      }
+      return response.json().catch(() => ({}));
+    }
+
+    async function loadConfig() {
+      if (!token()) {
+        window.location.href = `/login?next=${encodeURIComponent("/config")}`;
+        return;
+      }
+      saveBtn.disabled = true;
+      importBtn.disabled = true;
+      exportBtn.disabled = true;
+      setStatus("正在加载配置...");
+      const data = await requestJson(configApiUrl);
+      if (!data) return;
+      applyConfig(data);
+      void loadS3BackupStatus();
+      saveBtn.disabled = false;
+      importBtn.disabled = false;
+      exportBtn.disabled = false;
+      setStatus("配置已加载", "ok");
+      return data;
+    }
+
+    function nonEmpty(id) {
+      const value = $(id).value.trim();
+      return value ? value : undefined;
+    }
+
+    async function saveConfig() {
+      saveBtn.disabled = true;
+      importBtn.disabled = true;
+      exportBtn.disabled = true;
+      setStatus("正在保存配置...");
+      try {
+        const ticktick = {
+          host: nonEmpty("ticktickHost") || "dida365.com",
+          sync_interval: nonEmpty("ticktickInterval"),
+          access_token: nonEmpty("ticktickToken"),
+        };
+        const s3 = {
+          enabled: true,
+          endpoint: nonEmpty("s3Endpoint") || "",
+          bucket: nonEmpty("s3Bucket") || "obss3",
+          region: nonEmpty("s3Region") || "us-east-1",
+          access_key: nonEmpty("s3AccessKey") || "",
+          secret_key: nonEmpty("s3SecretKey") || "",
+          sqlite_prefix: nonEmpty("s3SqlitePrefix") || "sqlite",
+          reports_prefix: nonEmpty("s3ReportsPrefix") || "reports",
+        };
+        const ai = {
+          text_base_url: nonEmpty("textBaseUrl") || "",
+          text_model: nonEmpty("textModel") || "",
+          vision_base_url: nonEmpty("visionBaseUrl") || "",
+          vision_model: nonEmpty("visionModel") || "",
+          text_api_key: nonEmpty("textApiKey"),
+          vision_api_key: nonEmpty("visionApiKey"),
+          text_backup_1_base_url: nonEmpty("textBackup1BaseUrl") || "", text_backup_1_model: nonEmpty("textBackup1Model") || "", text_backup_1_api_key: nonEmpty("textBackup1ApiKey"),
+          text_backup_2_base_url: nonEmpty("textBackup2BaseUrl") || "", text_backup_2_model: nonEmpty("textBackup2Model") || "", text_backup_2_api_key: nonEmpty("textBackup2ApiKey"),
+          vision_backup_1_base_url: nonEmpty("visionBackup1BaseUrl") || "", vision_backup_1_model: nonEmpty("visionBackup1Model") || "", vision_backup_1_api_key: nonEmpty("visionBackup1ApiKey"),
+          vision_backup_2_base_url: nonEmpty("visionBackup2BaseUrl") || "", vision_backup_2_model: nonEmpty("visionBackup2Model") || "", vision_backup_2_api_key: nonEmpty("visionBackup2ApiKey"),
+        };
+        Object.keys(ticktick).forEach(key => ticktick[key] === undefined && delete ticktick[key]);
+        Object.keys(ai).forEach(key => ai[key] === undefined && delete ai[key]);
+
+        await requestJson(new URL("/admin/provider-bindings/ticktick", window.location.origin).toString(), {
+          method: "PUT",
+          body: JSON.stringify(ticktick),
+        });
+        await requestJson(new URL("/admin/provider-bindings/s3", window.location.origin).toString(), {
+          method: "PUT",
+          body: JSON.stringify(s3),
+        });
+        await requestJson(new URL("/admin/provider-bindings/ai-model", window.location.origin).toString(), {
+          method: "PUT",
+          body: JSON.stringify(ai),
+        });
+        $("ticktickToken").value = "";
+        $("s3SecretKey").value = "";
+        $("textApiKey").value = "";
+        $("visionApiKey").value = "";
+        ["textBackup1ApiKey", "textBackup2ApiKey", "visionBackup1ApiKey", "visionBackup2ApiKey"].forEach(id => $(id).value = "");
+        await loadConfig();
+        setStatus("我的服务配置已保存", "ok");
+      } catch (error) {
+        setStatus(error.message || "保存失败", "error");
+        saveBtn.disabled = false;
+        importBtn.disabled = false;
+        exportBtn.disabled = false;
+      }
+    }
+
+    async function exportConfig() {
+      exportBtn.disabled = true;
+      setStatus("正在导出配置。导出的 JSON 包含 token、API key 和 secret，请妥善保存。");
+      try {
+        const response = await fetch(exportApiUrl, { headers: authHeaders() });
+        if (!response.ok) {
+          if (response.status === 401) {
+            window.location.href = `/login?next=${encodeURIComponent("/config")}&reauth=1`;
+            return;
+          }
+          throw new Error(await parseError(response));
+        }
+        const blob = await response.blob();
+        const disposition = response.headers.get("Content-Disposition") || "";
+        const match = disposition.match(/filename="?([^"]+)"?/i);
+        const filename = match ? match[1] : `mytimelogger-service-config-${new Date().toISOString().slice(0, 10)}.json`;
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = filename;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        URL.revokeObjectURL(url);
+        setStatus("配置已导出。文件包含密钥明文，请妥善保存。", "ok");
+      } catch (error) {
+        setStatus(error.message || "导出失败", "error");
+      } finally {
+        exportBtn.disabled = false;
+      }
+    }
+
+    async function importConfigFile(file) {
+      if (!file) return;
+      importBtn.disabled = true;
+      saveBtn.disabled = true;
+      exportBtn.disabled = true;
+      setStatus("正在导入配置...");
+      try {
+        const text = await file.text();
+        let payload;
+        try {
+          payload = JSON.parse(text);
+        } catch {
+          throw new Error("导入配置不是合法 JSON");
+        }
+        validateImportSnapshot(payload);
+        const data = await requestJson(importApiUrl, {
+          method: "POST",
+          body: JSON.stringify(payload),
+        });
+        if (!data) return;
+        $("ticktickToken").value = "";
+        $("s3SecretKey").value = "";
+        $("textApiKey").value = "";
+        $("visionApiKey").value = "";
+        ["textBackup1ApiKey", "textBackup2ApiKey", "visionBackup1ApiKey", "visionBackup2ApiKey"].forEach(id => $(id).value = "");
+        const current = await loadConfig();
+        if (!current) return;
+        setStatus(importResultMessage(data, current), "ok");
+      } catch (error) {
+        setStatus(error.message || "导入失败", "error");
+        saveBtn.disabled = false;
+        importBtn.disabled = false;
+        exportBtn.disabled = false;
+      } finally {
+        importFile.value = "";
+      }
+    }
+
+    function validateImportSnapshot(payload) {
+      if (!payload || typeof payload !== "object" || Array.isArray(payload)) throw new Error("导入配置必须是 JSON 对象");
+      if (payload.schema !== serviceConfigSchema) throw new Error(`导入配置 schema 必须是 ${serviceConfigSchema}`);
+      for (const name of ["ticktick", "s3_backup", "ai_model"]) {
+        if (!Object.prototype.hasOwnProperty.call(payload, name) || !payload[name] || typeof payload[name] !== "object" || Array.isArray(payload[name])) {
+          throw new Error(`导入配置缺少 ${name} 对象`);
+        }
+      }
+    }
+
+    function importResultMessage(imported, current) {
+      const ticktick = current.ticktick || imported.ticktick || {};
+      const s3 = current.s3_backup || imported.s3_backup || {};
+      const ai = current.ai_model || imported.ai_model || {};
+      const s3Ready = Boolean(s3.endpoint && s3.bucket && s3.secret_configured);
+      return `已导入到当前账号。TickTick：${ticktick.token_configured ? "已配置" : "未配置"}；S3：${s3Ready ? "已配置并确认" : "未配置"}；大模型：${ai.text_key_configured && ai.vision_key_configured ? "已配置" : "未配置"}`;
+    }
+
+    saveBtn.addEventListener("click", saveConfig);
+    s3BackupNowBtn.addEventListener("click", runS3BackupNow);
+    exportBtn.addEventListener("click", exportConfig);
+    importBtn.addEventListener("click", () => importFile.click());
+    importFile.addEventListener("change", event => importConfigFile(event.target.files && event.target.files[0]));
+    loadConfig().catch(error => setStatus(error.message || "加载失败", "error"));
+  </script>
+</body>
+</html>

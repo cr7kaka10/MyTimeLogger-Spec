@@ -1,0 +1,58 @@
+{
+  "name": "mytimelogger-desktop",
+  "version": "1.0.0",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "rebuild:native": "electron-rebuild -f -w better-sqlite3",
+    "check:native": "node -e \"const{spawnSync}=require('node:child_process');const code='const Database=require(\\\"better-sqlite3\\\");const db=new Database(\\\":memory:\\\");db.close();console.log(\\\"better-sqlite3 Electron ABI OK\\\")';const r=spawnSync(require('electron'),['-e',code],{stdio:'inherit',env:{...process.env,ELECTRON_RUN_AS_NODE:'1'}});process.exit(r.status??1)\"",
+    "pack": "npm --prefix ../ui run build:android-web && electron-builder --win --config",
+    "dist": "electron-builder --win --config"
+  },
+  "devDependencies": {
+    "electron": "^30.0.0",
+    "electron-builder": "^25.1.0",
+    "electron-rebuild": "^3.2.9"
+  },
+  "dependencies": {
+    "better-sqlite3": "^12.10.0"
+  },
+  "build": {
+    "appId": "com.mytimelogger.desktop",
+    "productName": "MyTimeLogger",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "account-storage.js",
+      "preload.js",
+      "timer-flow-logger.js",
+      "node_modules/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "../ui/dist",
+        "to": "ui/dist",
+        "filter": ["**/*"]
+      },
+      {
+        "from": "../assets/icons",
+        "to": "assets/icons",
+        "filter": ["**/*"]
+      }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "portable",
+          "arch": ["x64"]
+        }
+      ],
+      "icon": "../assets/icons/icon.ico"
+    },
+    "portable": {
+      "artifactName": "MyTimeLogger-${version}-portable.exe"
+    }
+  }
+}

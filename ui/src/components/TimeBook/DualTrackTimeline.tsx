@@ -1,0 +1,18 @@
+import { memo } from 'react'
+import type { FlashClassificationLabel, FlashProcessingLog, FlashSkillHistoryPage, FlashTaskRecommendation, TimeBookTimelineEntry } from '../../hooks/useTimeBook'
+import type { ChecklistTaskSubmission } from '../../hooks/useChecklistTaskSubmission'
+import { TimelinePointCard } from './TimelinePointCard'
+import { TimelineSessionCard } from './TimelineSessionCard'
+
+const dotClass = (entry: TimeBookTimelineEntry) => entry.kind === 'session' ? 'bg-emerald-500' : entry.kind === 'diary' ? 'bg-amber-400' : entry.kind === 'checkin' ? entry.checkinStatus === 'success' ? 'bg-emerald-500' : 'bg-red-500' : 'bg-blue-500'
+
+export const DualTrackTimeline = memo(({ entries, items, taskSubmissions, onEditFlash, onDeleteFlash, onCreateTask, onIgnoreTask, onClassify, onLoadLogs, onLoadSkillHistory, onEditSession }: { entries: TimeBookTimelineEntry[]; items: FlashTaskRecommendation[]; taskSubmissions: Record<string, ChecklistTaskSubmission>; onEditFlash: (entry: TimeBookTimelineEntry) => void; onDeleteFlash: (entry: TimeBookTimelineEntry) => void; onCreateTask: (item: FlashTaskRecommendation) => void; onIgnoreTask: (item: FlashTaskRecommendation) => Promise<void>; onClassify: (cardId: string, label: FlashClassificationLabel) => Promise<void>; onLoadLogs: (id: string) => Promise<FlashProcessingLog[]>; onLoadSkillHistory: (cursor?: string | null) => Promise<FlashSkillHistoryPage>; onEditSession: (entry: TimeBookTimelineEntry) => void }) => {
+  const leftEntries = entries.filter(entry => entry.kind !== 'session')
+  const rightEntries = entries.filter(entry => entry.kind === 'session')
+  return <><section className="relative hidden grid-cols-2 gap-0 py-2 before:absolute before:bottom-0 before:left-1/2 before:top-0 before:w-px before:-translate-x-1/2 before:bg-gray-200 dark:before:bg-gray-700 lg:grid" aria-label="中轴双轨时间线">
+    <div className="min-w-0 space-y-1.5 pr-3 sm:pr-5">{leftEntries.map(entry => <div key={entry.id} className="relative"><TimelinePointCard entry={entry} items={items} taskSubmissions={taskSubmissions} onEdit={() => onEditFlash(entry)} onDelete={() => onDeleteFlash(entry)} onCreate={onCreateTask} onIgnore={onIgnoreTask} onClassify={onClassify} onLoadLogs={onLoadLogs} onLoadSkillHistory={onLoadSkillHistory} /><span className={`absolute right-[-1.05rem] top-3 z-10 h-2.5 w-2.5 rounded-full border-2 border-white shadow-sm dark:border-gray-900 sm:right-[-1.55rem] ${dotClass(entry)}`} /></div>)}</div>
+    <div className="min-w-0 space-y-1.5 pl-3 sm:pl-5">{rightEntries.map(entry => <div key={entry.id} className="relative"><span className={`absolute left-[-1.05rem] top-3 z-10 h-2.5 w-2.5 rounded-full border-2 border-white shadow-sm dark:border-gray-900 sm:left-[-1.55rem] ${dotClass(entry)}`} /><TimelineSessionCard entry={entry} onClick={() => onEditSession(entry)} /></div>)}</div>
+  </section><section aria-label="手机端实际记录时间线" className="relative min-w-0 space-y-1.5 border-l border-slate-200 py-2 pl-3 dark:border-slate-700 lg:hidden">{entries.map(entry => <div key={entry.id} className="relative min-w-0"><span className={`absolute left-[-1.05rem] top-3 z-10 h-2.5 w-2.5 rounded-full border-2 border-white shadow-sm dark:border-gray-900 ${dotClass(entry)}`} />{entry.kind === 'session' ? <TimelineSessionCard entry={entry} onClick={() => onEditSession(entry)} /> : <TimelinePointCard entry={entry} items={items} taskSubmissions={taskSubmissions} onEdit={() => onEditFlash(entry)} onDelete={() => onDeleteFlash(entry)} onCreate={onCreateTask} onIgnore={onIgnoreTask} onClassify={onClassify} onLoadLogs={onLoadLogs} onLoadSkillHistory={onLoadSkillHistory} />}</div>)}</section></>
+})
+
+DualTrackTimeline.displayName = 'DualTrackTimeline'

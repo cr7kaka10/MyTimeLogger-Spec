@@ -1,0 +1,639 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>MyTimeLogger 睡眠</title>
+  <style>
+    :root {
+      --bg: #f6f8fc;
+      --panel: #ffffff;
+      --panel-soft: #eef6ff;
+      --text: #172033;
+      --muted: #7b879a;
+      --line: #e5ebf5;
+      --blue: #2478ff;
+      --blue-soft: #eaf3ff;
+      --yellow: #f7b500;
+      --green: #16a66a;
+      --red: #e5484d;
+      --shadow: 0 10px 30px rgba(31, 45, 61, 0.08);
+    }
+
+    * { box-sizing: border-box; }
+    html, body { margin: 0; min-height: 100%; background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif; }
+    body { display: flex; justify-content: center; }
+    button, input { font: inherit; }
+    button { border: 0; cursor: pointer; -webkit-tap-highlight-color: transparent; }
+    button:disabled { opacity: 0.55; cursor: not-allowed; }
+
+    .app { width: min(100%, 520px); min-height: 100vh; background: #fbfcff; padding: 14px 14px 28px; }
+    .topbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 4px 2px 12px; }
+    .brand { font-weight: 800; color: #8a94a8; letter-spacing: 0.2px; }
+    .user { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; min-width: 0; }
+    .user b { color: var(--text); max-width: 118px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .ghost { width: 34px; height: 34px; border-radius: 12px; background: #f2f5fa; color: #8c97aa; }
+
+    .week { background: var(--panel); border: 1px solid var(--line); border-radius: 18px; padding: 12px 10px; box-shadow: var(--shadow); }
+    .week-head { display: flex; align-items: center; justify-content: space-between; color: var(--muted); font-size: 13px; margin-bottom: 8px; }
+    .week-head button { width: 34px; height: 34px; border-radius: 12px; background: #f5f7fb; color: #8b95a8; font-size: 22px; line-height: 1; }
+    .days { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 6px; }
+    .day { min-height: 58px; border-radius: 12px; background: transparent; color: var(--text); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; }
+    .day span { color: var(--muted); font-size: 12px; }
+    .day b { font-size: 18px; line-height: 1; }
+    .day i { width: 5px; height: 5px; border-radius: 999px; background: #3fd27a; margin-top: 2px; box-shadow: 0 0 0 2px rgba(63, 210, 122, 0.12); }
+    .day.active { background: var(--blue); color: white; box-shadow: 0 8px 18px rgba(36, 120, 255, 0.28); }
+    .day.active span { color: rgba(255,255,255,0.78); }
+    .day.active i { background: white; box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.24); }
+
+    .actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin: 16px 0 12px; }
+    .action { min-height: 48px; border-radius: 16px; background: var(--blue-soft); color: #1d63d8; font-weight: 800; display: flex; align-items: center; justify-content: center; gap: 8px; }
+    .action.alt { background: #fff7e3; color: #c76f00; }
+    .action.muted { background: #f3f6fb; color: #677286; }
+    .file { display: none; }
+
+    .status { display: none; margin: 10px 0 12px; border-radius: 16px; padding: 12px 14px; background: #eef5ff; color: #5b7fd7; font-size: 14px; line-height: 1.5; text-align: center; }
+    .status.error { display: block; background: #fff0f0; color: var(--red); }
+    .status.ok { display: block; background: #ebfff6; color: var(--green); }
+
+    .auth { margin-top: 18vh; background: var(--panel); border: 1px solid var(--line); border-radius: 20px; box-shadow: var(--shadow); padding: 22px; }
+    .auth h1 { margin: 0 0 6px; font-size: 25px; }
+    .auth p { margin: 0 0 18px; color: var(--muted); }
+    .auth input { width: 100%; height: 46px; border: 1px solid var(--line); border-radius: 14px; padding: 0 14px; outline: 0; margin-bottom: 10px; background: #fbfcff; }
+    .auth input:focus { border-color: var(--blue); box-shadow: 0 0 0 3px rgba(36,120,255,0.12); }
+    .primary { width: 100%; min-height: 46px; border-radius: 14px; background: var(--blue); color: white; font-weight: 800; }
+    .link { width: 100%; margin-top: 10px; background: transparent; color: var(--blue); font-weight: 700; }
+
+    .section { background: var(--panel); border: 1px solid var(--line); border-radius: 18px; padding: 14px; box-shadow: var(--shadow); margin-top: 12px; }
+    .summary { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 12px; }
+    .summary h1 { margin: 0; font-size: 28px; }
+    .summary p { margin: 4px 0 0; color: var(--muted); font-size: 14px; }
+    .score { min-width: 82px; text-align: center; color: var(--blue); }
+    .score b { display: block; font-size: 34px; line-height: 1; }
+    .score span { font-size: 12px; color: var(--muted); }
+
+    .metrics { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-top: 12px; }
+    .metric { min-height: 82px; border-radius: 14px; background: #fff1f2; border: 1px solid #fecaca; padding: 12px; text-align: center; box-shadow: 0 1px 2px rgba(15, 23, 42, 0.03); }
+    .metric.gray { background: #fff; border-color: var(--line); }
+    .metric label { display: block; color: #dc2626; font-size: 13px; font-weight: 800; margin-bottom: 8px; }
+    .metric.gray label { color: #9aa5b6; }
+    .metric b { font-size: 20px; }
+    .empty { min-height: 210px; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; color: var(--muted); }
+    .empty .moon { font-size: 42px; color: var(--yellow); margin-bottom: 10px; }
+    .empty b { color: var(--text); font-size: 20px; margin-bottom: 6px; }
+
+    .report h2 { margin: 0 0 12px; font-size: 18px; }
+    .report-body { color: #3d495e; line-height: 1.75; font-size: 15px; overflow-wrap: anywhere; }
+    .report-body h1, .report-body h2, .report-body h3 { color: var(--text); line-height: 1.35; margin: 18px 0 8px; }
+    .report-body h1 { font-size: 22px; }
+    .report-body h2 { font-size: 19px; }
+    .report-body h3 { font-size: 17px; }
+    .report-body p, .report-body ul, .report-body ol { margin: 10px 0; }
+    .report-body table { width: 100%; border-collapse: collapse; display: block; overflow-x: auto; }
+    .report-body th, .report-body td { border: 1px solid var(--line); padding: 8px; white-space: nowrap; }
+    .report-body .sleep-diary-edit { width: 100%; margin: 10px 0; border-left: 4px solid #fecdd3; border-radius: 12px; background: #fff1f2; color: #334155; padding: 12px 14px; text-align: left; line-height: 1.7; white-space: pre-wrap; }
+    .report-body .sleep-diary-edit p { margin: 4px 0; }
+    .report-body .sleep-diary-edit ul { margin: 4px 0; padding-left: 20px; }
+    .modal { position: fixed; inset: 0; z-index: 20; display: flex; align-items: flex-end; justify-content: center; background: rgba(15, 23, 42, 0.38); padding: 0 12px; }
+    .modal-card { width: min(100%, 520px); border-radius: 20px 20px 0 0; background: white; padding: 16px; box-shadow: 0 -18px 45px rgba(15, 23, 42, 0.18); }
+    .modal-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
+    .modal-head b { font-size: 16px; }
+    .modal textarea { width: 100%; min-height: 190px; resize: vertical; border: 1px solid var(--line); border-radius: 14px; background: #f8fafc; padding: 12px; color: var(--text); line-height: 1.6; outline: none; }
+    .modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 12px; }
+    .modal-actions button { min-width: 74px; height: 40px; border-radius: 12px; font-weight: 800; }
+    .modal-save { background: var(--blue); color: white; }
+    .modal-cancel { background: #f1f5f9; color: #64748b; }
+
+    .hidden { display: none; }
+    @media (max-width: 360px) {
+      .app { padding-left: 10px; padding-right: 10px; }
+      .actions { grid-template-columns: 1fr; }
+      .metrics { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <main class="app">
+    <section id="authPanel" class="auth">
+      <h1>MyTimeLogger 睡眠</h1>
+      <p>手机内网睡眠分析入口，登录后按日期上传截图。</p>
+      <input id="username" autocomplete="username" placeholder="用户名" />
+      <input id="password" type="password" autocomplete="current-password" placeholder="密码" />
+      <button id="authBtn" class="primary" type="button">登录</button>
+      <button id="toggleBtn" class="link" type="button">没有账号？立即注册</button>
+    </section>
+
+    <section id="mainPanel" class="hidden">
+      <div class="topbar">
+        <div class="brand">MyTimeLogger</div>
+        <div class="user"><span>账号</span><b id="displayUser">--</b><button id="logoutBtn" class="ghost" type="button">×</button></div>
+      </div>
+
+      <section class="week">
+        <div class="week-head">
+          <button id="prevWeekBtn" type="button">‹</button>
+          <strong id="monthTitle">----</strong>
+          <button id="nextWeekBtn" type="button">›</button>
+        </div>
+        <div id="days" class="days"></div>
+      </section>
+
+      <div class="actions">
+        <input id="file" class="file" type="file" accept="image/*" />
+        <button id="uploadBtn" class="action" type="button">📷 上传图片</button>
+        <button id="sleepAnalyzeBtn" class="action" type="button">🌙 睡眠分析</button>
+        <button id="fullAnalyzeBtn" class="action muted" type="button">📄 完整分析</button>
+        <button id="refreshBtn" class="action alt" type="button">🔄 强制分析</button>
+      </div>
+
+      <div id="statusInfo" class="status"></div>
+
+      <section class="section summary">
+        <div>
+          <h1>睡眠</h1>
+          <p id="summaryText">选择日期后上传截图或查看报告。</p>
+        </div>
+        <div class="score"><b id="scoreVal">--</b><span>分</span></div>
+      </section>
+
+      <section id="emptyState" class="empty">
+        <div class="moon">☾</div>
+        <b>还没有睡眠数据</b>
+        <span>上传截图只会先校验日期，点击分析按钮后才会生成报告。</span>
+      </section>
+
+      <section id="metricsSection" class="metrics hidden">
+        <div class="metric"><label>睡眠周期</label><b id="mCycles">--</b></div>
+        <div class="metric"><label>清醒时长</label><b id="mAwakeMin">--</b></div>
+        <div class="metric"><label>入睡用时</label><b id="mFallMin">--</b></div>
+        <div class="metric"><label>起床用时</label><b id="mWakeMin">--</b></div>
+        <div class="metric"><label>清醒次数</label><b id="mAwakeCount">--</b></div>
+        <div class="metric gray"><label>总睡眠</label><b id="mTotal">--</b></div>
+        <div class="metric"><label>深睡时长</label><b id="mDeep">--</b></div>
+        <div class="metric gray"><label>浅睡时长</label><b id="mLight">--</b></div>
+      </section>
+
+      <section id="reportSection" class="section report hidden">
+        <h2>分析报告</h2>
+        <div id="reportBody" class="report-body"></div>
+      </section>
+    </section>
+  </main>
+
+  <div id="diaryModal" class="modal hidden">
+    <div class="modal-card">
+      <div class="modal-head">
+        <b id="diaryTitle">晨间日记</b>
+        <button id="diaryClose" class="ghost" type="button">×</button>
+      </div>
+      <textarea id="diaryText" placeholder="支持 Markdown 内容..."></textarea>
+      <div class="modal-actions">
+        <button id="diaryCancel" class="modal-cancel" type="button">取消</button>
+        <button id="diarySave" class="modal-save" type="button">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const tokenKey = 'sleep_token';
+    let token = localStorage.getItem(tokenKey) || '';
+    let isLogin = true;
+    let currentDate = formatLocalDate(new Date());
+    let selectedRequestId = '';
+    let pollTimer = 0;
+    let currentData = {};
+    const sleepDates = new Set();
+
+    const el = (id) => document.getElementById(id);
+    const authPanel = el('authPanel');
+    const mainPanel = el('mainPanel');
+    const statusInfo = el('statusInfo');
+
+    function formatLocalDate(date) {
+      const y = date.getFullYear();
+      const m = String(date.getMonth() + 1).padStart(2, '0');
+      const d = String(date.getDate()).padStart(2, '0');
+      return `${y}-${m}-${d}`;
+    }
+
+    function parseLocalDate(value) {
+      const [y, m, d] = value.split('-').map(Number);
+      return new Date(y, m - 1, d);
+    }
+
+    function setStatus(text, type = '') {
+      statusInfo.className = `status ${type}`;
+      statusInfo.style.display = text ? 'block' : 'none';
+      statusInfo.textContent = text || '';
+    }
+
+    function authHeaders(extra = {}) {
+      return token ? {'Authorization': `Bearer ${token}`, ...extra} : extra;
+    }
+
+    function showMain(username = '') {
+      authPanel.classList.add('hidden');
+      mainPanel.classList.remove('hidden');
+      el('displayUser').textContent = username || localStorage.getItem('sleep_user') || '已登录';
+      renderWeek();
+      refreshSleepMarks();
+      fetchByDate(currentDate);
+    }
+
+    function showAuth() {
+      window.location.href = '/login?next=sleep';
+    }
+
+    async function doAuth() {
+      const username = el('username').value.trim();
+      const password = el('password').value;
+      if (!username || !password) {
+        alert('请输入用户名和密码');
+        return;
+      }
+      const path = isLogin ? '/auth/login' : '/auth/register';
+      const resp = await fetch(path, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({username, password})
+      });
+      const body = await resp.json().catch(() => ({}));
+      if (!resp.ok) {
+        alert(body.detail || '操作失败');
+        return;
+      }
+      if (!isLogin) {
+        alert('注册成功，请登录');
+        toggleAuth();
+        return;
+      }
+      token = body.token;
+      localStorage.setItem(tokenKey, token);
+      localStorage.setItem('sleep_user', username);
+      showMain(username);
+    }
+
+    function toggleAuth() {
+      isLogin = !isLogin;
+      el('authBtn').textContent = isLogin ? '登录' : '注册';
+      el('toggleBtn').textContent = isLogin ? '没有账号？立即注册' : '已有账号？返回登录';
+    }
+
+    function logout() {
+      localStorage.removeItem(tokenKey);
+      localStorage.removeItem('mtl_token');
+      localStorage.removeItem('mtl_user');
+      localStorage.removeItem('sleep_user');
+      token = '';
+      clearTimeout(pollTimer);
+      window.location.href = '/login?next=sleep';
+    }
+
+    function renderWeek() {
+      const base = parseLocalDate(currentDate);
+      const day = base.getDay() || 7;
+      const monday = new Date(base);
+      monday.setDate(base.getDate() - day + 1);
+      el('monthTitle').textContent = `${base.getFullYear()}年${base.getMonth() + 1}月`;
+      const names = ['一', '二', '三', '四', '五', '六', '日'];
+      el('days').innerHTML = names.map((name, index) => {
+        const date = new Date(monday);
+        date.setDate(monday.getDate() + index);
+        const value = formatLocalDate(date);
+        const active = value === currentDate ? ' active' : '';
+        const dot = sleepDates.has(value) ? '<i aria-hidden="true"></i>' : '';
+        return `<button class="day${active}" type="button" data-date="${value}"><span>${name}</span><b>${date.getDate()}</b>${dot}</button>`;
+      }).join('');
+      document.querySelectorAll('.day').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          currentDate = btn.dataset.date;
+          renderWeek();
+          fetchByDate(currentDate);
+        });
+      });
+    }
+
+    function changeWeek(delta) {
+      const date = parseLocalDate(currentDate);
+      date.setDate(date.getDate() + delta * 7);
+      currentDate = formatLocalDate(date);
+      renderWeek();
+      fetchByDate(currentDate);
+      refreshSleepMarks();
+    }
+
+    function hasSleepData(data) {
+      return !!(data.sleep_score || data.total_sleep_min || data.sleep_cycles || data.sleep_start);
+    }
+
+    function formatMinutes(value) {
+      if (value === undefined || value === null || value === '') return '--';
+      const n = Number(value);
+      if (!Number.isFinite(n)) return value;
+      if (n >= 60) return `${Math.floor(n / 60)}h${n % 60}m`;
+      return `${n}m`;
+    }
+
+    let editingDiaryType = '';
+
+    function escapeHtml(text) {
+      return String(text || '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
+    function diaryMarkdownToHtml(text) {
+      const lines = escapeHtml(String(text || '').trim()).split('\n');
+      const html = [];
+      let listOpen = false;
+      const closeList = () => {
+        if (listOpen) {
+          html.push('</ul>');
+          listOpen = false;
+        }
+      };
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed) {
+          closeList();
+          continue;
+        }
+        const inline = trimmed
+          .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+          .replace(/`([^`]+)`/g, '<code>$1</code>')
+          .replace(/\*([^*]+)\*/g, '<em>$1</em>');
+        const heading = inline.match(/^(#{1,4})\s+(.+)$/);
+        if (heading) {
+          closeList();
+          const level = Math.min(heading[1].length + 2, 6);
+          html.push(`<h${level}>${heading[2]}</h${level}>`);
+          continue;
+        }
+        const bullet = inline.match(/^[-+*]\s+(.+)$/);
+        if (bullet) {
+          if (!listOpen) {
+            html.push('<ul>');
+            listOpen = true;
+          }
+          html.push(`<li>${bullet[1]}</li>`);
+          continue;
+        }
+        closeList();
+        html.push(`<p>${inline}</p>`);
+      }
+      closeList();
+      return html.join('') || '<p>今日未记录</p>';
+    }
+
+    function injectDiaryButtons(html) {
+      const replaceBlock = (input, type, text, emptyText) => {
+        const heading = type === 'morning' ? '晨间日记' : '(晚间复盘|晚间日记)';
+        const pattern = new RegExp(`(<h3[^>]*>[^<]*${heading}[^<]*<\\/h3>\\s*)(<blockquote[\\s\\S]*?<\\/blockquote>)?`, 'i');
+        const value = diaryMarkdownToHtml((text || '').trim() || emptyText);
+        return input.replace(pattern, `$1<div role="button" tabindex="0" class="sleep-diary-edit" data-diary-edit="${type}">${value}</div>`);
+      };
+      return replaceBlock(
+        replaceBlock(html, 'morning', currentData.morning_diary || currentData.sleep_reflection, '今日未记录晨间日记'),
+        'evening',
+        currentData.evening_diary,
+        '今日未记录晚间复盘'
+      );
+    }
+
+    function openDiary(type) {
+      editingDiaryType = type;
+      el('diaryTitle').textContent = type === 'morning' ? '晨间日记' : '晚间日记';
+      el('diaryText').value = type === 'morning'
+        ? (currentData.morning_diary || currentData.sleep_reflection || '1. ')
+        : (currentData.evening_diary || '1. ');
+      el('diaryModal').classList.remove('hidden');
+      el('diaryText').focus();
+      el('diaryText').setSelectionRange(el('diaryText').value.length, el('diaryText').value.length);
+    }
+
+    function closeDiary() {
+      editingDiaryType = '';
+      el('diaryModal').classList.add('hidden');
+    }
+
+    async function saveDiary() {
+      if (!editingDiaryType) return;
+      const text = el('diaryText').value;
+      const path = editingDiaryType === 'morning' ? '/morning_diary' : '/evening_diary';
+      const field = editingDiaryType === 'morning' ? 'morning_diary' : 'evening_diary';
+      setStatus('正在保存日记...');
+      const resp = await fetch(path, {
+        method: 'POST',
+        headers: authHeaders({'Content-Type': 'application/json'}),
+        body: JSON.stringify({date: currentDate, text})
+      });
+      const body = await resp.json().catch(() => ({}));
+      if (!resp.ok) {
+        setStatus(body.detail || '日记保存失败', 'error');
+        return;
+      }
+      currentData[field] = text;
+      if (field === 'morning_diary') currentData.sleep_reflection = text;
+      closeDiary();
+      renderData(currentData);
+      setStatus('日记已保存，报告显示已更新。', 'ok');
+    }
+
+    function renderData(data) {
+      currentData = data || {};
+      const dataDate = currentData.date || currentData.sleep_date || currentDate;
+      currentDate = dataDate;
+      selectedRequestId = currentData.request_id || selectedRequestId;
+      renderWeek();
+
+      const hasData = hasSleepData(currentData);
+      if (hasData) {
+        sleepDates.add(dataDate);
+        renderWeek();
+      }
+      el('scoreVal').textContent = currentData.sleep_score || '--';
+      el('summaryText').textContent = hasData
+        ? `已读取 ${dataDate} 的睡眠数据。`
+        : `${dataDate} 暂无睡眠数据。`;
+
+      el('emptyState').classList.toggle('hidden', hasData);
+      el('metricsSection').classList.toggle('hidden', !hasData);
+      el('mCycles').textContent = currentData.sleep_cycles || '--';
+      el('mAwakeMin').textContent = formatMinutes(currentData.awake_min);
+      el('mFallMin').textContent = formatMinutes(currentData.fall_asleep_min);
+      el('mWakeMin').textContent = formatMinutes(currentData.wake_up_min);
+      el('mAwakeCount').textContent = currentData.awake_count || '--';
+      el('mTotal').textContent = formatMinutes(currentData.total_sleep_min);
+      el('mDeep').textContent = formatMinutes(currentData.deep_sleep_min);
+      el('mLight').textContent = formatMinutes(currentData.light_sleep_min);
+
+      const html = currentData.analysis_html || '';
+      el('reportSection').classList.toggle('hidden', !html);
+      el('reportBody').innerHTML = injectDiaryButtons(html);
+    }
+
+    async function fetchByDate(date, options = {}) {
+      const keepStatus = Boolean(options.keepStatus);
+      if (!keepStatus) setStatus(`正在读取 ${date} 的睡眠数据...`);
+      try {
+        const resp = await fetch(`/status_by_date/${date}`, {headers: authHeaders()});
+        const body = await resp.json().catch(() => ({}));
+        if (resp.ok) {
+          selectedRequestId = body.request_id || '';
+          renderData(body.result || {date});
+          if (!keepStatus) setStatus('');
+          return;
+        }
+        selectedRequestId = '';
+        renderData({date});
+        if (!keepStatus) setStatus(`${date} 暂无云端睡眠数据`, '');
+      } catch (err) {
+        setStatus('网络连接异常，请确认手机和电脑在同一内网。', 'error');
+      }
+    }
+
+    async function refreshSleepMarks() {
+      try {
+        const resp = await fetch('/api/sleep/history?limit=90', {headers: authHeaders()});
+        if (!resp.ok) return;
+        const body = await resp.json().catch(() => ({}));
+        for (const row of body.history || []) {
+          if (hasSleepData(row)) sleepDates.add(row.date || row.sleep_date);
+        }
+        renderWeek();
+      } catch (err) {
+        console.warn('[sleep] failed to load date marks', err);
+      }
+    }
+
+    async function uploadFile() {
+      const file = el('file').files[0];
+      if (!file) return;
+      const form = new FormData();
+      form.append('file', file);
+      setStatus('正在上传截图并校验日期...');
+      try {
+        const resp = await fetch(`/upload?analyze=false&date=${encodeURIComponent(currentDate)}`, {
+          method: 'POST',
+          headers: authHeaders(),
+          body: form
+        });
+        const body = await resp.json().catch(() => ({}));
+        if (!resp.ok) {
+          const detail = body.detail || '上传失败';
+          alert(detail);
+          setStatus(detail, 'error');
+          return;
+        }
+        selectedRequestId = body.request_id;
+        setStatus('图片已收到，正在校验日期...', 'ok');
+        pollStatus(selectedRequestId, true);
+      } finally {
+        el('file').value = '';
+      }
+    }
+
+    async function pollStatus(requestId, uploadOnly = false) {
+      clearTimeout(pollTimer);
+      if (!requestId) return;
+      try {
+        const resp = await fetch(`/status/${requestId}`, {headers: authHeaders()});
+        const body = await resp.json().catch(() => ({}));
+        if (body.status === 'uploaded') {
+          const nextDate = body.date || body.result?.date || body.result?.sleep_date || currentDate;
+          currentDate = nextDate;
+          setStatus(`${nextDate} 图片已上传。需要分析时，请点击“睡眠分析”或“完整分析”。`, 'ok');
+          fetchByDate(nextDate, {keepStatus: true});
+          return;
+        }
+        if (body.status === 'done' || body.status === 'reused') {
+          const nextDate = body.date || body.result?.date || body.result?.sleep_date || currentDate;
+          currentDate = nextDate;
+          setStatus(uploadOnly ? `${nextDate} 图片已上传。` : '分析完成，报告已更新。', 'ok');
+          fetchByDate(nextDate, {keepStatus: uploadOnly});
+          return;
+        }
+        if (body.status === 'error') {
+          const message = body.error || '处理失败';
+          alert(message);
+          setStatus(message, 'error');
+          return;
+        }
+        const progressText = body.progress?.msg || body.msg || body.error || '';
+        setStatus(progressText || (uploadOnly ? '正在快速校验截图日期...' : '正在分析，请稍候...'));
+        pollTimer = setTimeout(() => pollStatus(requestId, uploadOnly), 1800);
+      } catch (err) {
+        setStatus('状态查询失败，请稍后刷新。', 'error');
+      }
+    }
+
+    async function runAnalysis(full, force = false) {
+      setStatus(force ? '正在强制重新生成完整报告...' : full ? '正在生成完整分析报告...' : '正在进行睡眠分析...');
+      try {
+        const resp = await fetch('/generate_report', {
+          method: 'POST',
+          headers: authHeaders({'Content-Type': 'application/json'}),
+          body: JSON.stringify({date: currentDate, full, force})
+        });
+        const body = await resp.json().catch(() => ({}));
+        if (!resp.ok) {
+          const detail = body.detail || '分析启动失败';
+          alert(detail);
+          setStatus(detail, 'error');
+          return;
+        }
+        selectedRequestId = body.request_id;
+        pollStatus(selectedRequestId, false);
+      } catch (err) {
+        setStatus('分析请求失败，请检查服务端连接。', 'error');
+      }
+    }
+
+    el('authBtn').addEventListener('click', doAuth);
+    el('toggleBtn').addEventListener('click', toggleAuth);
+    el('logoutBtn').addEventListener('click', logout);
+    el('prevWeekBtn').addEventListener('click', () => changeWeek(-1));
+    el('nextWeekBtn').addEventListener('click', () => changeWeek(1));
+    el('uploadBtn').addEventListener('click', () => el('file').click());
+    el('file').addEventListener('change', uploadFile);
+    el('sleepAnalyzeBtn').addEventListener('click', () => runAnalysis(false));
+    el('fullAnalyzeBtn').addEventListener('click', () => runAnalysis(true));
+    el('refreshBtn').addEventListener('click', () => runAnalysis(true, true));
+    el('reportBody').addEventListener('click', event => {
+      const button = event.target.closest('[data-diary-edit]');
+      if (button) openDiary(button.dataset.diaryEdit);
+    });
+    el('diaryClose').addEventListener('click', closeDiary);
+    el('diaryCancel').addEventListener('click', closeDiary);
+    el('diaryModal').addEventListener('click', event => {
+      if (event.target === el('diaryModal')) closeDiary();
+    });
+    el('diarySave').addEventListener('click', saveDiary);
+    el('diaryText').addEventListener('keydown', event => {
+      if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
+        event.preventDefault();
+        saveDiary();
+        return;
+      }
+      if (event.key !== 'Enter' || event.shiftKey || event.altKey) return;
+      const textarea = event.currentTarget;
+      const cursorStart = textarea.selectionStart;
+      const cursorEnd = textarea.selectionEnd;
+      const beforeCursor = textarea.value.slice(0, cursorStart);
+      const currentLine = beforeCursor.slice(beforeCursor.lastIndexOf('\n') + 1);
+      const match = currentLine.match(/^\s*(\d+)\.\s/);
+      if (!match) return;
+      event.preventDefault();
+      const insertion = `\n${Number(match[1]) + 1}. `;
+      textarea.value = `${textarea.value.slice(0, cursorStart)}${insertion}${textarea.value.slice(cursorEnd)}`;
+      const nextCursor = cursorStart + insertion.length;
+      textarea.setSelectionRange(nextCursor, nextCursor);
+    });
+
+    if (token) showMain(); else window.location.href = '/login?next=sleep';
+  </script>
+</body>
+</html>

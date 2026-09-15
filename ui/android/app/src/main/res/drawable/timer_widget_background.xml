@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
+    <solid android:color="@color/timer_widget_surface" />
+    <corners android:radius="@dimen/timer_widget_corner_radius" />
+    <stroke android:width="@dimen/timer_widget_divider_size" android:color="@color/timer_widget_divider" />
+    <padding
+        android:left="@dimen/timer_widget_inset"
+        android:top="@dimen/timer_widget_inset"
+        android:right="@dimen/timer_widget_inset"
+        android:bottom="@dimen/timer_widget_inset" />
+</shape>

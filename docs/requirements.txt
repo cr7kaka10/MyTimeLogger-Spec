@@ -1,0 +1,24 @@
+# requirements.txt
+
+# 核心图形界面框架
+PyQt6>=6.2.0
+
+# Fluent Design 风格 UI 组件库（PyQt6 版本）
+PyQt6-Fluent-Widgets>=1.6.0
+
+# 用于播放音频提示
+pygame-ce>=2.4.0
+
+# 用于实现全局快捷键
+pynput>=1.7.0
+
+# TickTick 日清单同步
+httpx>=0.24.0
+
+# AI 睡眠分析与云端服务
+openai>=1.0.0
+Pillow>=10.0.0
+markdown>=3.5.0
+fastapi>=0.110.0
+uvicorn>=0.27.0
+python-multipart>=0.0.9

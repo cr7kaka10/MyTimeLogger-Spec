@@ -1,0 +1,1 @@
+export function NewWeekModal({open,onClose,onConfirm}:{open:boolean;onClose:()=>void;onConfirm:()=>void}){return open?<div className="ex-overlay"><div className="ex-modal"><h3>开始新一周？</h3><p>打卡记录将清空，周数递进。<br/>历史体重和数据不会删除。</p><div><button onClick={onClose}>取消</button><button className="danger" onClick={onConfirm}>确认</button></div></div></div>:null}

@@ -1,0 +1,22 @@
+{
+  "review": {
+    "mode": "review",
+    "policy_version": "management-planning-v3",
+    "summary": "当前方案已有基础",
+    "review": {"strengths": ["有日常规则"], "risks": ["奖励不足"], "recommendations": ["补充可兑换商品"]},
+    "items": []
+  },
+  "proposal": {
+    "mode": "proposal",
+    "policy_version": "management-planning-v3",
+    "title": "日常自我管理方案",
+    "plan_key": "self-management",
+    "summary": "为日常任务建立稳定奖励",
+    "items": [{"logical_key": "habit.morning-brush", "type": "local_habit", "action": "create", "title": "早起刷牙", "reason": "减少启动阻力"}]
+  },
+  "patch": {
+    "patch_version": "1",
+    "parent_revision_id": "revision-example",
+    "items": [{"logical_key": "reward.weekend-game", "action": "update", "value": {"price": 20}, "reason": "提高周末激励"}]
+  }
+}

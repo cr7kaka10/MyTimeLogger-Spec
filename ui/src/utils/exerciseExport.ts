@@ -1,0 +1,3 @@
+const scoreTotal=(row:any)=>{try{const s=typeof row.score_snapshot==='string'?JSON.parse(row.score_snapshot):row.score_snapshot;return s?.total??''}catch{return''}}
+export const exerciseCsv=(rows:any[])=>'\uFEFF记录日期,版本,第几周,哪天,体重(公斤),已打卡项,总项目数,完成率(%),评分\n'+rows.map(r=>[r.date,r.plan_version||'v0',`第${r.week_num}周`,r.day_name,r.weight??'未记录',r.completed_items,r.total_items,Math.round((r.completed_items/(r.total_items||1))*100),scoreTotal(r)].join(',')).join('\n')
+export function downloadExerciseCsv(rows:any[]){if(!rows.length){alert('还没有记录，先点「保存」几天再导出。');return}const u=URL.createObjectURL(new Blob([exerciseCsv(rows)],{type:'text/csv;charset=utf-8'})),a=document.createElement('a');a.href=u;a.download='打卡数据.csv';a.click();URL.revokeObjectURL(u)}

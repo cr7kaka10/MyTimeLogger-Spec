@@ -1,0 +1,132 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html,
+body,
+#root {
+  min-height: 100%;
+  width: 100%;
+  max-width: 100%;
+  overflow-x: hidden;
+}
+
+body {
+  margin: 0;
+}
+
+.safe-area-tabbar {
+  height: calc(4rem + env(safe-area-inset-bottom, 0px));
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+@layer components {
+  .theme-page {
+    @apply bg-[#FAFAFA] text-gray-900 dark:bg-gray-900 dark:text-gray-50;
+  }
+
+  .theme-surface {
+    @apply border-gray-100 bg-white dark:border-gray-700 dark:bg-gray-800;
+  }
+
+  .theme-muted {
+    @apply text-gray-500 dark:text-gray-300;
+  }
+}
+
+/* 自定义滚动条美化 */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(120, 120, 120, 0.25);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(120, 120, 120, 0.4);
+}
+
+/* 零侵入式暗黑模式覆盖设计 */
+.dark body {
+  background-color: #111827 !important;
+  color: #F9FAFB !important;
+}
+
+.dark .bg-white {
+  background-color: #1F2937 !important;
+}
+
+.dark .bg-\[\#FAFAFA\] {
+  background-color: #111827 !important;
+}
+
+.dark .bg-\[\#F5F5F7\] {
+  background-color: #111827 !important;
+}
+
+.dark .bg-gray-50 {
+  background-color: #111827 !important;
+}
+
+.dark .bg-gray-100,
+.dark .bg-gray-200 {
+  background-color: #374151 !important;
+}
+
+.dark .text-gray-900 {
+  color: #F9FAFB !important;
+}
+
+.dark .text-gray-600 {
+  color: #D1D5DB !important;
+}
+
+.dark .text-gray-800,
+.dark .text-gray-700,
+.dark .text-gray-500 {
+  color: #D1D5DB !important;
+}
+
+.dark .text-gray-400 {
+  color: #9CA3AF !important;
+}
+
+.dark .border-gray-100 {
+  border-color: #374151 !important;
+}
+
+.dark .border-gray-50 {
+  border-color: #374151 !important;
+}
+
+.dark input, .dark textarea {
+  background-color: #1F2937 !important;
+  color: #F9FAFB !important;
+  border-color: #374151 !important;
+}
+
+.dark button:active, .dark a:active {
+  background-color: #374151 !important;
+}
+
+/* 带业务强调色的操作按钮：暗黑模式使用控件表面，不保留浅色胶囊底。 */
+.theme-accent-button {
+  background-color: #eff6ff;
+}
+
+.dark .theme-accent-button {
+  background-color: #374151 !important;
+  background-image: none !important;
+}
+
+.dark .theme-accent-button:hover,
+.dark .theme-accent-button:active {
+  background-color: #4b5563 !important;
+}

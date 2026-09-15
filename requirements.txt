@@ -1,0 +1,3 @@
+# Canonical Python dependency entry for the current FastAPI service.
+# The React/Electron client dependencies are installed from their npm lockfiles.
+-r server/requirements.txt

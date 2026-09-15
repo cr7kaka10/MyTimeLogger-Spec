@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <link rel="stylesheet" href="/node_modules/mind-elixir/dist/MindElixir.css" />
+  <style>html,body,#fixture{height:100%;margin:0}#fixture{overflow:hidden}#verify{position:fixed;left:12px;top:12px;z-index:2}</style>
+</head>
+<body>
+  <div id="fixture"></div>
+  <button id="verify" type="button">验证右键平移</button>
+  <script type="module">
+    import MindElixir from 'mind-elixir'
+    const leaves = Array.from({ length: 24 }, (_, index) => ({ id: `reward-${index}`, topic: `【金币】+${index}`, children: [] }))
+    const target = document.getElementById('fixture')
+    const mind = new MindElixir({ el: target, direction: MindElixir.RIGHT, editable: false, contextMenu: false, toolBar: false, keypress: false, allowUndo: false, overflowHidden: true })
+    mind.init({ nodeData: { id: 'management-plan', topic: '管理方案', expanded: true, children: [{ id: 'learning', topic: '学习', expanded: true, children: [{ id: 'kr', topic: 'KR 长分支', expanded: true, children: leaves }] }] } })
+    mind.container.style.overflow = 'auto'
+    mind.container.style.touchAction = 'pan-x pan-y'
+    let pan = null
+    const stopPanning = () => { pan = null; target.style.cursor = ''; mind.container.style.cursor = '' }
+    target.addEventListener('pointerdown', event => {
+      if (event.button !== 2) return
+      event.preventDefault()
+      pan = { pointerId: event.pointerId, x: event.clientX, y: event.clientY, left: mind.container.scrollLeft, top: mind.container.scrollTop }
+      target.dataset.panState = 'started'
+      target.style.cursor = 'grabbing'; mind.container.style.cursor = 'grabbing'
+    }, true)
+    target.addEventListener('pointermove', event => {
+      if (!pan || event.pointerId !== pan.pointerId) return
+      mind.container.scrollLeft = pan.left - (event.clientX - pan.x)
+      mind.container.scrollTop = pan.top - (event.clientY - pan.y)
+      target.dataset.panState = 'moved'
+    }, true)
+    target.addEventListener('pointerup', stopPanning, true)
+    target.addEventListener('pointercancel', stopPanning, true)
+    target.addEventListener('contextmenu', event => event.preventDefault())
+    document.getElementById('verify').addEventListener('click', () => {
+      const transform = mind.map.style.transform
+      target.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, button: 2, pointerId: 7, clientX: 1090, clientY: 600 }))
+      target.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, button: -1, pointerId: 7, clientX: 650, clientY: 220 }))
+      target.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, button: 2, pointerId: 7, clientX: 650, clientY: 220 }))
+      target.dataset.fixtureResult = JSON.stringify({ left: mind.container.scrollLeft, top: mind.container.scrollTop, transformStable: transform === mind.map.style.transform })
+    })
+    window.__mindmapNavigationFixture = {
+      state: () => ({ left: mind.container.scrollLeft, top: mind.container.scrollTop, scrollWidth: mind.container.scrollWidth, scrollHeight: mind.container.scrollHeight, clientWidth: mind.container.clientWidth, clientHeight: mind.container.clientHeight, leafCount: mind.container.querySelectorAll('me-tpc').length, transform: mind.map.style.transform }),
+      pan: (x, y) => { const before = mind.map.style.transform; mind.container.scrollLeft += x; mind.container.scrollTop += y; return { transformStable: before === mind.map.style.transform, ...window.__mindmapNavigationFixture.state() } },
+    }
+  </script>
+</body>
+</html>

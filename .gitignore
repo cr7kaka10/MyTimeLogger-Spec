@@ -1,0 +1,121 @@
+# 编译/打包输出
+build/
+dist/
+coverage/
+htmlcov/
+playwright-report/
+test-results/
+ui/test-screenshot.png
+
+# 依赖目录
+node_modules/
+jspm_packages/
+
+# 编辑器与个人工具状态
+.vscode/
+.idea/
+.obsidian/
+**/.obsidian/
+.codex/
+.claude/
+.antigravitycli/
+.kiro/
+.agent/
+*.swp
+
+# 本地配置与密钥
+config/
+config.json
+mytimelogger_config.json
+secrets/
+.env
+.env.*
+!.env.example
+!.env.*.example
+deploy/config.*.local.env
+deploy/config.local.env
+deploy/generated*.env
+deploy/*.secrets.env
+deploy/*.private.env
+deploy/*secret*.log
+deploy/*token*.log
+server/.env.local
+server/.env.generated
+server/config.json
+*.pem
+*.key
+*.p12
+*.pfx
+*_secret.*
+*_secrets.*
+*_token.*
+*_credentials.*
+
+# 用户本地数据
+desktop/local_data/
+attachments/
+server/data/
+
+# 数据库与本地备份
+*.db
+*.sqlite
+*.sqlite3
+*.db-journal
+*.db-wal
+*.db-shm
+*.db-*
+*.db.gz
+*.sqlite.gz
+*.db.bak
+*.bak
+*.bak_*
+*.backup
+*.before-*.db
+**/*restore-candidates*/
+
+# 日志与运行时文件
+server/log/
+reports/
+*.log
+*.pid
+*.lock
+tests/runtime/
+
+# 临时文件
+assets/tmp/
+tmp_*.py
+scratch/
+old/
+deploy/*.tar
+deploy/*.tar.gz
+deploy/artifacts/
+deploy/.tmp-*
+deploy/out*.txt
+deploy/test_payload.txt
+*_instructions.json
+old_renderer*.java
+server_log*.txt
+
+# Python 缓存
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+.pytest_cache/
+.coverage
+venv/
+.venv/
+
+# JS 包管理器日志
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Public release excludes internal planning history
+/openspec/

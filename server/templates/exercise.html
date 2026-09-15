@@ -1,0 +1,494 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>MyTimeLogger 运动</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg:#f4f3f8; --card:#fff; --soft:#f0eef6; --border:#e1dfe9; --divider:#ececf2;
+      --text:#26252f; --muted:#6e6c7a; --dim:#9795a4; --purple:#9b3ae8;
+      --green:#3ab85a; --red:#e8523a; --gold:#e8a63a; --blue:#3a7ee8;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg:#16161c; --card:#20202b; --soft:#1a1a22; --border:#33334a; --divider:#262631;
+        --text:#eceaf0; --muted:#a3a1b0; --dim:#76748a;
+      }
+    }
+    * { box-sizing:border-box; }
+    body {
+      margin:0; background:var(--bg); color:var(--text);
+      font-family:"PingFang SC","Noto Sans SC",system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+      min-height:100vh; padding-bottom:18px;
+    }
+    button,input,select { font:inherit; }
+    button { cursor:pointer; }
+    .ex-header { position:sticky; top:0; z-index:20; background:var(--bg); border-bottom:1px solid var(--border); padding:8px 12px 9px; }
+    .ex-titlebar { display:flex; align-items:center; justify-content:space-between; margin-bottom:8px; font-size:12px; color:var(--muted); }
+    .ex-titlebar strong { color:var(--text); font-size:15px; letter-spacing:.2px; }
+    .entry-link { color:var(--muted); text-decoration:none; font-weight:700; }
+    .ex-header-top { display:flex; gap:6px; margin-bottom:7px; }
+    .top-card {
+      position:relative; flex:.9; min-height:48px; padding:6px 4px 14px; border-radius:11px;
+      display:flex; align-items:center; justify-content:center; text-align:center; white-space:nowrap;
+      background:#9b3ae822; border:1px solid #9b3ae855; color:var(--purple); font-weight:800; font-size:15px;
+    }
+    .top-card.date { flex:1.25; font-size:16px; }
+    .top-card small { position:absolute; left:0; right:0; bottom:6px; color:var(--muted); font-size:10px; font-weight:400; line-height:1.1; }
+    .ex-day-row { display:flex; gap:4px; justify-content:center; margin-top:4px; }
+    .ex-day-row button {
+      border:2px solid var(--border); background:transparent; color:var(--dim);
+      border-radius:20px; padding:4px 8px; font-size:11px; line-height:1.25; min-width:28px;
+    }
+    .ex-day-row button.active { font-weight:800; background:#ffffff08; border-color:var(--blue); color:var(--blue); }
+    .ex-day-row button.today { border-color:#e8a63a66; color:var(--gold); }
+    .ex-day-row small { font-size:10px; margin-left:3px; }
+    .plan-menu { display:none; gap:6px; margin:-3px 0 7px; }
+    .plan-menu.open { display:flex; }
+    .plan-menu button {
+      flex:1; border:1px solid var(--border); border-radius:10px; background:var(--card);
+      color:var(--muted); padding:6px; font-size:12px;
+    }
+    .plan-menu button.active { border-color:var(--purple); color:var(--purple); font-weight:800; }
+    main { max-width:700px; margin:auto; padding:0 10px; }
+    .record-card,.score-card {
+      background:var(--card); border:1px solid var(--border); border-radius:11px;
+      padding:11px 12px; margin-top:10px;
+    }
+    .record-card label,.score-card>label,.ex-section {
+      display:block; font-size:10px; color:var(--muted); letter-spacing:2px; margin-bottom:7px;
+    }
+    .record-line { display:flex; align-items:center; justify-content:center; gap:8px; }
+    .record-card input {
+      width:82px; padding:6px 9px; border:1px solid var(--border); border-radius:7px;
+      background:var(--soft); color:var(--text); font-size:15px; text-align:center;
+    }
+    .record-card button {
+      border:0; border-radius:7px; background:var(--purple); color:#fff; padding:7px 13px; font-weight:800; font-size:13px;
+    }
+    .record-card button:disabled,.record-card input:disabled { opacity:.45; }
+    .record-card p { margin:7px 0 0; padding:6px 9px; background:var(--soft); border-radius:8px; color:var(--green); font-size:12px; }
+    .score-body { display:flex; align-items:center; gap:12px; }
+    .score-ring { width:64px; height:64px; border-radius:50%; display:grid; place-items:center; background:conic-gradient(var(--green) 0deg,var(--border) 0); }
+    .score-ring span { width:50px; height:50px; border-radius:50%; background:var(--card); display:grid; place-content:center; text-align:center; }
+    .score-ring b { font-size:19px; line-height:1; }
+    .score-ring small { display:block; font-size:9px; color:var(--dim); }
+    .score-cats { flex:1; min-width:0; }
+    .score-cats>div { display:flex; align-items:center; gap:7px; font-size:11px; margin:4px 0; color:var(--muted); }
+    .score-cats span { width:34px; text-align:right; }
+    .score-cats i { flex:1; height:5px; border-radius:3px; background:var(--border); overflow:hidden; }
+    .score-cats i b { display:block; height:100%; background:var(--purple); }
+    .score-cats em { width:42px; font-style:normal; font-size:10px; }
+    .inner-tabs { display:flex; background:var(--card); border:1px solid var(--border); border-radius:11px; padding:3px; margin-top:10px; }
+    .inner-tabs button { flex:1; border:0; border-radius:8px; background:transparent; color:var(--dim); padding:7px 5px; font-size:13px; }
+    .inner-tabs button.active { background:var(--border); color:var(--text); font-weight:700; }
+    .ex-card { background:var(--card); border:1px solid var(--border); border-radius:11px; overflow:hidden; margin-top:10px; }
+    .ex-check-row { display:flex; align-items:flex-start; gap:10px; padding:9px 13px; border-bottom:1px solid var(--divider); user-select:none; }
+    .ex-check-row:last-child { border-bottom:0; }
+    .ex-check-row.done .ex-row-main strong { text-decoration:line-through; color:var(--dim); }
+    .ex-check-row.skip { background:#e8523a12; }
+    .ex-time { min-width:70px; color:var(--blue); font-size:11px; font-weight:800; }
+    .ex-row-main { flex:1; min-width:0; font-size:14px; }
+    .ex-row-main strong { display:block; font-weight:500; }
+    .ex-row-main small { display:block; color:var(--muted); font-size:12px; margin-top:3px; overflow-wrap:anywhere; }
+    .ex-row-main em { display:block; color:var(--green); font-style:normal; font-size:11px; margin-top:3px; }
+    .ex-row-main b { display:block; color:var(--red); font-style:normal; font-size:11px; margin-top:3px; }
+    .ex-box {
+      width:28px; height:28px; border:2px solid var(--border); border-radius:999px;
+      display:grid; place-items:center; flex:none; color:white; font-style:normal; font-weight:800;
+    }
+    .ex-box.done { background:var(--green); border-color:var(--green); }
+    .ex-box.skip { background:var(--red); border-color:var(--red); }
+    .ex-section { margin:12px 0 4px 2px; }
+    .history-row { display:flex; align-items:center; gap:8px; padding:9px 13px; border-bottom:1px solid var(--divider); font-size:12px; }
+    .history-row:last-child { border-bottom:0; }
+    .history-row span:first-child { min-width:76px; color:var(--dim); }
+    .history-row b { color:var(--purple); }
+    .history-row strong { margin-left:auto; color:var(--gold); font-size:13px; }
+    .history-row em { color:var(--green); font-style:normal; min-width:36px; text-align:right; }
+    .empty { text-align:center; padding:20px; color:var(--dim); }
+    .ex-fab {
+      position:fixed; right:16px; bottom:18px; width:46px; height:46px; border:0; border-radius:50%;
+      background:var(--purple); color:#fff; font-size:19px; z-index:30; box-shadow:0 4px 14px #0006;
+    }
+    @media (min-width:760px) {
+      body { max-width:480px; margin:0 auto; border-left:1px solid var(--border); border-right:1px solid var(--border); }
+    }
+    @media (max-width:420px) {
+      .top-card { font-size:14px; }
+      .top-card.date { font-size:15px; }
+      .ex-day-row button { padding:4px 7px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="ex-header">
+    <div class="ex-titlebar">
+      <strong>MyTimeLogger</strong>
+      <a class="entry-link" href="/login">入口</a>
+    </div>
+    <div class="ex-header-top">
+      <button type="button" class="top-card" id="planTitle">每日打卡表<small id="planSub">v0</small></button>
+      <div class="top-card date" id="dateTitle">2026年7月2日</div>
+      <div class="top-card">第<span id="weekNum">27</span>周<small id="yearSub">2026年</small></div>
+    </div>
+    <div class="plan-menu" id="planMenu"></div>
+    <div class="ex-day-row" id="daysTop"></div>
+    <div class="ex-day-row" id="daysBottom"></div>
+  </div>
+
+  <main>
+    <section class="record-card">
+      <label id="recordLabel">今日数据记录</label>
+      <div class="record-line">
+        <input id="weight" type="number" min="30" max="200" step=".1" placeholder="体重" />
+        <span>公斤</span>
+        <button id="saveDaily">保存</button>
+      </div>
+      <p id="recordSummary">登录后读取运动记录</p>
+    </section>
+
+    <section class="score-card">
+      <label id="scoreLabel">今日评分</label>
+      <div class="score-body">
+        <div class="score-ring" id="ring"><span><b id="score">0</b><small>/ 100分</small></span></div>
+        <div class="score-cats" id="scoreCats"></div>
+      </div>
+    </section>
+
+    <div class="inner-tabs" id="tabs">
+      <button class="active" data-tab="sched">⏰ 全天时刻表</button>
+      <button data-tab="other">🏋️ 运动·饮食·其他</button>
+    </div>
+
+    <div id="list"></div>
+    <div id="history"></div>
+  </main>
+
+  <button class="ex-fab" id="fab">🏋️</button>
+
+  <script>
+    const $ = (id) => document.getElementById(id)
+    const days = ['一','二','三','四','五','六','日']
+    const dayLabels = { 一:'拉 · 背+二头', 二:'腿+核心', 三:'拉 · 背+二头', 四:'纯有氧+核心', 五:'推+上半身全', 六:'', 日:'' }
+    let token = localStorage.getItem('mtl_token') || localStorage.getItem('sleep_token') || ''
+    let state = null
+    let tab = 'sched'
+    let selectedDate = beijingToday()
+
+    $('planTitle').onclick = () => $('planMenu').classList.toggle('open')
+    $('dateTitle').onclick = () => $('hiddenDate')?.showPicker?.()
+    $('saveDaily').onclick = () => saveDaily(true)
+    $('fab').onclick = () => switchTab(tab === 'sched' ? 'other' : 'sched')
+    $('tabs').onclick = (event) => {
+      const button = event.target.closest('button[data-tab]')
+      if (button) switchTab(button.dataset.tab)
+    }
+    $('list').onclick = (event) => {
+      const row = event.target.closest('[data-key]')
+      if (row) toggle(row)
+    }
+    $('list').addEventListener('contextmenu', (event) => {
+      const row = event.target.closest('[data-key]')
+      if (!row) return
+      event.preventDefault()
+      toggle(row, true)
+    })
+    let longPressTimer = null
+    $('list').addEventListener('pointerdown', (event) => {
+      const row = event.target.closest('[data-key]')
+      if (!row) return
+      longPressTimer = window.setTimeout(() => {
+        row.dataset.longPressed = '1'
+        toggle(row, true)
+      }, 650)
+    })
+    $('list').addEventListener('pointerup', () => {
+      if (longPressTimer) window.clearTimeout(longPressTimer)
+      longPressTimer = null
+    })
+    $('list').addEventListener('pointerleave', () => {
+      if (longPressTimer) window.clearTimeout(longPressTimer)
+      longPressTimer = null
+    })
+
+    function beijingToday() {
+      return new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(0, 10)
+    }
+
+    function dateParts(date) {
+      const [y,m,d] = date.split('-').map(Number)
+      return { y, m, d, text: `${y}年${m}月${d}日` }
+    }
+
+    function dayIndex(date) {
+      return (new Date(`${date}T00:00:00+08:00`).getDay() + 6) % 7
+    }
+
+    function dateForDay(index) {
+      const [year, month, day] = selectedDate.split('-').map(Number)
+      const current = new Date(year, month - 1, day)
+      current.setDate(current.getDate() + index - dayIndex(selectedDate))
+      return `${current.getFullYear()}-${String(current.getMonth() + 1).padStart(2, '0')}-${String(current.getDate()).padStart(2, '0')}`
+    }
+
+    function weekOfYear(date) {
+      const d = new Date(`${date}T00:00:00+08:00`)
+      const start = new Date(`${d.getFullYear()}-01-01T00:00:00+08:00`)
+      return Math.ceil((((d - start) / 86400000) + start.getDay() + 1) / 7)
+    }
+
+    function headers(json = false) {
+      const h = token ? { Authorization: `Bearer ${token}` } : {}
+      if (json) h['Content-Type'] = 'application/json'
+      return h
+    }
+
+    async function load() {
+      if (!token) {
+        location.href = '/login?next=exercise'
+        return
+      }
+      const plan = $('planMenu').querySelector('button.active')?.dataset.version || ''
+      const url = `/api/exercise/state?date=${encodeURIComponent(selectedDate)}${plan ? `&plan_version=${encodeURIComponent(plan)}` : ''}`
+      const resp = await fetch(url, { headers: headers() })
+      if (!resp.ok) return alert('读取运动数据失败')
+      state = await resp.json()
+      if (await autoFailWeightIfNeeded()) return
+      render()
+    }
+
+    function renderShell() {
+      const part = dateParts(selectedDate)
+      $('dateTitle').textContent = part.text
+      $('weekNum').textContent = weekOfYear(selectedDate)
+      $('yearSub').textContent = `${part.y}年`
+      renderDays()
+    }
+
+    async function switchExerciseDate(nextDate) {
+      selectedDate = nextDate
+      renderShell()
+      await load()
+    }
+
+    function render() {
+      renderShell()
+      $('planSub').textContent = state.plan_version
+      $('planMenu').innerHTML = state.plan_versions.map(v =>
+        `<button data-version="${v.version}" class="${v.version === state.plan_version ? 'active' : ''}">${v.title || '每日打卡表'}<small>${v.version}</small></button>`
+      ).join('')
+      $('planMenu').onclick = async (event) => {
+        const btn = event.target.closest('button[data-version]')
+        if (!btn) return
+        $('planMenu').querySelectorAll('button').forEach(x => x.classList.remove('active'))
+        btn.classList.add('active')
+        $('planMenu').classList.remove('open')
+        await load()
+      }
+      const weightWindow = state.weight_window || {}
+      $('weight').value = state.weight == null ? '' : state.weight
+      $('weight').disabled = state.locked || !weightWindow.editable
+      $('saveDaily').disabled = state.locked
+      $('saveDaily').title = weightWindow.reason || ''
+      $('recordLabel').textContent = state.locked ? '历史评分已固定' : '今日数据记录'
+      const log = state.daily_log || {}
+      const score = state.score || { total:0, completed_items:0, total_items:0, cats:{运动:{s:0,m:100}} }
+      const recordSummary = $('recordSummary')
+      recordSummary.classList.toggle('hidden', state.weight == null)
+      recordSummary.textContent = state.weight == null
+        ? (weightWindow.reason || '')
+        : `✓ ${state.weight}公斤 | 打卡${score.completed_items || log.completed_items || 0}/${score.total_items || log.total_items || 0}项 | ${state.date}`
+      $('scoreLabel').textContent = state.locked ? '锁定评分' : '今日评分'
+      $('score').textContent = score.total || 0
+      const color = score.total >= 85 ? 'var(--green)' : score.total >= 65 ? 'var(--gold)' : score.total >= 45 ? 'var(--red)' : 'var(--dim)'
+      $('ring').style.background = `conic-gradient(${color} ${(score.total || 0) * 3.6}deg,var(--border) 0)`
+      const cats = score.cats || { 运动:{ s:score.completed_items || 0, m:score.total_items || 1 } }
+      $('scoreCats').innerHTML = Object.entries(cats).map(([name, v]) => {
+        const pct = Math.max(0, Math.min(100, Math.round((v.s || 0) / (v.m || 1) * 100)))
+        return `<div><span>${name}</span><i><b style="width:${pct}%"></b></i><em>${Math.round(v.s || 0)}/${v.m || 0}</em></div>`
+      }).join('')
+      renderList()
+      renderHistory()
+    }
+
+    function renderDays() {
+      const current = dayIndex(selectedDate)
+      const makeButton = (d, i) => `<button class="${current === i ? 'active' : ''}" data-day="${i}">${d}${dayLabels[d] ? `<small>${dayLabels[d]}</small>` : ''}</button>`
+      $('daysTop').innerHTML = days.slice(0, 3).map((d, i) => makeButton(d, i)).join('')
+      $('daysBottom').innerHTML = days.slice(3).map((d, idx) => makeButton(d, idx + 3)).join('') + '<button class="today" data-today="1">今</button>'
+    }
+
+    $('daysTop').addEventListener('click', event => {
+      const button = event.target.closest('button[data-day]')
+      if (button) switchExerciseDate(dateForDay(Number(button.dataset.day)))
+    })
+    $('daysBottom').addEventListener('click', event => {
+      const button = event.target.closest('button[data-day]')
+      if (button) switchExerciseDate(dateForDay(Number(button.dataset.day)))
+      if (event.target.closest('button[data-today]')) switchExerciseDate(beijingToday())
+    })
+
+    function switchTab(next) {
+      tab = next
+      document.querySelectorAll('#tabs button').forEach(btn => btn.classList.toggle('active', btn.dataset.tab === tab))
+      $('fab').textContent = tab === 'sched' ? '🏋️' : '⏰'
+      renderList()
+    }
+
+    function renderList() {
+      if (!state) return
+      const checked = new Map((state.checkins || []).map(x => [x.item_key, x]))
+      const items = tab === 'sched' ? scheduleItems() : (state.items || []).filter(item => !isSchedule(item))
+      const rows = items
+      if (!rows.length) {
+        $('list').innerHTML = '<section class="ex-card"><div class="empty">服务端数据库暂无此日期/版本的运动计划项。请先确认客户端已同步运动计划到服务端。</div></section>'
+        return
+      }
+      if (tab === 'sched') {
+        $('list').innerHTML = `<section class="ex-card ex-schedule">
+          ${rows.map((item, index) => rowHtml(item, index, checked.get(item.item_key))).join('')}
+        </section>`
+        return
+      }
+      const grouped = rows.reduce((acc, item) => {
+        const key = item.section || '运动'
+        ;(acc[key] ||= []).push(item)
+        return acc
+      }, {})
+      $('list').innerHTML = Object.entries(grouped).map(([section, list]) => `
+        <div class="ex-section">${section}</div>
+        <section class="ex-card">
+          ${list.map((item, index) => rowHtml(item, index, checked.get(item.item_key))).join('')}
+        </section>
+      `).join('')
+    }
+
+    function scheduleItems() {
+      const plan = state.plan_definition || {}
+      const base = state.day_key === '六' || state.day_key === '日' ? (plan.restSchedule || []) : (plan.weekdaySchedule || [])
+      const rows = [...base]
+      if (state.day_key === '日' && plan.sundayExtra && plan.sundayExtra.item) rows.push(plan.sundayExtra)
+      return rows.map((item, index) => ({
+        item_key: `sc-${state.date}-${index}`,
+        name: item.item || '未命名日程',
+        sets: item.time || '',
+        intensity: item.note || '',
+      }))
+    }
+
+    function isSchedule(item) {
+      return String(item.item_key || '').startsWith('sc-') || ['全天时刻表','作息','饮食','守时'].includes(item.section || '')
+    }
+
+    function rowHtml(item, index, checkin) {
+      const time = isSchedule(item) ? (item.sets || ['7:30','8:30','12:00','23:30'][index % 4]) : ''
+      const meta = [item.sets, item.intensity].filter(Boolean).join(' · ')
+      const detail = isSchedule(item) ? (item.intensity || '') : meta
+      const status = Number((checkin && checkin.status) || 0)
+      const done = status === 1
+      const skip = status === -1
+      const nextStatus = done ? 0 : 1
+      const timeText = checkin && checkin.completed_time ? `✓ 实际打卡 ${escapeHtml(checkin.completed_time)}` : '✓ 已保存'
+      return `<div class="ex-check-row ${done ? 'done' : ''} ${skip ? 'skip' : ''}" data-key="${item.item_key}" data-name="${escapeHtml(item.name)}" data-status="${nextStatus}" data-skip="${skip ? 0 : -1}">
+        <div class="ex-time">${time}</div>
+        <div class="ex-row-main">
+          <strong>${escapeHtml(item.name)}</strong>
+          ${detail ? `<small>${escapeHtml(detail)}</small>` : ''}
+          ${done ? `<em>${timeText}</em>` : ''}
+          ${skip ? '<b>✗ 已标记失败（右键或长按可取消）</b>' : ''}
+        </div>
+        <i class="ex-box ${done ? 'done' : skip ? 'skip' : ''}">${done ? '✓' : skip ? '✗' : ''}</i>
+      </div>`
+    }
+
+    function escapeHtml(value) {
+      return String(value || '').replace(/[&<>"']/g, ch => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[ch]))
+    }
+
+    async function autoFailWeightIfNeeded() {
+      if (!state || state.locked || !state.weight_window?.overdue || state.weight != null) return false
+      const weightItem = scheduleItems().find(item => /称体重.*记录|体重.*记录/.test(item.name || ''))
+      if (!weightItem) return false
+      const checkin = (state.checkins || []).find(row => row.item_key === weightItem.item_key)
+      if (checkin && [1, -1].includes(Number(checkin.status || 0))) return false
+      await postCheckin(weightItem.item_key, weightItem.name, -1)
+      await load()
+      return true
+    }
+
+    async function postCheckin(itemKey, itemName, status) {
+      const body = {
+        date:state.date,
+        plan_version:state.plan_version,
+        item_key:itemKey,
+        item_name:itemName,
+        status,
+      }
+      if (status === 1) {
+        body.completed_time = new Date().toLocaleString('sv-SE', { timeZone: 'Asia/Shanghai', hour12: false })
+      }
+      return fetch('/api/exercise/checkin', {
+        method:'POST',
+        headers:headers(true),
+        body:JSON.stringify(body),
+      })
+    }
+
+    async function toggle(row, skip = false) {
+      if (state.locked) return alert('历史日期已锁定')
+      if (row.dataset.longPressed === '1' && !skip) {
+        row.dataset.longPressed = ''
+        return
+      }
+      const resp = await postCheckin(row.dataset.key, row.dataset.name, Number(skip ? row.dataset.skip : row.dataset.status))
+      if (!resp.ok) return alert('保存打卡失败')
+      await load()
+      await saveDaily(false)
+    }
+
+    async function saveDaily(showAlert) {
+      if (!state || state.locked) return showAlert && alert('历史日期已锁定')
+      const canWriteWeight = Boolean(state.weight_window && state.weight_window.editable)
+      const resp = await fetch('/api/exercise/daily', {
+        method:'POST',
+        headers:headers(true),
+        body:JSON.stringify({
+          date:state.date,
+          plan_version:state.plan_version,
+          day_name:state.day_key,
+          weight:canWriteWeight && $('weight').value !== '' ? Number($('weight').value) : null,
+          completed_items:state.score.completed_items,
+          total_items:state.score.total_items,
+          score_snapshot:state.score,
+        }),
+      })
+      if (!resp.ok) return alert('保存失败')
+      if (showAlert) alert('已保存')
+      await load()
+    }
+
+    function renderHistory() {
+      const rows = state.history || []
+      $('history').innerHTML = `
+        <div class="ex-section">历史记录</div>
+        <section class="ex-card">
+          ${rows.length ? rows.map(row => `
+            <div class="history-row">
+              <span>${escapeHtml(row.date)}</span>
+              <b>第${row.week_num || '-'}周</b>
+              <span>${escapeHtml(row.day_name || '')}</span>
+              <strong>${row.weight == null ? '—' : `${row.weight}kg`}</strong>
+              <em>${row.completion_rate || 0}%</em>
+            </div>
+          `).join('') : '<div class="empty">暂无历史记录</div>'}
+        </section>`
+    }
+
+    renderShell()
+    if (token) load(); else location.href = '/login?next=exercise'
+  </script>
+</body>
+</html>

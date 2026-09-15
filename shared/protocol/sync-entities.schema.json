@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mytimelogger.local/sync-entities.schema.json",
+  "title": "MyTimeLogger sync entity registry",
+  "type": "object",
+  "required": ["version", "entities"],
+  "additionalProperties": false,
+  "properties": {
+    "version": { "type": "integer", "minimum": 1 },
+    "entities": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/entity" },
+      "uniqueItems": true
+    }
+  },
+  "$defs": {
+    "entity": {
+      "type": "object",
+      "required": [
+        "name",
+        "clientTable",
+        "serverTable",
+        "primaryKey",
+        "naturalKeys",
+        "ownership",
+        "direction",
+        "outbox",
+        "deletePolicy",
+        "serverFields"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
+        "clientTable": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
+        "serverTable": { "type": "string", "pattern": "^server_[a-z][a-z0-9_]*$" },
+        "primaryKey": { "type": "string", "minLength": 1 },
+        "naturalKeys": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true
+        },
+        "ownership": { "enum": ["client_writable", "server_owned", "mixed"] },
+        "direction": { "enum": ["bidirectional", "pull_only"] },
+        "outbox": { "type": "boolean" },
+        "deletePolicy": { "enum": ["tombstone", "hard_delete", "no_delete"] },
+        "serverFields": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true
+        }
+      }
+    }
+  }
+}

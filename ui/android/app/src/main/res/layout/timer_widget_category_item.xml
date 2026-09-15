@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/widget_category_item"
+    android:layout_width="match_parent"
+    android:layout_height="60dp"
+    android:contentDescription="选择分类"
+    android:gravity="center"
+    android:minHeight="48dp"
+    android:orientation="vertical"
+    android:paddingBottom="2dp"
+    android:paddingTop="2dp">
+    <ImageView
+        android:id="@+id/widget_category_icon"
+        android:layout_width="26dp"
+        android:layout_height="26dp" />
+    <TextView
+        android:id="@+id/widget_category_name"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:gravity="center"
+        android:maxLines="1"
+        android:textColor="@color/timer_widget_text_primary"
+        android:textSize="10sp" />
+    <ImageView
+        android:id="@+id/widget_category_flash"
+        android:layout_width="26dp"
+        android:layout_height="26dp"
+        android:contentDescription="记录闪念"
+        android:scaleType="centerInside"
+        android:src="@drawable/timer_widget_flash"
+        android:visibility="gone" />
+    <TextView
+        android:id="@+id/widget_category_flash_label"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:gravity="center"
+        android:maxLines="1"
+        android:text="闪念"
+        android:textColor="@color/timer_widget_text_primary"
+        android:textSize="10sp"
+        android:visibility="gone" />
+</LinearLayout>

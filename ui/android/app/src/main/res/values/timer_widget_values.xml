@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="timer_widget_surface">#CC111317</color>
+    <color name="timer_widget_text_primary">#F2FFFFFF</color>
+    <color name="timer_widget_text_secondary">#B3EBEBF5</color>
+    <color name="timer_widget_divider">#38FFFFFF</color>
+    <color name="timer_widget_disabled">#809A9AA1</color>
+    <color name="timer_widget_touch_feedback">#33FFFFFF</color>
+    <dimen name="timer_widget_corner_radius">28dp</dimen>
+    <dimen name="timer_widget_inset">4dp</dimen>
+    <dimen name="timer_widget_padding">8dp</dimen>
+    <dimen name="timer_widget_divider_size">1dp</dimen>
+    <dimen name="timer_widget_grid_row_spacing">0dp</dimen>
+    <dimen name="timer_widget_grid_edge_padding">0dp</dimen>
+    <dimen name="timer_widget_touch_target">48dp</dimen>
+</resources>
