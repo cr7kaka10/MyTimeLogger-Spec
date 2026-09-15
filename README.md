@@ -729,3 +729,11 @@ npm.cmd --prefix core run typecheck
 npm.cmd --prefix ui run typecheck
 npm.cmd --prefix ui run build
 ```
+
+## 12. 许可证与商业授权
+
+本项目以 [PolyForm Noncommercial License 1.0.0](LICENSE) 进行源码可见发布，不是 OSI 定义的开源软件。
+
+非商业用途可按照 [LICENSE](LICENSE) 的条款使用、修改和分发。商业用途不由该许可授予；请先阅读 [商业授权说明](COMMERCIAL-LICENSE.md)，并通过仓库 Issue 发起咨询。请勿在公开 Issue 中提交密钥、个人资料、付款信息或合同内容。
+
+本说明仅用于帮助理解，发生冲突时以 [LICENSE](LICENSE) 的完整条款为准。
