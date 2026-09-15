@@ -119,3 +119,9 @@ Thumbs.db
 
 # Public release excludes internal planning history
 /openspec/
+
+# Local agent instructions (not part of the public release)
+/AGENTS.md
+/CLAUDE.md
+/GEMINI.md
+/codex.md
