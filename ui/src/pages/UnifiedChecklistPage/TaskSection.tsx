@@ -9,6 +9,7 @@ import { isTaskFocusActive } from './taskFocusState'
 import { TaskEditDialog } from '../../components/Checklist/TaskEditDialog'
 import { SourceRewardSummary } from '../../components/Rewards/SourceRewardSummary'
 import { SourceRewardEditor } from '../../components/Rewards/SourceRewardEditor'
+import { BottomSheet } from '../../components/common/BottomSheet'
 
 const PRIORITY_MAP: Record<number, { label: string; color: string; badgeBg: string }> = {
   5: { label: '高', color: 'text-red-500 border-red-200 bg-red-50/50', badgeBg: 'bg-red-500' },
@@ -57,6 +58,8 @@ export const TaskSection = memo(({
   const [editor, setEditor] = useState<{ task: TaskItem | null } | null>(null)
   const [editingTask, setEditingTask] = useState<TaskItem | null>(null)
   const [rewardTask, setRewardTask] = useState<TaskItem | null>(null)
+  const [focusPickerTask, setFocusPickerTask] = useState<TaskItem | null>(null)
+  const [focusFeedback, setFocusFeedback] = useState('')
   const [draftTitle, setDraftTitle] = useState('')
   const editorForm = editor ? <form className="mb-2 rounded-lg border p-2 dark:border-gray-700" onSubmit={(event) => { event.preventDefault(); const title = draftTitle.trim(); if (!title) return; void onAdd(title, dateToShanghaiDateString(new Date())); setEditor(null) }}><div className="flex gap-2"><input autoFocus value={draftTitle} onChange={event => setDraftTitle(event.target.value)} className="min-w-0 flex-1 rounded border px-2 py-1 text-sm dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100" placeholder="任务标题" aria-label="任务标题"/><button className="theme-accent-button rounded px-3 text-sm" type="submit">确认</button><button className="rounded px-2 text-sm dark:text-gray-200" type="button" onClick={() => setEditor(null)}>取消</button></div><p className="mt-1 text-xs text-gray-500 dark:text-gray-400">保存为 MyTimeLogger 原生任务，默认日期为北京时间今天</p></form> : null
 
@@ -143,32 +146,28 @@ export const TaskSection = memo(({
     return () => window.clearTimeout(cleanup)
   }, [activeTaskId, getMatchedCategory, tasks, timer.currentCategory?.id, timer.currentNote, timer.state])
 
-  // 处理播放/暂停点击
-  const handlePlayClick = useCallback(async (task: TaskItem) => {
-    const matchedCat = getMatchedCategory(task)
-
-    const currentFocus = isTaskFocusActive(activeTaskId, task.id, timer.state, timer.currentCategory?.id, matchedCat?.id, timer.currentNote, task.title)
-    if (currentFocus) {
-      timer.togglePause()
-      return
-    }
-
-    let category = matchedCat
-    if (!category) {
-      const catNames = categories.map((c: any) => `${c.icon} ${c.name}`)
-      const choice = prompt(`请选择任务「${task.title}」的专注分类:\n${catNames.map((n, i) => `${i + 1}. ${n}`).join('\n')}`)
-      if (choice) {
-        const idx = parseInt(choice, 10) - 1
-        if (idx >= 0 && idx < categories.length) category = categories[idx]
-      }
-    }
-    if (!category) return
+  const startTaskFocus = useCallback(async (task: TaskItem, category: any) => {
     const result = await timer.requestTaskFocus(category.id, task.title)
-    if (result.status === 'blocked') return alert(formatTaskFocusBlockedMessage(result.sourceCategoryName))
-    if (result.status === 'unavailable') return alert('无法启动专注：计时分类或引擎不可用')
+    if (result.status === 'blocked') return setFocusFeedback(formatTaskFocusBlockedMessage(result.sourceCategoryName))
+    if (result.status === 'unavailable') return setFocusFeedback('无法启动专注：计时分类或引擎不可用')
+    setFocusFeedback('')
     updateActiveTaskId(task.id)
     onNavigate('timer')
-  }, [activeTaskId, timer, categories, getMatchedCategory, onNavigate])
+  }, [timer, onNavigate])
+
+  // 处理播放/暂停点击
+  const handlePlayClick = useCallback((task: TaskItem) => {
+    const category = getMatchedCategory(task)
+    const currentFocus = isTaskFocusActive(activeTaskId, task.id, timer.state, timer.currentCategory?.id, category?.id, timer.currentNote, task.title)
+    if (currentFocus) return timer.togglePause()
+    if (!category) {
+      if (!categories.length) return setFocusFeedback('无法启动专注：请先创建至少一个计时分类')
+      setFocusFeedback('')
+      setFocusPickerTask(task)
+      return
+    }
+    void startTaskFocus(task, category)
+  }, [activeTaskId, timer, categories, getMatchedCategory, startTaskFocus])
 
   // 任务完成处理
   const handleComplete = useCallback(async (task: TaskItem) => {
@@ -329,6 +328,7 @@ export const TaskSection = memo(({
   return (
     <div className="space-y-2" role="region" aria-label={`${getDateLabel()}任务`}>
       <div className="flex items-center justify-between px-1"><h3 className="text-sm font-bold text-gray-700">{getDateLabel()}</h3><button type="button" aria-label="添加任务" title="添加 MyTimeLogger 原生任务" className="theme-accent-button rounded-md px-2" onClick={() => { setDraftTitle(''); setEditor({ task: null }) }}>＋</button></div>{editorForm}
+      {focusFeedback && <p role="alert" className="px-1 text-xs text-red-600">{focusFeedback}</p>}
       {tasksToRender.map((task) => {
         const pri = PRIORITY_MAP[task.priority] || PRIORITY_MAP[0]
         const matchedCat = getMatchedCategory(task)
@@ -431,6 +431,11 @@ export const TaskSection = memo(({
           </div>
         )
       })}
+      <BottomSheet open={Boolean(focusPickerTask)} onClose={() => setFocusPickerTask(null)}>
+        <div className="space-y-3 p-4"><h3 className="text-lg font-bold text-gray-900">选择专注分类</h3>
+          <div role="radiogroup" aria-label="选择专注分类" className="space-y-2">{categories.map((category: any) => <button key={category.id} type="button" role="radio" aria-checked={false} className="flex w-full items-center gap-2 rounded-xl border border-gray-200 px-3 py-3 text-left" onClick={() => { const task = focusPickerTask; setFocusPickerTask(null); if (task) void startTaskFocus(task, category) }}><span>{category.icon || '⏱️'}</span><span className="flex-1 font-medium">{category.name}</span></button>)}</div>
+        </div>
+      </BottomSheet>
 
       {/* 移除旧的已完成任务折叠区域 */}
 
