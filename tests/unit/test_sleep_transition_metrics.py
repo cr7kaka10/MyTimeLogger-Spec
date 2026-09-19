@@ -4,6 +4,8 @@ import logging
 import os
 import sqlite3
 
+import pytest
+
 
 ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 
@@ -105,6 +107,26 @@ def test_full_report_keeps_sleep_data_when_tracking_is_insufficient():
     assert saved["analysis_report"] == "sleep report"
     assert saved["full_report_state"] == "insufficient_time_records"
     assert saved["tracked_duration_seconds"] == report_module.FULL_REPORT_MIN_TRACKED_SECONDS - 1
+
+
+def test_full_report_rejects_missing_atimelogger_sleep_boundaries(monkeypatch):
+    report_module = _load_full_report_module()
+    calls = []
+
+    class FakeDb:
+        def get_atm_data(self, date_str):
+            return {"activities": [{"type": "起床", "start": "2026-07-05T07:00:00+08:00", "finish": "2026-07-05T07:20:00+08:00", "duration": 20 * 60 * 60}]}
+
+    monkeypatch.setattr(report_module, "perform_deep_analysis", lambda *args: calls.append("analysis"))
+    monkeypatch.setattr(report_module, "generate_full_report_file", lambda *args, **kwargs: calls.append("file"))
+    sleep_data = {"date": "2026-07-05", "sleep_score": 80, "total_sleep_min": 240, "sleep_start": "02:58", "sleep_end": "06:58"}
+
+    with pytest.raises(RuntimeError, match="aTimeLogger.*上床.*2026-07-05"):
+        report_module.generate_comprehensive_report("2026-07-05", injected_sleep_data=sleep_data, include_time_analysis=True, force_pull=False, db=FakeDb())
+
+    assert calls == []
+    assert sleep_data.get("report_status") != 2
+    assert sleep_data.get("full_report_state") != "generated"
 
 
 def test_generate_report_saves_transition_trace_and_derived_fields(tmp_path, monkeypatch):
