@@ -64,6 +64,22 @@ def test_sleep_transition_keeps_long_cross_day_fall_asleep_duration(caplog):
     assert "no_range_filter" in "\n".join(sleep_data["calc_trace"])
 
 
+def test_sleep_transition_marks_missing_atimelogger_bedtime_or_wake_boundary():
+    module = _load_screenshot_parser_module()
+    parser = module.ScreenshotParser()
+    sleep_data = {"date": "2026-07-05", "sleep_start": "02:58", "sleep_end": "06:58"}
+
+    missing_bedtime = [{"type": "起床", "start": "2026-07-05T07:00:00+08:00", "finish": "2026-07-05T07:20:00+08:00"}]
+    fall_asleep, wake_up, atm_start, atm_end = parser.calculate_sleep_transition_times(sleep_data.copy(), missing_bedtime)
+    assert fall_asleep is None and atm_start is None
+    assert wake_up == 22 and atm_end == "07:20"
+
+    missing_wake = [{"type": "上床", "start": "2026-07-04T23:30:00+08:00", "finish": None}]
+    fall_asleep, wake_up, atm_start, atm_end = parser.calculate_sleep_transition_times(sleep_data.copy(), missing_wake)
+    assert fall_asleep == 208 and atm_start == "23:30"
+    assert wake_up is None and atm_end is None
+
+
 def test_full_report_duration_threshold_uses_seconds():
     report_module = _load_full_report_module()
 
