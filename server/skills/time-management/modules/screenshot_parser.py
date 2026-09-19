@@ -384,8 +384,8 @@ class ScreenshotParser:
         Returns:
             tuple: (fall_asleep_minutes, wake_up_minutes)
         """
-        fall_asleep_time = 0
-        wake_up_time = 0
+        fall_asleep_time = None
+        wake_up_time = None
         trace = []
 
         # 获取华为健康的入睡和醒来时间
@@ -515,7 +515,7 @@ class ScreenshotParser:
 
         atm_start_str = matched_start_naive.strftime("%H:%M") if matched_start_naive else None
         atm_end_str = matched_finish_naive.strftime("%H:%M") if matched_finish_naive else None
-        trace.append(f"最终入睡用时: {fall_asleep_time}min; 最终起床用时: {wake_up_time}min; no_range_filter")
+        trace.append(f"最终入睡用时: {fall_asleep_time if fall_asleep_time is not None else '缺失'}min; 最终起床用时: {wake_up_time if wake_up_time is not None else '缺失'}min; no_range_filter")
         sleep_data["calc_trace"] = _trace_list(sleep_data.get("calc_trace")) + trace
         logger.info(
             "[sleep-report] transition final date=%s fall_asleep_min=%s wake_up_min=%s atm_sleep_start=%s atm_sleep_end=%s no_range_filter=true",
