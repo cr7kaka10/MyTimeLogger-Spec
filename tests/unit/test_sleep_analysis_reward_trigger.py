@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import asyncio
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -137,6 +138,26 @@ def test_error_analysis_does_not_create_sleep_settlement(monkeypatch, tmp_db_pat
         settlement_count = conn.execute("SELECT COUNT(*) FROM server_sleep_score_settlements").fetchone()[0]
     assert settlement_count == 0
     assert notifications == []
+
+
+def test_missing_atimelogger_boundary_keeps_the_sleep_date_in_error_result(monkeypatch):
+    skill_dir = Path(__file__).parents[2] / "server" / "skills" / "time-management"
+    sys.path.insert(0, str(skill_dir))
+    try:
+        import generate_full_report
+        monkeypatch.setattr(generate_full_report, "generate_comprehensive_report", lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("aTimeLogger 睡眠边界缺失：上床开始时间（2026-08-28）")))
+        analyzer = SleepAnalyzer(
+            {}, date_str="2026-08-28", include_time_analysis=True,
+            sleep_data={"sleep_date": "2026-08-28", "sleep_score": 80, "deep_sleep_min": 90, "light_sleep_min": 210, "rem_sleep_min": 120, "deep_sleep_ratio": 30, "sleep_start": "23:00", "sleep_end": "07:00", "total_sleep_min": 420, "official_advice": "测试建议"},
+        )
+        result = analyzer.analyze()
+    finally:
+        sys.path.remove(str(skill_dir))
+
+    assert result.status == "error"
+    assert result.date == "2026-08-28"
+    assert "aTimeLogger 睡眠边界缺失" in result.error
+    assert result.analysis_report == result.report_path == ""
 
 
 def test_report_commit_broadcasts_sleep_and_coin_versions(monkeypatch, tmp_db_path, tmp_path):

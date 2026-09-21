@@ -678,7 +678,7 @@ class SleepAnalyzer:
             logger.error(f"SleepAnalyzer Error: {exc}", exc_info=True)
             logger.error("[sleep-report] analyzer error date=%s error=%s", self.date_str, exc, exc_info=True)
             return SleepAnalysisResult(
-                date="",
+                date=self.date_str or "",
                 sleep_data=self.sleep_data,
                 analysis_report="",
                 report_path="",
