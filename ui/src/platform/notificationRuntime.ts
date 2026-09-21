@@ -30,7 +30,7 @@ export async function installNotificationRuntime(runtime: PlatformRuntime, db: a
   if (runtime === 'capacitor-android') await current.notifications.schedule(sleepTimeNotification(nextSleepReminderAt())).catch(() => {})
   const reconcileSleep = async () => {
     const deviceId = String(db.ensureDeviceId?.() || ''); if (!deviceId) return
-    const rows = db.allRaw("SELECT n.* FROM sleep_notifications n LEFT JOIN sleep_notification_receipts r ON r.notification_id=n.id AND r.device_id=? WHERE r.id IS NULL", [deviceId])
+    const rows = db.allRaw("SELECT n.* FROM sleep_notifications n LEFT JOIN sleep_notification_receipts r ON r.notification_id=n.id AND r.device_id=? WHERE r.id IS NULL AND n.sleep_date = strftime('%Y-%m-%d', 'now', '+8 hours')", [deviceId])
     for (const item of classifySleepNotificationEvents(rows)) if (await current?.notifications.notify(item) === 'delivered') {
       const id = `sleep-notification-receipt:${deviceId}:${item.eventKey.slice(6)}`
       db.runRaw("INSERT OR IGNORE INTO sleep_notification_receipts (id,device_id,notification_id,status,created_at,updated_at) VALUES (?,?,?,'displayed',datetime('now','localtime'),datetime('now','localtime'))", [id, deviceId, item.eventKey.slice(6)])
