@@ -787,8 +787,8 @@ def generate_comprehensive_report(date_str, injected_sleep_data=None, force_pull
         activities = atimelogger_data.get('activities', []) if atimelogger_data else []
         _sleep_report_log("transition calculate start date=%s activity_count=%s", date_str, len(activities))
         fall_asleep_min, wake_up_min, atm_start, atm_end = parser.calculate_sleep_transition_times(sleep_data, activities)
-        sleep_data['fall_asleep_min'] = int(round(float(fall_asleep_min)))
-        sleep_data['wake_up_min'] = int(round(float(wake_up_min)))
+        sleep_data['fall_asleep_min'] = int(round(float(fall_asleep_min))) if fall_asleep_min is not None else None
+        sleep_data['wake_up_min'] = int(round(float(wake_up_min))) if wake_up_min is not None else None
         sleep_data['atm_sleep_start'] = atm_start
         sleep_data['atm_sleep_end'] = atm_end
         _sleep_report_log(
@@ -799,6 +799,15 @@ def generate_comprehensive_report(date_str, injected_sleep_data=None, force_pull
             atm_start,
             atm_end,
         )
+        if include_time_analysis and (not atm_start or not atm_end):
+            missing = []
+            if not atm_start:
+                missing.append("上床开始时间")
+            if not atm_end:
+                missing.append("起床结束时间")
+            reason = f"aTimeLogger 睡眠边界缺失：{'、'.join(missing)}（{date_str}）"
+            _sleep_report_log("full report rejected date=%s reason=%s", date_str, reason, level=logging.WARNING)
+            raise RuntimeError(reason)
 
         # ====== 核心步骤: 数据计算 (Data Calculation Trace) ======
         calc_trace = _trace_list(sleep_data.get('calc_trace'))
@@ -835,10 +844,8 @@ def generate_comprehensive_report(date_str, injected_sleep_data=None, force_pull
 
             # 3. 入睡/起床用时 (从 atimelogger 联动)
             # 注意：内部逻辑已在 parser 中打印日志
-            sleep_data['fall_asleep_min'] = int(round(float(fall_asleep_min)))
-            sleep_data['wake_up_min'] = int(round(float(wake_up_min)))
-            calc_trace.append(f"3. 入睡用时: {sleep_data['fall_asleep_min']}min (由 aTimeLogger 记录计算)")
-            calc_trace.append(f"4. 起床用时: {sleep_data['wake_up_min']}min (由 aTimeLogger 记录计算)")
+            calc_trace.append(f"3. 入睡用时: {sleep_data['fall_asleep_min'] if sleep_data['fall_asleep_min'] is not None else '缺失'}min (由 aTimeLogger 记录计算)")
+            calc_trace.append(f"4. 起床用时: {sleep_data['wake_up_min'] if sleep_data['wake_up_min'] is not None else '缺失'}min (由 aTimeLogger 记录计算)")
             print(f"  [OK] 关联计算完成: 入睡{sleep_data['fall_asleep_min']}m, 起床{sleep_data['wake_up_min']}m")
 
             sleep_data['calc_trace'] = calc_trace # 存入字典供报告使用
