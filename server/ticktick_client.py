@@ -301,6 +301,28 @@ class TickTickClient:
     async def get_habits(self) -> list[dict]:
         return await self._get("/habit")
 
+    async def get_habit_detail(self, habit_id: str) -> dict:
+        """Read evidence only: a 404 is NOT a confirmed deletion."""
+        from urllib.parse import quote
+
+        if not isinstance(habit_id, str) or not habit_id.strip() or habit_id in (".", ".."):
+            raise ValueError("habit_detail_invalid_id")
+        try:
+            record = await self._get(
+                f"/habit/{quote(habit_id, safe='')}",
+                endpoint_template="/habit/{habit_id}",
+            )
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code != 404:
+                raise
+            return {"state": "unresolved_missing", "status_code": 404, "record": None}
+        if not isinstance(record, dict) or record.get("id") != habit_id:
+            raise ValueError("habit_detail_invalid_response_id")
+        if type(record.get("status")) is not int:
+            raise ValueError("habit_detail_invalid_status")
+        # Preserve unknown integer states; only a verified lifecycle contract may interpret them.
+        return {"state": "present", "status_code": 200, "record": record}
+
     async def get_habit_checkins(
         self, habit_ids: list[str], from_stamp: str, to_stamp: str
     ) -> list[dict]:
