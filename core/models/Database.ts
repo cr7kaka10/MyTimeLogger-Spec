@@ -7,6 +7,7 @@
 
 import { initDatabase } from './Schema'
 import { HabitService } from './services/HabitService'
+import { assertLocalHabitEditable, normalizeHabitEdits, type HabitEdits } from './HabitEdits'
 import { RewardLedgerService, type LedgerSummary } from './services/RewardLedgerService'
 import { encryptString, decryptString } from '../utils/crypto'
 import { normalizeShanghaiDateTime, normalizeTaskTimeFields } from '../utils/time'
@@ -73,9 +74,10 @@ export interface ATimeLoggerSegment {
 }
 
 export interface Habit {
-  id: number | string; title: string; icon: string; color: string
+  id: number | string; name: string; title?: string; icon: string; color: string
   category_id: number | null; sort_order: number
   is_active: number; difficulty: string; created_at?: string
+  source?: string; repeat_rule?: string | null
   updated_at?: string; pushed_at?: string | null
 }
 
@@ -1253,19 +1255,21 @@ export class Database {
     return localId
   }
 
-  updateHabit(id: string | number, fields: Partial<Habit>): void {
+  updateHabit(id: string | number, fields: HabitEdits, expectedUpdatedAt?: string): void {
+    assertLocalHabitEditable(this.getRecordById('habits', id), expectedUpdatedAt)
+    const normalized = normalizeHabitEdits(fields)
+    if (!Object.keys(normalized).length) return
     const now = this._now()
     const sets: string[] = ['updated_at = ?']
     const vals: any[] = [now]
-    for (const [k, v] of Object.entries(fields)) {
-      if (v !== undefined && k !== 'id') { sets.push(`${k} = ?`); vals.push(v) }
-    }
+    for (const [k, v] of Object.entries(normalized)) { sets.push(`${k} = ?`); vals.push(v) }
     vals.push(id)
     this._run(`UPDATE habits SET ${sets.join(', ')} WHERE id = ?`, vals)
     this._afterWrite('habits', id)
   }
 
-  deleteHabit(id: string | number): void {
+  deleteHabit(id: string | number, expectedUpdatedAt?: string): void {
+    assertLocalHabitEditable(this.getRecordById('habits', id), expectedUpdatedAt)
     // is_active = 1 表示归档（与 TickTick 一致）
     this._run('UPDATE habits SET is_active = 1, updated_at = ? WHERE id = ?', [this._now(), id])
     this._afterWrite('habits', id)
