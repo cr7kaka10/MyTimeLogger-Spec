@@ -5,6 +5,9 @@ import { statusControlClass } from '@core/StatusControl'
 import { SourceRewardSummary } from '../../components/Rewards/SourceRewardSummary'
 import { SourceRewardEditor } from '../../components/Rewards/SourceRewardEditor'
 import { getDatabase, syncNow } from '../../db'
+import { HabitActions } from './HabitActions'
+import { useLocalHabitMutation } from '../../hooks/useLocalHabitMutation'
+import { LocalHabitHistory } from './LocalHabitHistory'
 
 interface HabitSectionProps {
   habits: any[]
@@ -33,19 +36,19 @@ export const HabitSection = memo(({
 }: HabitSectionProps) => {
   const [rewardHabit, setRewardHabit] = useState<{ id: string; title: string } | null>(null)
   const [draftHabit, setDraftHabit] = useState('')
+  const [managedHabit, setManagedHabit] = useState<any>(null)
+  const localMutation = useLocalHabitMutation()
   const habitCreator = mode !== 'completed' && (
-    <form className="mb-2 flex gap-2 px-1" onSubmit={async event => {
+    <><form className="mb-2 flex gap-2 px-1" onSubmit={async event => {
       event.preventDefault()
       const name = draftHabit.trim()
       if (!name) return
-      const db = await getDatabase()
-      db.addHabit(name, '✅', 'easy')
-      setDraftHabit('')
-      await syncNow({ reason: 'checklist-local-habit-create' })
+      if (await localMutation.run(db => db.addHabit(name, '✅', 'easy'))) setDraftHabit('')
     }}>
-      <input value={draftHabit} onChange={event => setDraftHabit(event.target.value)} className="min-w-0 flex-1 rounded border px-2 py-1 text-sm dark:border-gray-600 dark:bg-gray-800" placeholder="新建原生习惯" aria-label="习惯名称" />
-      <button type="submit" className="theme-accent-button rounded px-3 text-sm">＋习惯</button>
-    </form>
+      <input value={draftHabit} disabled={localMutation.busy} onChange={event => setDraftHabit(event.target.value)} className="min-w-0 flex-1 rounded border px-2 py-1 text-sm dark:border-gray-600 dark:bg-gray-800" placeholder="新建原生习惯" aria-label="习惯名称" />
+      <button type="submit" disabled={localMutation.busy} className="theme-accent-button rounded px-3 text-sm disabled:opacity-50">＋习惯</button>
+      {localMutation.message && <span role="status" className="text-xs">{localMutation.message}</span>}
+    </form><LocalHabitHistory /></>
   )
 
 
@@ -212,6 +215,7 @@ export const HabitSection = memo(({
 
             {/* 操作按钮：习惯仅支持打卡，不在清单页启动专注。 */}
             <span className="flex gap-1.5">
+              <button type="button" title="习惯详情与管理" aria-label={`管理习惯「${habit.name}」`} onClick={() => setManagedHabit(habit)} className="px-2 text-gray-500">⋯</button>
               <button
                 type="button"
                 onClick={(e) => {
@@ -243,6 +247,7 @@ export const HabitSection = memo(({
         )
       })}
     </div>
+    {managedHabit && <HabitActions key={String(managedHabit.id)} habit={managedHabit} onClose={() => setManagedHabit(null)} />}
     {rewardHabit && (
       <SourceRewardEditor
         sourceType="habit"

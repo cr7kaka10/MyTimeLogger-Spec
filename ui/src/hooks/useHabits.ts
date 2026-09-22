@@ -2,7 +2,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { Habit, HabitCheckin } from '../types'
 import { getCurrentTimerClient, getDatabase, syncNow } from '../db'
-import { useSyncRefresh } from './useEventRefresh'
+import { useEventRefresh } from './useEventRefresh'
+import { LOCAL_HABITS_UPDATED } from './useLocalHabitMutation'
 
 export interface UseHabitsReturn {
   habits: Habit[]
@@ -58,7 +59,7 @@ export const useHabits = (): UseHabitsReturn => {
   const [refreshTrigger, setRefreshTrigger] = useState(0)
   const [habitCommandStatus, setHabitCommandStatus] = useState<Record<string, 'syncing' | 'retryable_failed'>>({})
   const commandKeys = useRef<Record<string, string>>({})
-  const syncRefresh = useSyncRefresh()
+  const syncRefresh = useEventRefresh(['sync-pull-complete', LOCAL_HABITS_UPDATED])
 
   const getLocalYYYYMMDD = (d: Date = new Date()) => {
     const year = d.getFullYear()

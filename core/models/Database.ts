@@ -1239,6 +1239,18 @@ export class Database {
     return this._all('SELECT * FROM habits WHERE is_active = 0 ORDER BY sort_order') as Habit[]
   }
 
+  getArchivedLocalHabits(): Habit[] {
+    return this._all("SELECT * FROM habits WHERE source='local' AND is_active=1 ORDER BY updated_at DESC") as Habit[]
+  }
+
+  getLocalHabitDetails(id: string | number): { habit: Habit; checkins: (HabitCheckin & { date: string })[]; category: string | null } | undefined {
+    const habit = this._get("SELECT * FROM habits WHERE id=? AND source='local'", [id]) as Habit | undefined
+    if (!habit) return undefined
+    const category = habit.category_id == null ? null : this._get('SELECT name FROM categories WHERE id=?', [habit.category_id])?.name
+    const checkins = this._all('SELECT * FROM habit_checkins WHERE habit_id=? ORDER BY date DESC LIMIT 30', [id]) as (HabitCheckin & { date: string })[]
+    return { habit, checkins, category: category ?? null }
+  }
+
   addHabit(name: string, icon = '✅', difficulty = 'easy'): string {
     const now = this._now()
     const normalizedName = name.trim()
