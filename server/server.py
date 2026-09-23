@@ -4582,7 +4582,10 @@ async def create_habit(request: Request, user: dict = Depends(get_current_user_o
     difficulty = body.get("difficulty", "medium")
     if not name:
         raise HTTPException(status_code=400, detail="name is required")
-    hid = store.create_habit(user["id"], name, icon, difficulty)
+    try:
+        hid = store.create_habit(user["id"], name, icon, difficulty)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     if hid is None:
         raise HTTPException(status_code=400, detail="Habit name already exists for this user")
     return {"status": "ok", "habit_id": hid}
@@ -4594,7 +4597,10 @@ async def update_habit(habit_id: str, request: Request, user: dict = Depends(get
     icon = body.get("icon")
     difficulty = body.get("difficulty")
     is_active = body.get("is_active")
-    success = store.update_habit(user["id"], habit_id, name, icon, difficulty, is_active)
+    try:
+        success = store.update_habit(user["id"], habit_id, name, icon, difficulty, is_active)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     if not success:
         raise HTTPException(status_code=404, detail="Habit not found or update conflict")
     return {"status": "ok"}

@@ -25,6 +25,15 @@ from contextlib import contextmanager
 from datetime import datetime, timezone, timedelta
 
 try:
+    from .habit_write_policy import local_habit_write
+    from .habit_lifecycle_capabilities import load_habit_contract
+    from .habit_lifecycle_contract import validate_habit_list
+    from .habit_lifecycle_identity import resolve_habit_id
+    from .habit_lifecycle_reconcile import reconcile_missing
+    from .habit_lifecycle_pull import full_snapshot, tombstone_payload, habit_event_payload
+    from .domain.habit_lifecycle_service import observe_habit
+    from .domain.habit_lifecycle_events import publish as publish_habit_event
+    from .ticktick_config import begin_habit_round, habit_round_is_current
     from .provider_delta_filter import MissingProviderFingerprintError, classify_provider_records
     from .sync_constants import PULL_LIMIT_DEFAULT, PULL_LIMIT_MAX, TICKTICK_POLL_INTERVAL_SEC
     from .sync_sql_allowlist import SYNC_TABLES, SYNC_TABLE_SET, is_server_owned, primary_key_for, server_table_for
@@ -44,6 +53,15 @@ try:
     from .domain.reward_rebuild_diagnostics import log_event, sanitize
     from .logging_config import traced
 except (ImportError, ValueError):
+    from habit_write_policy import local_habit_write
+    from habit_lifecycle_capabilities import load_habit_contract
+    from habit_lifecycle_contract import validate_habit_list
+    from habit_lifecycle_identity import resolve_habit_id
+    from habit_lifecycle_reconcile import reconcile_missing
+    from habit_lifecycle_pull import full_snapshot, tombstone_payload, habit_event_payload
+    from domain.habit_lifecycle_service import observe_habit
+    from domain.habit_lifecycle_events import publish as publish_habit_event
+    from ticktick_config import begin_habit_round, habit_round_is_current
     from provider_delta_filter import MissingProviderFingerprintError, classify_provider_records
     from sync_constants import PULL_LIMIT_DEFAULT, PULL_LIMIT_MAX, TICKTICK_POLL_INTERVAL_SEC
     from sync_sql_allowlist import SYNC_TABLES, SYNC_TABLE_SET, is_server_owned, primary_key_for, server_table_for
@@ -409,6 +427,12 @@ class SyncHub:
         checkins = tables.get("habit_checkins") or []
         if not checkins:
             return 0
+        with self._conn() as guard_conn:
+            deleted = {r['habit_id']: tombstone_payload(r) for r in guard_conn.execute(
+                'SELECT * FROM server_habit_tombstones WHERE user_id=?', (user_id,))}
+        suppressed = {str(r.get('habit_id')) for r in checkins if str(r.get('habit_id')) in deleted}
+        tables['habit_checkins'] = checkins = [r for r in checkins if str(r.get('habit_id')) not in suppressed]
+        tables.setdefault('habits', []).extend(deleted[hid] for hid in suppressed)
         habit_ids = {
             str(row.get("habit_id"))
             for row in checkins
@@ -516,12 +540,13 @@ class SyncHub:
             if owns_conn:
                 conn.close()
 
-    def get_changes_since(self, table: str, since: str | None, user_id: int) -> list[dict]:
+    def get_changes_since(self, table: str, since: str | None, user_id: int, conn=None) -> list[dict]:
         if table in {"management_plans", "management_plan_revisions",
                      "management_plan_bindings", "management_plan_change_log"}:
             return []
+        owns_conn = conn is None
         try:
-            conn = self._conn()
+            conn = conn or self._conn()
             if since:
                 rows = conn.execute(
                     f"SELECT * FROM {server_table_for(table)} WHERE user_id = ? AND updated_at > ? ORDER BY updated_at",
@@ -532,7 +557,8 @@ class SyncHub:
                     f"SELECT * FROM {server_table_for(table)} WHERE user_id = ? ORDER BY updated_at",
                     (user_id,)
                 ).fetchall()
-            conn.close()
+            if owns_conn:
+                conn.close()
 
             # 兼容：客户端期望的是去掉 user_id 列，且表名为 habits 等（不需要 server_ 前缀）
             results = []
@@ -551,6 +577,8 @@ class SyncHub:
                 results.append(d)
             return results
         except Exception as e:
+            if not owns_conn:
+                raise
             logger.error(f"get_changes_since {table} (user={user_id}): {e}")
             return []
 
@@ -801,6 +829,12 @@ class SyncHub:
         try:
             if conn is None:
                 conn = self._conn()
+            if table == 'reward_config' and data.get('item_type') == 'habit':
+                raise ValueError('server_owned_habit_reward_config')
+            if table == 'habits':
+                if not conn.in_transaction:
+                    conn.execute('BEGIN IMMEDIATE')
+                data = local_habit_write(conn, user_id, data, _now())
             if table == "learning_tasks":
                 try:
                     LearningCategoryService.validate_id(conn, user_id, data.get("category_id"))
@@ -1462,6 +1496,8 @@ class SyncHub:
                 return True, []
             except Exception as e:
                 return False, [{"table": table, "record_id": pk_value, "reason": str(e)}]
+        if table == 'habits':
+            return self.upsert(table, {**record, 'is_active': 1}, user_id, conn=conn)
         if table != "tasks":
             return self.upsert(table, record, user_id, conn=conn)
         now = record.get("deleted_at") or record.get("updated_at") or _now()
@@ -2094,6 +2130,9 @@ class SyncHub:
             if rows:
                 tables[t] = rows
                 merged_count += len(rows)
+        with self._conn() as tomb_conn:
+            tombstones = [tombstone_payload(r) for r in tomb_conn.execute('SELECT * FROM server_habit_tombstones WHERE user_id=?', (user_id,))]
+        tables.setdefault('habits', []).extend(tombstones)
 
         # 获取用户最新的钱包资产余额快照，放入响应数据包中一同下发对齐
         try:
@@ -2191,12 +2230,12 @@ class SyncHub:
             }
         tables: dict[str, list[dict]] = {}
         if from_version == 0:
-            for table in SYNC_TABLES:
-                rows_for_table = self.get_changes_since(table, None, user_id)
-                if rows_for_table:
-                    tables[table] = rows_for_table
-            if not changes and tables:
-                to_version = self.db.allocate_server_version(user_id)
+            snapshot_conn = self._conn()
+            try:
+                tables, to_version = full_snapshot(self, snapshot_conn, user_id)
+            finally:
+                snapshot_conn.close()
+            changes, has_more = [], False
         record_ids_by_table: dict[str, set[str]] = {}
         for change in changes:
             table = str(change.get("table_name") or "").removeprefix("server_")
@@ -2226,6 +2265,8 @@ class SyncHub:
                 tables.setdefault(table, []).append(tombstone)
                 continue
             record = records_by_table.get(table, {}).get(str(change.get("record_id")))
+            if table == 'habits':
+                record = habit_event_payload(change, record)
             if record:
                 tables.setdefault(table, []).append(record)
         # Multiple device writes to the same natural key can produce several
@@ -2242,7 +2283,7 @@ class SyncHub:
                 else:
                     latest[str(key)] = row
             tables[table] = [*latest.values(), *unkeyed]
-        dependency_backfilled = self._include_habit_parents_for_checkins(tables, user_id, request_id)
+        dependency_backfilled = self._include_habit_parents_for_checkins(tables, user_id, request_id) if from_version else 0
         running_reward_snapshot = self._running_reward_snapshot(user_id)
         wallet = self.get_record("user_wallets", user_id, user_id)
         if running_reward_snapshot:
@@ -3001,8 +3042,19 @@ class SyncHub:
 
     async def _pull_habits(self, client: "TickTickClient", user_id: int):
         start_date = self._get_checklist_sync_start_date(user_id)
+        with self._transact() as binding_conn:
+            binding_conn.execute('BEGIN IMMEDIATE')
+            settings = load_ticktick_settings(binding_conn, user_id)
+            if hasattr(client, 'headers') and (client.headers.get('Authorization') != f'Bearer {settings.access_token}'
+                    or client.base_url != f'https://api.{settings.host}/open/v1'):
+                raise ValueError('stale_habit_provider_client')
+            binding_id, round_id = begin_habit_round(binding_conn, user_id, settings)
+        contract = load_habit_contract(settings.host)
         conn = None
         stats = {
+            "observed_at": _now(),
+            "list_validated": False,
+            "lifecycle_committed": False,
             "provider_requests": 0,
             "habits": 0,
             "habit_changes": 0,
@@ -3034,7 +3086,11 @@ class SyncHub:
                 raise _attach_pull_diagnostics(
                     list_error, f"habit_list_failed:{type(list_error).__name__}", stats,
                 )
-            visible = [h for h in habits if h.get("status") in (0, 1)]
+            visible, unknown = validate_habit_list(habits, contract)
+            stats['list_validated'] = True
+            stats.update(binding_id=binding_id, round_id=round_id, unknown_status=len(unknown),
+                         hard_delete_enabled=contract.can_delete, lifecycle_committed=False,
+                         reappeared_deleted=0, lifecycle_contract_verified=bool(contract.evidence_ref))
             stats["habits"] = len(visible)
             visible.sort(key=lambda h: h.get("sortOrder", 0))
 
@@ -3046,9 +3102,12 @@ class SyncHub:
                 section_map = {s["id"]: s["name"] for s in sections if "id" in s and "name" in s}
             except Exception as se:
                 stats["section_error"] = {"code": "habit_sections_failed", "error_type": type(se).__name__}
-                logger.warning(f"拉取习惯分组(sections)失败 (user={user_id}): {se}")
+                logger.warning("拉取习惯分组失败 (user=%s): %s", user_id, type(se).__name__)
 
             conn = self._conn()
+            conn.execute('BEGIN IMMEDIATE')
+            if not habit_round_is_current(conn, user_id, binding_id, round_id):
+                raise ValueError('stale_habit_round')
             now = _now()
             try:
                 habit_fingerprints = self.db.get_provider_fingerprints(user_id, "server_habits")
@@ -3058,6 +3117,11 @@ class SyncHub:
             def record_provider_change(entity_type: str, entity_id: str, table_name: str, payload: dict):
                 if not hasattr(self.db, "write_server_change"):
                     return
+                if entity_type == 'habit':
+                    observe_habit(conn, self.db, user_id, entity_id, binding_id, hid, round_id,
+                                  contract.state(h), now, publish_change=False)
+                    payload = dict(conn.execute('SELECT * FROM server_habits WHERE user_id=? AND id=?', (user_id,entity_id)).fetchone())
+                    return publish_habit_event(conn, self.db, user_id, table_name, payload)
                 self.db.write_server_change(
                     user_id,
                     entity_type,
@@ -3072,13 +3136,16 @@ class SyncHub:
 
             for h in visible:
                 hid = str(h.get("id", ""))
-                local_hid = _ticktick_local_habit_id(user_id, hid)
+                local_hid = resolve_habit_id(conn, user_id, hid)
+                if conn.execute('SELECT 1 FROM server_habit_tombstones WHERE user_id=? AND provider_id=?', (user_id,hid)).fetchone():
+                    stats['reappeared_deleted'] += 1
+                    continue
                 name = h.get("name", "")
                 icon = h.get("iconRes", "🎯")
                 if icon and icon.startswith("txt_"):
                     icon = icon[4:]
                 sort_order = h.get("sortOrder", 0)
-                is_active = h.get("status", 0)
+                is_active = int(contract.state(h) == 'archived')
 
                 section_id = h.get("sectionId", "")
                 section_name = section_map.get(section_id, "")
@@ -3108,7 +3175,7 @@ class SyncHub:
                     "source_modified_time": source_modified_time,
                 }
                 try:
-                    delta = classify_provider_records([{**h, "_provider_key": local_hid}], habit_fingerprints, "habit")
+                    delta = classify_provider_records([{**h, 'status': is_active, "_provider_key": local_hid}], habit_fingerprints, "habit")
                 except MissingProviderFingerprintError as e:
                     logger.error(
                         "TickTick 习惯缺少增量指纹，停止本轮习惯拉取 user=%s habit_id=%s field=%s",
@@ -3116,22 +3183,9 @@ class SyncHub:
                     )
                     raise
                 if delta.unchanged:
+                    observe_habit(conn, self.db, user_id, local_hid, binding_id, hid, round_id, contract.state(h), now)
                     stats["habit_unchanged"] += 1
                     continue
-                if local_hid != hid:
-                    legacy_existing = conn.execute(
-                        "SELECT id FROM server_habits WHERE user_id = ? AND id = ?",
-                        (user_id, hid),
-                    ).fetchone()
-                    if legacy_existing:
-                        conn.execute(
-                            "UPDATE server_habit_checkins SET habit_id = ? WHERE user_id = ? AND habit_id = ?",
-                            (local_hid, user_id, hid),
-                        )
-                        conn.execute(
-                            "UPDATE server_habits SET id = ? WHERE user_id = ? AND id = ?",
-                            (local_hid, user_id, hid),
-                        )
                 existing = conn.execute(
                     "SELECT id, name, color, sort_order, is_active, icon, category_id, repeat_rule, raw_json, source_etag, source_modified_time FROM server_habits WHERE user_id = ? AND id = ?", (user_id, local_hid)
                 ).fetchone()
@@ -3165,19 +3219,30 @@ class SyncHub:
                         "status": is_active,
                     }
             conn.commit()
-
-
-
-            if visible:
+            stats['lifecycle_committed'] = True
+            try:
+                stats.update(await reconcile_missing(self, client, user_id, binding_id, round_id,
+                    {h['id'] for h in habits}, contract, now))
+            except Exception as exc:
+                stats['lifecycle_error'] = type(exc).__name__
+            stats['provider_requests'] += stats.get('detail_requests', 0)
+            version_row = conn.execute('SELECT current_version FROM server_version_counters WHERE user_id=?', (user_id,)).fetchone()
+            stats['lifecycle_commit_version'] = int(version_row[0]) if version_row else 0
+            checkin_habits = [h for h in visible if contract.state(h) == 'active']
+            stats['checkin_pull_succeeded'] = not checkin_habits
+            if checkin_habits:
                 now_cst = datetime.now(CST)
                 tomorrow = (now_cst + timedelta(days=1)).strftime("%Y%m%d")
                 week_start = start_date.compact_date
                 stats["provider_requests"] += 1
                 blocks = await client.get_habit_checkins(
-                    [h["id"] for h in visible], week_start, tomorrow
+                    [h["id"] for h in checkin_habits], week_start, tomorrow
                 )
                 if not isinstance(blocks, list):
                     raise TypeError(f"habit_checkins_response_not_list:{type(blocks).__name__}")
+                conn.execute('BEGIN IMMEDIATE')
+                if not habit_round_is_current(conn, user_id, binding_id, round_id):
+                    raise ValueError('stale_habit_round')
                 stats["checkin_pull_succeeded"] = True
                 stats["checkin_blocks_raw"] = len(blocks)
                 week_start_dash = f"{week_start[:4]}-{week_start[4:6]}-{week_start[6:8]}"
@@ -3195,9 +3260,9 @@ class SyncHub:
                 stats["checkin_blocks_unique_habit_id"] = len(blocks_by_habit)
                 stats["checkin_blocks"] = len(blocks_by_habit)
 
-                for h in visible:
+                for h in checkin_habits:
                     hid = str(h.get("id", ""))
-                    local_hid = _ticktick_local_habit_id(user_id, hid)
+                    local_hid = resolve_habit_id(conn, user_id, hid)
                     block = blocks_by_habit.get(hid)
                     if block is None:
                         stats["missing_checkin_blocks"] += 1
@@ -3345,6 +3410,8 @@ class SyncHub:
             conn.commit()
             stats["complete"] = bool((not visible or stats["checkin_pull_succeeded"])
                                      and not stats["missing_checkin_blocks"] and not stats["section_error"])
+            stats['complete'] = stats['complete'] and not any(stats.get(key) for key in
+                ('unknown_status','reappeared_deleted','unresolved_missing','unverified_missing','deferred_candidates','lifecycle_error','list_coverage_anomalies'))
             try:
                 if SampleDataInitializationService(self.db.log_path).ensure_user_sample_data(user_id):
                     self._notify_clients(["goals", "goal_category_bindings", "rewards"], user_id)
@@ -3353,7 +3420,7 @@ class SyncHub:
         except Exception as e:
             if conn is not None:
                 conn.rollback()
-            logger.warning(f"拉取习惯失败 (user={user_id}): {e}")
+            logger.warning("拉取习惯失败 (user=%s): %s", user_id, type(e).__name__)
             if isinstance(e, ProviderPullError) or getattr(e, "pull_code", None):
                 raise
             raise _attach_pull_diagnostics(

@@ -51,6 +51,8 @@ class HabitDomainService:
 
     def checkin_habit_in_txn(self, conn, user_id, habit_id, date_str) -> str | None:
         """在调用方事务内登记服务端确认的打卡和全部派生奖励事实。"""
+        if not self._active_in_txn(conn, user_id, habit_id):
+            return None
         habit = conn.execute(
             "SELECT name, difficulty, icon FROM server_habits WHERE id=? AND user_id=?",
             (habit_id, user_id),
@@ -78,6 +80,8 @@ class HabitDomainService:
         return checkin_id
 
     def can_mark_failed_in_txn(self, conn, user_id, habit_id, date_str) -> bool:
+        if not self._active_in_txn(conn, user_id, habit_id):
+            return False
         habit = conn.execute("SELECT id FROM server_habits WHERE user_id=? AND id=?", (user_id, habit_id)).fetchone()
         if not habit:
             return False
@@ -137,11 +141,20 @@ class HabitDomainService:
 
     def can_cancel_checkin_in_txn(self, conn, user_id, habit_id, date_str) -> bool:
         """在调用 Provider 前确认目标日期存在可撤销的习惯状态。"""
+        if not self._active_in_txn(conn, user_id, habit_id):
+            return False
         checkin = conn.execute(
             "SELECT id FROM server_habit_checkins WHERE user_id=? AND habit_id=? AND COALESCE(checkin_date,date)=?",
             (user_id, habit_id, date_str),
         ).fetchone()
         return checkin is not None
+
+    @staticmethod
+    def _active_in_txn(conn, user_id, habit_id):
+        if not conn.in_transaction:
+            conn.execute('BEGIN IMMEDIATE')
+        return bool(conn.execute("SELECT 1 FROM server_habits WHERE user_id=? AND id=? AND is_active=0",
+                                 (user_id, habit_id)).fetchone())
 
     def cancel_checkin_habit_in_txn(self, conn, user_id, habit_id, date_str) -> bool:
         """在调用方事务内撤销打卡、金币、自动商品及其使用流水。"""

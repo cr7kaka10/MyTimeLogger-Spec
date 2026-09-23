@@ -42,6 +42,7 @@ class RewardRebuildService:
     )
     PROJECTION_TABLES = RewardCandidateBuilder.PROJECTION_TABLES
     REVISION_TABLES = (
+        "server_habit_frozen_audit",
         "server_tasks", "server_habits", "server_habit_checkins", "server_study_sessions",
         "server_goals", "server_learning_objectives",
         "server_learning_checklist_links", "server_reward_config", "server_rewards",

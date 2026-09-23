@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 
 
 try:
+    from .habit_write_policy import local_habit_write
     from .atm_versioning import save_versioned_atm_data
     from .security_utils import hash_bearer_token
     from .sync_sql_allowlist import SYNC_TABLES, SERVER_TABLES, client_table_for_server, ensure_server_table, server_table_for
@@ -25,6 +26,7 @@ try:
     from .domain.sleep_reward_service import SleepRewardService
     from .statistics_start_date import get_user_statistics_start_date, is_statistics_date_eligible
 except (ImportError, ValueError):
+    from habit_write_policy import local_habit_write
     from atm_versioning import save_versioned_atm_data
     from security_utils import hash_bearer_token
     from sync_sql_allowlist import SYNC_TABLES, SERVER_TABLES, client_table_for_server, ensure_server_table, server_table_for
@@ -1061,12 +1063,15 @@ class ServerSleepStore:
     def create_habit(self, user_id, name, icon=None, difficulty='medium', repeat_rule=None):
         conn = self._connect()
         try:
-            habit_id = uuid.uuid4().hex
+            habit_id = 'local_' + uuid.uuid4().hex
+            local_habit_write(conn, user_id, {'id': habit_id, 'name': name, 'difficulty': difficulty}, now_str())
             cursor = conn.execute(
-                "INSERT INTO server_habits (id, user_id, name, icon, difficulty, repeat_rule, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (habit_id, user_id, name, icon, difficulty, repeat_rule, now_str(), now_str())
+                "INSERT INTO server_habits (id, user_id, name, icon, difficulty, repeat_rule, source, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 'local', ?, ?)",
+                (habit_id, user_id, name.strip(), icon, difficulty, repeat_rule, now_str(), now_str())
             )
             RewardConfigService().ensure_item(conn, user_id, "habit", habit_id, difficulty=difficulty)
+            row = dict(conn.execute("SELECT * FROM server_habits WHERE user_id=? AND id=?", (user_id, habit_id)).fetchone())
+            self._record_server_change(conn, user_id, 'server_habits', habit_id, 'upsert', row)
             conn.commit()
             return habit_id
         except sqlite3.IntegrityError:
@@ -1077,9 +1082,17 @@ class ServerSleepStore:
     def update_habit(self, user_id, habit_id, name=None, icon=None, difficulty=None, is_active=None, repeat_rule=None):
         conn = self._connect()
         try:
+            conn.execute('BEGIN IMMEDIATE')
             row = conn.execute("SELECT 1 FROM server_habits WHERE id=? AND user_id=?", (habit_id, user_id)).fetchone()
             if not row:
                 return False
+
+            values = {key: value for key, value in dict(name=name, icon=icon, difficulty=difficulty,
+                      is_active=is_active, repeat_rule=repeat_rule).items() if value is not None}
+            values = local_habit_write(conn, user_id, {'id': habit_id, **values}, now_str())
+            name = values['name']
+            if is_active == 1:
+                conn.execute("UPDATE server_habits SET archived_at=?,archive_reason='local_user' WHERE user_id=? AND id=?", (now_str(), user_id, habit_id))
 
             fields = []
             params = []
@@ -1806,6 +1819,9 @@ class ServerSleepStore:
             query = f"UPDATE server_rewards SET {', '.join(fields)} WHERE id=? AND user_id=?"
             params.extend([reward_id, user_id])
             conn.execute(query, tuple(params))
+            conn.execute("UPDATE server_habits SET updated_at=?,pushed_at=NULL WHERE user_id=? AND id=?", (now_str(), user_id, habit_id))
+            changed = dict(conn.execute("SELECT * FROM server_habits WHERE user_id=? AND id=?", (user_id, habit_id)).fetchone())
+            self._record_server_change(conn, user_id, 'server_habits', habit_id, 'upsert', changed)
             self._record_server_change(conn, user_id, "server_rewards", reward_id, "upsert", {"id": reward_id})
             return True
 

@@ -1915,6 +1915,7 @@ def ensure_server_schema(conn: sqlite3.Connection):
         "lifecycle_version": "INTEGER NOT NULL DEFAULT 0",
         "provider_binding_id": "TEXT", "provider_id": "TEXT",
         "provider_observed_round": "INTEGER NOT NULL DEFAULT 0",
+        "restored_version": "INTEGER NOT NULL DEFAULT 0",
     })
     conn.execute("UPDATE server_habits SET archive_reason='legacy_archived' WHERE is_active=1 AND archive_reason IS NULL")
     conn.execute("""CREATE TABLE IF NOT EXISTS server_habit_tombstones (

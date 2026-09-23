@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from .habit_frozen_rewards import preserve_frozen_habits
 from datetime import date, datetime, timedelta, timezone
 
 try:
@@ -544,10 +545,11 @@ class RewardCandidateBuilder:
                 )
 
     def build(self, user_id: int, start_date: str) -> dict:
-        with self.store._transact() as conn:
+        with self.store._transact() as conn, preserve_frozen_habits(conn, user_id, start_date) as restore_frozen:
             task_and_habit_events = self._task_and_habit_events(conn, user_id, start_date)
             covered_sources = self._assert_ledger_coverage(conn, user_id, start_date)
             self._clear(conn, user_id, start_date)
+            restore_frozen()
             expected_facts = self._materialize_historical_body_metric_penalties(conn, user_id, start_date)
             self._replay_task_and_habit(conn, user_id, task_and_habit_events)
             self._replay_learning(conn, user_id, start_date)

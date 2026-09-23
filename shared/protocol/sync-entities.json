@@ -48,6 +48,9 @@
       "direction": "bidirectional",
       "outbox": true,
       "deletePolicy": "no_delete",
+      "serverDeletePolicy": "provider_confirmed_hard_delete_with_durable_tombstone",
+      "clientDeletePolicy": "local_logical_archive_only",
+      "lifecycleVersionField": "lifecycle_version",
       "serverFields": ["user_id", "server_version"]
     },
     {

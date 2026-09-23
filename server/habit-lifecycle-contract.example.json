@@ -1,0 +1,11 @@
+{
+  "dida365.com": {
+    "archived_status": null,
+    "archived_detail_readable": false,
+    "deleted_detail_is_404": false,
+    "evidence_ref": "",
+    "hard_delete_enabled": false,
+    "compatible_clients_verified": false,
+    "backup_restore_verified": false
+  }
+}
