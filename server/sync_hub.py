@@ -3083,6 +3083,12 @@ class SyncHub:
                 section_id = h.get("sectionId", "")
                 section_name = section_map.get(section_id, "")
                 category_id = self.db._get_category_id(user_id, section_name, [section_name], conn) if section_name else None
+                if stats["section_error"]:
+                    previous = conn.execute(
+                        "SELECT category_id FROM server_habits WHERE user_id=? AND id IN (?,?) ORDER BY id=? DESC LIMIT 1",
+                        (user_id, local_hid, hid, local_hid),
+                    ).fetchone()
+                    category_id = previous["category_id"] if previous else None
 
                 repeat_rule = h.get("repeatRule", "")
                 raw_json = json.dumps(h, ensure_ascii=False, default=str)
@@ -3198,7 +3204,7 @@ class SyncHub:
                         stats["missing_checkin_habits"].append({
                             "id_suffix": hid[-6:], "name": str(h.get("name") or "")[:80],
                         })
-                        block = {"habitId": hid, "checkins": []}
+                        continue  # 缺失 block 不是空历史，不能撤销已结算记录。
                     habit_row = conn.execute(
                         "SELECT id, name, difficulty, icon FROM server_habits WHERE user_id = ? AND id = ?", (user_id, local_hid)
                     ).fetchone()
@@ -3207,7 +3213,7 @@ class SyncHub:
 
                     local_habit_id = habit_row["id"]
 
-                    # 滴答清单端在此期间的日期状态快照：2=成功，1=失败，缺失=未打卡。
+                    # 仅接受明确的日期状态；接口没有完整覆盖契约，缺失不等于撤销。
                     remote_checkins_by_date = {}
                     for ci in block.get("checkins", []):
                         stats["checkins"] += 1
@@ -3220,7 +3226,7 @@ class SyncHub:
                             continue
                         checkin_date = f"{stamp[:4]}-{stamp[4:6]}-{stamp[6:8]}"
                         remote_status = ci.get("status")
-                        if remote_status not in (1, 2):
+                        if type(remote_status) is not int or remote_status not in (0, 1, 2):
                             continue
                         existing_remote = remote_checkins_by_date.get(checkin_date)
                         if existing_remote:
@@ -3253,6 +3259,8 @@ class SyncHub:
                         if d < start_date.date:
                             continue
                         remote_entry = remote_checkins_by_date.get(d)
+                        if remote_entry is None:
+                            continue
                         next_status = int(remote_entry["status"]) if remote_entry else 0
                         source_checkin = remote_entry["checkin"] if remote_entry else {}
                         raw_json = json.dumps(source_checkin, ensure_ascii=False, default=str)
@@ -3335,7 +3343,8 @@ class SyncHub:
                             stats["checkin_unchanged"] += 1
 
             conn.commit()
-            stats["complete"] = bool(not visible or stats["checkin_pull_succeeded"])
+            stats["complete"] = bool((not visible or stats["checkin_pull_succeeded"])
+                                     and not stats["missing_checkin_blocks"] and not stats["section_error"])
             try:
                 if SampleDataInitializationService(self.db.log_path).ensure_user_sample_data(user_id):
                     self._notify_clients(["goals", "goal_category_bindings", "rewards"], user_id)
