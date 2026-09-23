@@ -1603,6 +1603,7 @@ class ServerSleepStore:
     def bind_reward_source(self, user_id, reward_id, source_type, source_id, drop_mode="fixed", drop_min_units=None, drop_max_units=None):
         """在来源侧建立完成奖励商品绑定；一个商品可绑定任意多个来源。"""
         with self._transact() as conn:
+            conn.execute("BEGIN IMMEDIATE")
             source = self._resolve_unlock_source(conn, user_id, source_type, source_id)
             reward = conn.execute("SELECT * FROM server_rewards WHERE id=? AND user_id=? AND is_active=1", (reward_id, user_id)).fetchone()
             if not reward:
@@ -1632,6 +1633,7 @@ class ServerSleepStore:
 
     def unbind_reward_source(self, user_id, reward_id, source_type, source_id):
         with self._transact() as conn:
+            conn.execute("BEGIN IMMEDIATE")
             source = self._resolve_unlock_source(conn, user_id, source_type, source_id)
             row = conn.execute(
                 "SELECT id FROM server_reward_source_bindings WHERE user_id=? AND reward_id=? AND source_type=? AND source_id=?",
@@ -2219,6 +2221,8 @@ class ServerSleepStore:
             conn.close()
 
     def set_item_reward(self, user_id, item_type, item_id, coins, penalty=None):
+        if item_type == "habit":
+            return self._set_habit_reward(user_id, item_id, coins, penalty)
         conn = self._connect()
         try:
             if penalty is None:
@@ -2235,6 +2239,31 @@ class ServerSleepStore:
         finally:
             conn.close()
 
+
+    def _set_habit_reward(self, user_id, item_id, coins, penalty):
+        import math
+
+        penalty = coins if penalty is None else penalty
+        for value in (coins, penalty):
+            if type(value) not in (int, float) or not math.isfinite(value) or value < 0:
+                raise ValueError("习惯奖励和惩罚必须是非负有限数字")
+        with self._transact() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            self._resolve_unlock_source(conn, user_id, "habit", item_id)
+            stamp = now_str()
+            conn.execute(
+                """INSERT INTO server_reward_config(user_id,item_type,item_id,coins,penalty,updated_at)
+                   VALUES(?,'habit',?,?,?,?) ON CONFLICT(user_id,item_type,item_id)
+                   DO UPDATE SET coins=excluded.coins,penalty=excluded.penalty,
+                                 updated_at=excluded.updated_at,pushed_at=NULL""",
+                (user_id, str(item_id), coins, penalty, stamp),
+            )
+            row = dict(conn.execute(
+                "SELECT * FROM server_reward_config WHERE user_id=? AND item_type='habit' AND item_id=?",
+                (user_id, str(item_id)),
+            ).fetchone())
+            self._record_server_change(conn, user_id, "server_reward_config", row["id"], "upsert", row)
+        return True
 
     # --- 7. 睡眠数据管理 (Sleep Data) ---
     def get_huawei_sleep_data(self, user_id, date_str):

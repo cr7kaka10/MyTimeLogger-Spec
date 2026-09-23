@@ -4987,7 +4987,10 @@ async def set_item_reward_config(request: Request, user: dict = Depends(get_curr
     penalty = body.get("penalty")
     if not item_type or not item_id or coins is None:
         raise HTTPException(status_code=400, detail="item_type, item_id, and coins are required")
-    success = store.set_item_reward(user["id"], item_type, item_id, coins, penalty)
+    try:
+        success = store.set_item_reward(user["id"], item_type, item_id, coins, penalty)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"status": "ok" if success else "error"}
 
 
