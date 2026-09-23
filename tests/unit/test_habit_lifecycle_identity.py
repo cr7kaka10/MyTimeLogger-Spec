@@ -11,7 +11,7 @@ def test_binding_rounds_and_configuration_changes_are_fenced(tmp_path):
     with store._transact() as conn:
         for uid in (1, 2):
             conn.execute("INSERT INTO users VALUES(?,?, 'x','now')", (uid, str(uid)))
-            conn.execute("INSERT INTO server_system_config(user_id,key,value) VALUES(?,'ticktick_config',?)",
+            conn.execute("INSERT INTO server_system_config(user_id,key,value,updated_at) VALUES(?,'ticktick_config',?,'2026-09-23')",
                          (uid, json.dumps({'access_token': settings.access_token, 'host': settings.host})))
         first = begin_habit_round(conn, 1, settings)
         assert habit_round_is_current(conn, 1, *first)
