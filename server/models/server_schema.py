@@ -1910,3 +1910,29 @@ def ensure_server_schema(conn: sqlite3.Connection):
         "category_id": "INTEGER", "priority": "INTEGER DEFAULT 0", "reward": "REAL DEFAULT 0", "due_date": "TEXT",
     })
     migrate_provider_mirror_identity(conn)
+    _ensure_columns(conn, "server_habits", {
+        "archived_at": "TEXT", "archive_reason": "TEXT",
+        "lifecycle_version": "INTEGER NOT NULL DEFAULT 0",
+        "provider_binding_id": "TEXT", "provider_id": "TEXT",
+        "provider_observed_round": "INTEGER NOT NULL DEFAULT 0",
+    })
+    conn.execute("UPDATE server_habits SET archive_reason='legacy_archived' WHERE is_active=1 AND archive_reason IS NULL")
+    conn.execute("""CREATE TABLE IF NOT EXISTS server_habit_tombstones (
+        user_id INTEGER NOT NULL, habit_id TEXT NOT NULL, binding_id TEXT NOT NULL,
+        provider_id TEXT NOT NULL, deleted_at TEXT NOT NULL, evidence TEXT NOT NULL,
+        server_version INTEGER NOT NULL, observed_round INTEGER NOT NULL,
+        aliases_json TEXT NOT NULL DEFAULT '[]',
+        PRIMARY KEY(user_id,habit_id), FOREIGN KEY(user_id) REFERENCES users(id))""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS server_habit_frozen_audit (
+        user_id INTEGER NOT NULL, habit_id TEXT NOT NULL, binding_id TEXT NOT NULL,
+        snapshot_json TEXT NOT NULL, created_at TEXT NOT NULL,
+        PRIMARY KEY(user_id,habit_id), FOREIGN KEY(user_id) REFERENCES users(id))""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS server_habit_provider_bindings (
+        user_id INTEGER NOT NULL PRIMARY KEY, binding_id TEXT NOT NULL,
+        config_digest TEXT NOT NULL, host TEXT NOT NULL, round INTEGER NOT NULL DEFAULT 0,
+        FOREIGN KEY(user_id) REFERENCES users(id))""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS server_habit_probe_state (
+        user_id INTEGER NOT NULL, binding_id TEXT NOT NULL, provider_id TEXT NOT NULL,
+        missing_round INTEGER, last_probe_round INTEGER NOT NULL DEFAULT 0,
+        retry_after REAL NOT NULL DEFAULT 0, failures INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY(user_id,binding_id,provider_id), FOREIGN KEY(user_id) REFERENCES users(id))""")
