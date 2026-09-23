@@ -5332,9 +5332,20 @@ async def sync_events(request: Request, user: dict = Depends(get_current_user_op
     queue: asyncio.Queue = asyncio.Queue(maxsize=32)
     sync_hub.subscribe(queue, int(user["id"]))
 
+    def persisted_version():
+        conn = sync_hub._conn()
+        try:
+            row = conn.execute('SELECT current_version FROM server_version_counters WHERE user_id=?', (int(user['id']),)).fetchone()
+            return int(row[0]) if row else 0
+        finally:
+            conn.close()
+
     async def event_stream():
         try:
             yield "data: connected\n\n"
+            last_version = persisted_version()
+            if last_version:
+                yield f"event: changed\ndata: {json.dumps({'server_version': last_version})}\n\n"
             while True:
                 if await request.is_disconnected():
                     break
@@ -5342,6 +5353,10 @@ async def sync_events(request: Request, user: dict = Depends(get_current_user_op
                     msg = await asyncio.wait_for(queue.get(), timeout=SSE_KEEPALIVE_INTERVAL_SEC)
                     yield f"event: {msg['event']}\ndata: {msg['data']}\n\n"
                 except asyncio.TimeoutError:
+                    current_version = persisted_version()
+                    if current_version > last_version:
+                        last_version = current_version
+                        yield f"event: changed\ndata: {json.dumps({'server_version': current_version})}\n\n"
                     yield ": heartbeat\n\n"
         finally:
             sync_hub.unsubscribe(queue)
