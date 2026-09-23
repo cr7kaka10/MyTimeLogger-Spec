@@ -11,6 +11,8 @@ from dataclasses import dataclass
 import json
 import os
 import sqlite3
+import hashlib
+import uuid
 
 
 def _coerce_bool(value, default: bool) -> bool:
@@ -75,3 +77,27 @@ def load_ticktick_settings(conn: sqlite3.Connection, user_id: int) -> TickTickSe
         verify_tls=_coerce_bool(cfg.get("verify_tls"), False),
         inbox_pull_enabled=_coerce_bool(cfg.get("inbox_pull_enabled"), True),
     )
+
+
+def habit_binding_digest(settings):
+    return hashlib.sha256(json.dumps([settings.host.lower(), settings.access_token],
+                                    separators=(',', ':')).encode()).hexdigest()
+
+
+def begin_habit_round(conn, user_id, settings):
+    """调用者持有短写事务；禁止把凭据或摘要写入诊断。"""
+    digest = habit_binding_digest(settings)
+    row = conn.execute("SELECT * FROM server_habit_provider_bindings WHERE user_id=?", (user_id,)).fetchone()
+    binding_id = row['binding_id'] if row and row['config_digest'] == digest else uuid.uuid4().hex
+    round_id = int(row['round']) + 1 if row and row['binding_id'] == binding_id else 1
+    conn.execute("""INSERT INTO server_habit_provider_bindings VALUES(?,?,?,?,?)
+        ON CONFLICT(user_id) DO UPDATE SET binding_id=excluded.binding_id,
+        config_digest=excluded.config_digest,host=excluded.host,round=excluded.round""",
+        (user_id, binding_id, digest, settings.host.lower(), round_id))
+    return binding_id, round_id
+
+
+def habit_round_is_current(conn, user_id, binding_id, round_id):
+    row = conn.execute("SELECT * FROM server_habit_provider_bindings WHERE user_id=?", (user_id,)).fetchone()
+    return bool(row and row['binding_id'] == binding_id and row['round'] == round_id
+                and row['config_digest'] == habit_binding_digest(load_ticktick_settings(conn, user_id)))
