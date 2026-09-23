@@ -82,8 +82,11 @@ export interface SyncChangeResult {
 export type SharedSyncState = 'connecting' | 'syncing' | 'synced' | 'offline' | 'failed'
 export type SharedSyncStatus = { state: SharedSyncState; at: string; error?: string }
 let latestSharedSyncSequence = 0
+const checklistSyncErrors = new Map<string, string>()
 
 export function emitSharedSyncStatus(state: SharedSyncState, error?: string): void {
+  const checklistError = checklistSyncErrors.get(activeAccountStorageKey || '')
+  if (state === 'synced' && checklistError) { state = 'failed'; error = checklistError }
   const target = globalThis as any
   if (typeof target.dispatchEvent !== 'function' || typeof target.CustomEvent !== 'function') return
   target.dispatchEvent(new target.CustomEvent('mtl:sync-status', { detail: { state, at: formatBeijingDateTime(), error } satisfies SharedSyncStatus }))
@@ -505,6 +508,7 @@ export function flushSync() {
 
 /** 执行指定同步域；公共入口始终使用 core，只有清单专用入口可使用 checklist。 */
 async function runSyncNow(options: SyncNowOptions, scope: 'core' | 'checklist', refresh: boolean): Promise<SyncNowResult> {
+  const accountKey = activeAccountStorageKey || ''
   const syncRunId = createSyncRunId()
   const sharedSyncSequence = ++latestSharedSyncSequence
   const startedAt = Date.now()
@@ -544,7 +548,15 @@ async function runSyncNow(options: SyncNowOptions, scope: 'core' | 'checklist', 
       request_id: normalized.diagnostics?.request_id,
       elapsed_ms: normalized.diagnostics?.client_elapsed_ms,
     })
-    if (sharedSyncSequence === latestSharedSyncSequence) {
+    if (scope === 'checklist' && refresh && accountKey === (activeAccountStorageKey || '')) {
+      const provider = normalized.diagnostics?.provider_refresh || normalized.diagnostics || {}
+      if (!normalized.ok || provider.habits?.complete === false || provider.tasks?.complete === false) {
+        checklistSyncErrors.set(accountKey, '清单大同步未完成，请查看清单同步详情')
+      } else if (provider.habits?.complete === true && provider.tasks?.complete === true) {
+        checklistSyncErrors.delete(accountKey)
+      }
+    }
+    if (sharedSyncSequence === latestSharedSyncSequence && accountKey === (activeAccountStorageKey || '')) {
       emitSharedSyncStatus(normalized.ok ? 'synced' : 'failed', normalized.error)
     }
     return normalized

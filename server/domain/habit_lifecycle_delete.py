@@ -21,6 +21,12 @@ def delete_habit(conn, db, row, binding_id, round_id, contract, evidence, now):
     if (not current or current['source'] != 'ticktick' or current['provider_binding_id'] != binding_id
             or current['provider_observed_round'] >= round_id):
         raise ValueError('habit_delete_identity_conflict')
+    return delete_verified_habit(conn, db, current, binding_id, round_id, evidence, now)
+
+
+def delete_verified_habit(conn, db, current, binding_id, round_id, evidence, now):
+    """内部事务实现；调用者必须先完成自动契约或逐对象用户确认校验。"""
+    uid, hid = current['user_id'], current['id']
     snapshot = freeze_habit(conn, current, now)
     for child in snapshot['checkins']:
         conn.execute('DELETE FROM server_habit_checkins WHERE user_id=? AND id=?', (uid,child['id']))
