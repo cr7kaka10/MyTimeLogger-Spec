@@ -23,6 +23,13 @@ const request = async (path: string, init?: RequestInit) => {
 export const loadSourceReward = (sourceType: SourceRewardType, sourceId: string) =>
   request(`/api/rewards/source/${sourceType}/${encodeURIComponent(sourceId)}`) as Promise<SourceRewardSummaryData>
 
+export const requireActiveHabitRewardSource = async (id: string) => {
+  const payload = await request('/api/habits')
+  if (!payload?.habits?.some((row: any) => String(row.id) === id && row.is_active === 0)) {
+    throw new Error('该习惯尚未同步到服务端或已删除，请先同步后再配置奖励')
+  }
+}
+
 export const saveSourceCoins = async (summary: SourceRewardSummaryData, coins: number) => {
   await request('/api/rewards/config', { method: 'POST', body: JSON.stringify({
     item_type: SOURCE_COIN_TYPE[summary.sourceType], item_id: summary.sourceId, coins, penalty: summary.penalty,

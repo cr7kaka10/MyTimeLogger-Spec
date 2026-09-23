@@ -1283,7 +1283,7 @@ export class Database {
   deleteHabit(id: string | number, expectedUpdatedAt?: string): void {
     assertLocalHabitEditable(this.getRecordById('habits', id), expectedUpdatedAt)
     // is_active = 1 表示归档（与 TickTick 一致）
-    this._run('UPDATE habits SET is_active = 1, updated_at = ? WHERE id = ?', [this._now(), id])
+    this._run("UPDATE habits SET is_active=1,updated_at=?,archived_at=?,archive_reason='local_user' WHERE id=?", [this._now(), this._now(), id])
     this._afterWrite('habits', id)
   }
 

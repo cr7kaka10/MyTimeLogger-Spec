@@ -919,7 +919,7 @@ function applyCompatibilityMigrations(db: SqlDB): void {
   runIgnoreError(db, "ALTER TABLE tasks ADD COLUMN source TEXT NOT NULL DEFAULT 'ticktick'")
   runIgnoreError(db, "ALTER TABLE habits ADD COLUMN source TEXT NOT NULL DEFAULT 'ticktick'")
   for (const column of ['archived_at TEXT', 'archive_reason TEXT',
-    'lifecycle_version INTEGER NOT NULL DEFAULT 0', 'provider_binding_id TEXT', 'provider_id TEXT']) {
+    'lifecycle_version INTEGER NOT NULL DEFAULT 0', 'restored_version INTEGER NOT NULL DEFAULT 0', 'provider_binding_id TEXT', 'provider_id TEXT']) {
     runIgnoreError(db, `ALTER TABLE habits ADD COLUMN ${column}`)
   }
   db.run("UPDATE habits SET archive_reason='legacy_archived' WHERE is_active=1 AND archive_reason IS NULL")

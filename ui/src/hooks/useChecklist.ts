@@ -49,6 +49,21 @@ const formatSyncDiagnostics = (result: { merged?: number; diagnostics?: Record<s
   const progress = formatSyncProgress(result as any)
   const withProgress = (message: string) => progress ? `${progress} · ${message}` : message
   const providerRefresh = diagnostics.provider_refresh || {}
+  const lifecycle = diagnostics.habits || providerRefresh.habits || {}
+  if (lifecycle.complete === false) {
+    const stages = [lifecycle.lifecycle_committed ? '习惯状态已提交' : '习惯状态未提交']
+    if (lifecycle.lifecycle_error) stages.push('详情核对失败')
+    const pending = Number(lifecycle.unresolved_missing || 0) + Number(lifecycle.unknown_status || 0)
+    if (pending) stages.push(`${pending}项远端状态待核实`)
+    if (lifecycle.deferred_candidates) stages.push(`${lifecycle.deferred_candidates}项待续查`)
+    if (lifecycle.section_error) stages.push('分组失败，保留原分类')
+    if (lifecycle.checkin_pull_succeeded === false || lifecycle.missing_checkin_blocks) stages.push('打卡未完整返回，保留历史')
+    if (lifecycle.lifecycle_commit_version) stages.push(`v${lifecycle.lifecycle_commit_version}`)
+    if (lifecycle.observed_at) stages.push(`观察于${lifecycle.observed_at}`)
+    const errors = [...(providerRefresh.errors || []), ...(diagnostics.errors || [])].filter(Boolean)
+    if (result.error && !errors.length) errors.push(result.error)
+    return withProgress([...stages, ...errors.map(formatSyncError)].join(' · '))
+  }
   if (providerRefresh.status === 'degraded') {
     const retryAt = String(providerRefresh.retry_at || '').replace('T', ' ').slice(0, 16)
     return `本地已同步，外部任务源部分更新，稍后重试${retryAt ? ` · 下次 ${retryAt}` : ''}`

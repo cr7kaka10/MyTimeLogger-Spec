@@ -80,6 +80,7 @@ export const useHabits = (): UseHabitsReturn => {
 
       // 过滤习惯：只显示今天有排期的，或者今天已经有打卡记录的（兜底展示）
       const filteredHabits = all.filter(h => {
+        if (Number(h.is_active || 0) !== 0) return false
         const rrule = h.repeat_rule || h.repeatRule
         const isScheduled = isHabitScheduledForDate(rrule, selectedDate)
         const hasCheckin = checkinsForSelectedDate.some(c => c.habit_id === h.id || c.habitId === h.id)
@@ -124,6 +125,14 @@ export const useHabits = (): UseHabitsReturn => {
     const response = retry
       ? await api.retryHabitCheckin(idempotencyKey)
       : await api.commandHabitCheckin({ habit_id: habitKey, date, desired_status: desiredStatus, idempotency_key: idempotencyKey })
+    if (response.data?.status === 'failed') {
+      delete commandKeys.current[habitKey]
+      setHabitCommandStatus(previous => { const next = { ...previous }; delete next[habitKey]; return next })
+      await syncNow({ reason: 'habit-lifecycle-rejected' })
+      setRefreshTrigger(previous => previous + 1)
+      window.dispatchEvent(new CustomEvent('habit-lifecycle-error', { detail: response.data.error_code || 'habit_unavailable' }))
+      return
+    }
     if (!response.ok || response.data?.status !== 'confirmed') {
       setHabitCommandStatus(previous => ({ ...previous, [habitKey]: 'retryable_failed' }))
       return

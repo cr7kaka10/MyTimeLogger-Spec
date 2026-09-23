@@ -8,6 +8,7 @@
  */
 
 import { ApiClient } from './ApiClient'
+import { planHabitLifecycle } from './HabitLifecycleMerge'
 import { resolve, SyncAction } from './SyncResolver'
 import { applyBulkWithIsolation, planBulkMerge, type SafeBulkFailure } from './SyncBulkMerge'
 import { pullCursorDecision, SyncFailureGate } from './SyncFailureGate'
@@ -450,6 +451,13 @@ export class SyncWorker {
           }
         } else if (result.status === 'rejected' && String(result.reason || '').startsWith('server_owned_')) {
           acceptedIds.push(entry.id as number)
+        } else if (result.status === 'rejected' && ['habit_deleted','habit_archived','provider_habit_readonly',
+          'server_authoritative_habit_checkin_command_required'].includes(String(result.reason))) {
+          ;(this._db as any).runInTransaction(() => {
+            this._db!.runRaw('INSERT OR IGNORE INTO habit_lifecycle_outbox_audit VALUES(?,?,?,?,?,?)',
+              [entry.id,entry.record_id,JSON.stringify(entry),result.reason,0,serverTime])
+            this._db!.runRaw("UPDATE sync_outbox SET status='terminated',last_error=?,updated_at=? WHERE id=?", [result.reason,serverTime,entry.id])
+          })
         } else {
           failed.push({ id: entry.id as number, reason: result.reason || 'operation_rejected' })
         }
@@ -707,6 +715,14 @@ export class SyncWorker {
     }
 
     if ((tables.categories ?? []).length > 0) this._alignPulledCategoryIds(tables.categories)
+    try {
+      merged += await this._mergeHabitLifecycles(tables, serverTime, bulk)
+    } catch (error) {
+      return { ok: false, merged, error: 'habit_lifecycle_merge_failed', diagnostics: {
+        ...diagnostics, merge: { errors: [this._localErrorCategory(error)] },
+        cursor: { previous: lastServerVersion, next: lastServerVersion, advanced: false },
+      } }
+    }
     if (bulk) {
       const result = await this._mergeBulkTables(bulk, tables, serverTime, context)
       merged += result.merged
@@ -995,6 +1011,26 @@ export class SyncWorker {
       if (!check.ok) return { table, recordId: '*', category: check.error, columns: check.missingColumns }
     }
     return null
+  }
+
+  private async _mergeHabitLifecycles(tables: Record<string, any[]>, time: string, bulk?: AndroidBulkCapability): Promise<number> {
+    const query = (sql: string, params: any[] = []) => bulk ? bulk.query(sql, params) : (this._db as any).allRaw(sql, params)
+    if (!bulk && typeof (this._db as any).allRaw !== 'function') return 0
+    const ordinary: any[] = []; let applied = 0
+    for (const row of tables.habits ?? []) {
+      const columns = this._mergeTableColumns('habits', bulk)
+      const upsert = this._bulkOperation('habits', row, time, null, columns || new Set(Object.keys(row)))
+      const plan = planHabitLifecycle(query, row, upsert ? { ...upsert, params: upsert.params ?? [] } : null, time)
+      if (plan === undefined) { ordinary.push(row); continue }
+      if (plan === null) continue
+      if (bulk) await bulk.transaction(plan)
+      else (this._db as any).runInTransaction(() => plan.forEach(op => this._db!.runRaw(op.sql, op.params)))
+      applied++
+    }
+    tables.habits = ordinary
+    tables.habit_checkins = (tables.habit_checkins ?? []).filter(row => !row.habit_id ||
+      !query('SELECT 1 FROM habit_tombstones WHERE habit_id=?', [String(row.habit_id)]).length)
+    return applied
   }
 
   private _mergeTableStages(tables: Record<string, any[]>): Array<{ table: string; rows: any[] }> {

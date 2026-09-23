@@ -8,6 +8,7 @@ import { getDatabase, syncNow } from '../../db'
 import { HabitActions } from './HabitActions'
 import { useLocalHabitMutation } from '../../hooks/useLocalHabitMutation'
 import { LocalHabitHistory } from './LocalHabitHistory'
+import { requireActiveHabitRewardSource } from '../../hooks/sourceRewardApi'
 
 interface HabitSectionProps {
   habits: any[]
@@ -37,6 +38,19 @@ export const HabitSection = memo(({
   const [rewardHabit, setRewardHabit] = useState<{ id: string; title: string } | null>(null)
   const [draftHabit, setDraftHabit] = useState('')
   const [managedHabit, setManagedHabit] = useState<any>(null)
+  const [rewardError, setRewardError] = useState('')
+  useEffect(() => {
+    const listener = () => setRewardError('习惯已归档、删除或不可用，旧打卡已停止重试，请同步清单')
+    window.addEventListener('habit-lifecycle-error', listener)
+    return () => window.removeEventListener('habit-lifecycle-error', listener)
+  }, [])
+  const openReward = async (habit: any) => {
+    setRewardError('')
+    try {
+      await requireActiveHabitRewardSource(String(habit.id))
+      setRewardHabit({ id: String(habit.id), title: habit.name })
+    } catch (error) { setRewardError(error instanceof Error ? error.message : '请联网同步习惯后再配置奖励') }
+  }
   const localMutation = useLocalHabitMutation()
   const habitCreator = mode !== 'completed' && (
     <><form className="mb-2 flex gap-2 px-1" onSubmit={async event => {
@@ -109,6 +123,7 @@ export const HabitSection = memo(({
     }
     
     const filtered = habits.filter(habit => {
+      if (Number(habit.is_active || 0) !== 0) return false
       const checkin = todayCheckins.find(c => c.habit_id === habit.id)
       const status = checkin ? checkin.status : 0
       if (mode === 'incomplete') return status === 0
@@ -151,6 +166,7 @@ export const HabitSection = memo(({
   return (
     <>
     <div className="space-y-2" role="region" aria-label={mode === 'completed' ? '已完成习惯' : getDateLabel()}>
+      {rewardError && <p role="alert" className="text-sm text-red-600">{rewardError}</p>}
       {mode !== 'completed' && <><h3 className="text-sm font-bold text-gray-700 px-1">{getDateLabel()}</h3>{habitCreator}</>}
       {sortedHabits.map((habit) => {
         // 查询选中日期的打卡记录（不再只看今天）
@@ -206,7 +222,7 @@ export const HabitSection = memo(({
                   sourceType="habit"
                   sourceId={String(habit.id)}
                   compact
-                  onEdit={() => setRewardHabit({ id: String(habit.id), title: habit.name })}
+                  onEdit={() => { void openReward(habit) }}
                 />
               </span>
               
