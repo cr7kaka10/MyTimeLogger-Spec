@@ -5,6 +5,10 @@ import asyncio
 import httpx
 
 
+class HabitUnavailable(ValueError):
+    pass
+
+
 class HabitCheckinCommandService:
     """TickTick 外部优先的习惯目标状态命令。"""
 
@@ -18,16 +22,18 @@ class HabitCheckinCommandService:
         command, _ = self._commands.create_or_get(user_id, idempotency_key, habit_id, checkin_date, desired_status)
         if not self._matches(command, habit_id, checkin_date, desired_status):
             return {**command, "status": "failed", "error_code": "idempotency_key_conflict"}
-        if command["status"] == "confirmed":
+        if command["status"] in {"confirmed", "failed"}:
             return command
         async with self._lock(user_id, habit_id, checkin_date):
             command = self._commands.get(user_id, idempotency_key) or command
-            if command["status"] == "confirmed":
+            if command["status"] in {"confirmed", "failed"}:
                 return command
             if command["status"] == "provider_confirmed":
                 return self._finalize(user_id, idempotency_key, habit_id, checkin_date, desired_status)
             try:
                 applicable = self._can_apply(user_id, habit_id, checkin_date, desired_status)
+            except HabitUnavailable as exc:
+                return self._commands.mark(user_id, idempotency_key, "failed", error_code=str(exc))
             except ValueError:
                 return self._commands.mark(user_id, idempotency_key, "retryable_failed", error_code="cancel_not_allowed")
             if not applicable:
@@ -54,6 +60,8 @@ class HabitCheckinCommandService:
         finalize_error = None
         try:
             with self._transact() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                self._require_active(conn, user_id, habit_id)
                 if int(desired_status) == 2:
                     existing = conn.execute(
                         "SELECT id FROM server_habit_checkins WHERE user_id=? AND habit_id=? AND COALESCE(checkin_date,date)=?",
@@ -70,15 +78,15 @@ class HabitCheckinCommandService:
                     self._habits.cancel_checkin_habit_in_txn(conn, user_id, habit_id, checkin_date)
                 if not finalize_error:
                     self._commands.mark_in_txn(conn, user_id, idempotency_key, "confirmed")
+        except HabitUnavailable as exc:
+            return self._commands.mark(user_id, idempotency_key, "failed", error_code=str(exc))
         except ValueError:
             return self._commands.mark(user_id, idempotency_key, "retryable_failed", error_code="cancel_not_allowed")
         return self._commands.get(user_id, idempotency_key)
 
     def _can_apply(self, user_id: int, habit_id: str, checkin_date: str, desired_status: int) -> bool:
         with self._transact() as conn:
-            habit = conn.execute("SELECT id FROM server_habits WHERE user_id=? AND id=?", (user_id, habit_id)).fetchone()
-            if not habit:
-                return False
+            self._require_active(conn, user_id, habit_id)
             if int(desired_status) == 2:
                 return True
             if int(desired_status) == 1:
@@ -87,6 +95,14 @@ class HabitCheckinCommandService:
 
     def _lock(self, user_id: int, habit_id: str, checkin_date: str) -> asyncio.Lock:
         return self._locks.setdefault((int(user_id), str(habit_id), str(checkin_date)), asyncio.Lock())
+
+    @staticmethod
+    def _require_active(conn, user_id, habit_id):
+        habit = conn.execute("SELECT is_active FROM server_habits WHERE user_id=? AND id=?", (user_id, habit_id)).fetchone()
+        if not habit:
+            raise HabitUnavailable("habit_not_found")
+        if habit["is_active"] != 0:
+            raise HabitUnavailable("habit_archived")
 
     @staticmethod
     def _matches(command: dict, habit_id: str, checkin_date: str, desired_status: int) -> bool:

@@ -30,7 +30,7 @@ def _service(tmp_path):
     with store._transact() as conn:
         conn.execute(
             """INSERT INTO server_habits (id,user_id,name,icon,difficulty,is_active,created_at,updated_at)
-               VALUES ('ticktick:1:habit-1',1,'测试习惯','x','medium',1,'2026-08-01 09:00:00','2026-08-01 09:00:00')"""
+               VALUES ('ticktick:1:habit-1',1,'测试习惯','x','medium',0,'2026-08-01 09:00:00','2026-08-01 09:00:00')"""
         )
         RewardConfigService().ensure_item(conn, 1, "habit", "ticktick:1:habit-1", difficulty="medium")
     commands = HabitCheckinCommandStore(store._connect)
