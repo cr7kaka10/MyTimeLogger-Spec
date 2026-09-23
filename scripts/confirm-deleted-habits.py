@@ -26,7 +26,12 @@ async def main(args):
         targets.append(dict(row))
     settings = load_ticktick_settings(conn, uid)
     if not settings.enabled: raise ValueError('provider_not_configured')
-    conn.execute('BEGIN IMMEDIATE'); binding, round_id = begin_habit_round(conn, uid, settings); conn.commit()
+    if args.apply:
+        conn.execute('BEGIN IMMEDIATE'); binding, round_id = begin_habit_round(conn, uid, settings); conn.commit()
+    else:
+        baseline = conn.execute('SELECT binding_id,round FROM server_habit_provider_bindings WHERE user_id=?', (uid,)).fetchone()
+        if not baseline: raise ValueError('habit_binding_baseline_required')
+        binding, round_id = baseline
     async with TickTickClient(settings.access_token, settings.host, verify_tls=settings.verify_tls) as client:
         listed = await client.get_habits(); validate_habit_list(listed, HabitLifecycleContract(settings.host))
         ids = {row['id'] for row in listed}
