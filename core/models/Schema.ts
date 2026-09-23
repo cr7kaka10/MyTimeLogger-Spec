@@ -918,6 +918,17 @@ function applyCompatibilityMigrations(db: SqlDB): void {
   runIgnoreError(db, "ALTER TABLE tasks ADD COLUMN source_modified_time TEXT")
   runIgnoreError(db, "ALTER TABLE tasks ADD COLUMN source TEXT NOT NULL DEFAULT 'ticktick'")
   runIgnoreError(db, "ALTER TABLE habits ADD COLUMN source TEXT NOT NULL DEFAULT 'ticktick'")
+  for (const column of ['archived_at TEXT', 'archive_reason TEXT',
+    'lifecycle_version INTEGER NOT NULL DEFAULT 0', 'provider_binding_id TEXT', 'provider_id TEXT']) {
+    runIgnoreError(db, `ALTER TABLE habits ADD COLUMN ${column}`)
+  }
+  db.run("UPDATE habits SET archive_reason='legacy_archived' WHERE is_active=1 AND archive_reason IS NULL")
+  db.run(`CREATE TABLE IF NOT EXISTS habit_tombstones (
+    habit_id TEXT PRIMARY KEY, binding_id TEXT NOT NULL, provider_id TEXT NOT NULL,
+    deleted_at TEXT NOT NULL, evidence TEXT NOT NULL, server_version INTEGER NOT NULL)`)
+  db.run(`CREATE TABLE IF NOT EXISTS habit_lifecycle_outbox_audit (
+    outbox_id INTEGER PRIMARY KEY, habit_id TEXT NOT NULL, payload_json TEXT NOT NULL,
+    reason TEXT NOT NULL, server_version INTEGER NOT NULL, terminated_at TEXT NOT NULL)`)
   runIgnoreError(db, "UPDATE tasks SET source = 'local' WHERE id LIKE 'local_%'")
   runIgnoreError(db, "UPDATE habits SET source = 'local' WHERE id LIKE 'local_%'")
   runIgnoreError(db, "ALTER TABLE huawei_sleep_data ADD COLUMN source TEXT DEFAULT 'screenshot_ocr'")
