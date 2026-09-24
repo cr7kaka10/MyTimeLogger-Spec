@@ -1,4 +1,5 @@
 import sqlite3
+import json
 
 import pytest
 
@@ -152,6 +153,30 @@ def test_flash_single_action_creates_one_local_task_and_complex_action_waits(tmp
     assert len(tasks) == 1 and tasks[0]["title"] == "给客户发邮件"
     assert complex_rec["status"] == "pending" and complex_rec["creation_mode"] == "confirm"
     assert not any(change[1] == "server_tasks" and change[2] != tasks[0]["id"] for change in changes)
+
+
+def test_legacy_recommendation_migration_never_creates_task_or_reward(tmp_path):
+    service, changes = _service(tmp_path)
+    card = service.create(1, {"original_text": "买鸡蛋", "occurred_at": "2026-08-13 13:30:37"})
+    with service.connect() as conn:
+        conn.execute(
+            "UPDATE server_flash_cards SET task_recommendations_json=? WHERE id=?",
+            (json.dumps([{"title": "买鸡蛋", "reason": "购买"}], ensure_ascii=False), card["id"]),
+        )
+        conn.commit()
+    before = len(changes)
+
+    assert service.migrate_legacy_recommendations(1) > 0
+
+    with service.connect() as conn:
+        recommendation = conn.execute(
+            "SELECT status,local_task_id FROM server_flash_task_recommendations WHERE flash_card_id=?",
+            (card["id"],),
+        ).fetchone()
+        assert conn.execute("SELECT COUNT(*) FROM server_tasks WHERE user_id=1").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM server_reward_config WHERE user_id=1").fetchone()[0] == 0
+    assert tuple(recommendation) == ("pending", None)
+    assert not any(change[1] == "server_tasks" for change in changes[before:])
 
 
 def test_flash_card_polish_failure_does_not_overwrite_card_and_analysis_only_links_draft(tmp_path):

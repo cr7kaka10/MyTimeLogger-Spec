@@ -188,6 +188,7 @@ try:
     from .domain.management_planning_policy import system_policy_prompt
     from .domain.learning_plan_service import LearningPlanService
     from .domain.flash_card_service import FlashCardError, FlashCardService
+    from .domain.flash_task_pollution_repair import FlashTaskPollutionRepairService
     from .domain.flash_proofreading import validate_minimal_polish
     from .domain.flash_skill_feedback_service import FlashSkillFeedbackService
     from .domain.flash_processing_log_service import FlashProcessingLogService
@@ -227,6 +228,7 @@ except (ImportError, ValueError):
     from domain.management_planning_policy import system_policy_prompt
     from domain.learning_plan_service import LearningPlanService
     from domain.flash_card_service import FlashCardError, FlashCardService
+    from domain.flash_task_pollution_repair import FlashTaskPollutionRepairService
     from domain.flash_proofreading import validate_minimal_polish
     from domain.flash_skill_feedback_service import FlashSkillFeedbackService
     from domain.flash_processing_log_service import FlashProcessingLogService
@@ -292,6 +294,9 @@ def _behavior_audit_service() -> UserBehaviorAuditService:
     return UserBehaviorAuditService(store._connect)
 learning_plan_service = LearningPlanService(store._connect, store._record_server_change)
 flash_card_service = FlashCardService(store._connect, store._record_server_change)
+flash_task_pollution_repair_service = FlashTaskPollutionRepairService(
+    store._connect, store._record_server_change
+)
 flash_skill_feedback_service = FlashSkillFeedbackService(store._connect)
 flash_processing_log_service = FlashProcessingLogService(store._connect)
 source_reward_service = SourceRewardService(store._connect)
@@ -310,6 +315,18 @@ def _migrate_flash_recommendations_on_startup(max_attempts: int = 4) -> int:
                 return 0
             time.sleep(0.5 * (attempt + 1))
     return 0
+
+
+def _repair_flash_task_pollution_on_startup() -> dict:
+    """精确修复失败不得阻止服务启动，但必须保留明确诊断。"""
+    try:
+        result = flash_task_pollution_repair_service.repair()
+    except Exception as exc:
+        logger.warning("闪念任务污染精确修复暂缓 status=deferred error=%s", exc)
+        return {"status": "deferred", "error": type(exc).__name__}
+    log = logger.warning if result.get("status") == "blocked" else logger.info
+    log("闪念任务污染精确修复 status=%s details=%s", result.get("status"), result)
+    return result
 
 
 TIMER_STATE_CAPABILITY = "timer-current-state-v1"
@@ -772,6 +789,7 @@ async def lifespan(app: FastAPI):
     exercise_settlement_task = None
     body_metric_deadline_task = None
     sleep_automation_task = None
+    _repair_flash_task_pollution_on_startup()
     _migrate_flash_recommendations_on_startup()
     try:
         completed = sync_hub.run_startup_sync_migrations()
