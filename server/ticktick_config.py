@@ -38,10 +38,15 @@ class TickTickSettings:
     timeout_seconds: float
     verify_tls: bool
     inbox_pull_enabled: bool = True
+    proxy_url: str | None = None
 
     @property
     def enabled(self) -> bool:
         return bool(self.access_token)
+
+    @property
+    def transport_mode(self) -> str:
+        return "explicit_proxy" if self.proxy_url else "direct"
 
 
 def load_ticktick_test_probe_settings() -> TickTickSettings:
@@ -54,6 +59,7 @@ def load_ticktick_test_probe_settings() -> TickTickSettings:
         timeout_seconds=_float_or_default(os.getenv("TICKTICK_TEST_TIMEOUT_SECONDS"), 15.0),
         verify_tls=_coerce_bool(os.getenv("TICKTICK_TEST_VERIFY_TLS"), True),
         inbox_pull_enabled=_coerce_bool(os.getenv("TICKTICK_TEST_INBOX_PULL_ENABLED"), True),
+        proxy_url=os.getenv("TICKTICK_TEST_PROXY_URL") or None,
     )
 
 
@@ -76,6 +82,7 @@ def load_ticktick_settings(conn: sqlite3.Connection, user_id: int) -> TickTickSe
         timeout_seconds=_float_or_default(cfg.get("timeout_seconds"), 15.0),
         verify_tls=_coerce_bool(cfg.get("verify_tls"), False),
         inbox_pull_enabled=_coerce_bool(cfg.get("inbox_pull_enabled"), True),
+        proxy_url=cfg.get("proxy_url") or None,
     )
 
 

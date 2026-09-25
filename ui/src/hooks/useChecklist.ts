@@ -66,7 +66,14 @@ const formatSyncDiagnostics = (result: { merged?: number; diagnostics?: Record<s
   }
   if (providerRefresh.status === 'degraded') {
     const retryAt = String(providerRefresh.retry_at || '').replace('T', ' ').slice(0, 16)
-    return `本地已同步，外部任务源部分更新，稍后重试${retryAt ? ` · 下次 ${retryAt}` : ''}`
+    const lastSuccess = String(providerRefresh.last_success_at || '').replace('T', ' ').slice(0, 16)
+    const published = Number(providerRefresh.tasks?.published_upserts || 0)
+    return `滴答旧快照${lastSuccess ? `（上次完整成功 ${lastSuccess}）` : ''} · 本次已安全更新${published}项 · 稍后重试${retryAt ? ` · 下次 ${retryAt}` : ''}`
+  }
+  if (providerRefresh.fresh === false && providerRefresh.status === 'error') {
+    const lastSuccess = String(providerRefresh.last_success_at || '').replace('T', ' ').slice(0, 16)
+    const stage = providerRefresh.failure_stage ? ` · 失败阶段 ${providerRefresh.failure_stage}` : ''
+    return `滴答旧快照${lastSuccess ? `（上次完整成功 ${lastSuccess}）` : ''}${stage}`
   }
   const providerErrors = Array.isArray(providerRefresh.errors) ? providerRefresh.errors.filter(Boolean) : []
   const errors = Array.isArray(diagnostics.errors) ? diagnostics.errors.filter(Boolean) : []
@@ -81,12 +88,14 @@ const formatSyncDiagnostics = (result: { merged?: number; diagnostics?: Record<s
   const habitsCount = Number(habits.habits ?? habits.active_habits ?? 0)
   const checkins = Number(habits.checkins ?? habits.habit_checkins ?? 0)
   const merged = Number(result.merged ?? 0)
+  const observedAt = String(providerRefresh.provider_observed_at || '').replace('T', ' ').slice(0, 16)
+  const observed = observedAt ? ` · 滴答观察 ${observedAt}` : ''
   const protocol = diagnostics.protocol ? ` · ${diagnostics.protocol}` : ''
   const range = typeof diagnostics.from_version === 'number' || typeof diagnostics.to_version === 'number'
     ? ` · v${diagnostics.from_version ?? '?'}→${diagnostics.to_version ?? '?'}`
     : ''
 
-  return withProgress(`任务 新${activeTasks}/完${completedTasks} · 习惯 ${habitsCount}/打卡${checkins} · 合并${merged}${range}${protocol}`)
+  return withProgress(`任务 新${activeTasks}/完${completedTasks} · 习惯 ${habitsCount}/打卡${checkins} · 合并${merged}${observed}${range}${protocol}`)
 }
 
 const isStaleSyncTime = (value: string | null | undefined, maxAgeMs = 5 * 60 * 1000): boolean => {

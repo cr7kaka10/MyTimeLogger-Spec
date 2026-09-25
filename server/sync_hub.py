@@ -693,6 +693,17 @@ class SyncHub:
         except (TypeError, ValueError, json.JSONDecodeError):
             return None
 
+    def _ticktick_last_success_at(self, user_id: int) -> str | None:
+        conn = self._conn()
+        try:
+            row = conn.execute(
+                "SELECT last_synced_at FROM server_sync_state WHERE user_id=? AND system='ticktick' AND direction='ticktick_to_server'",
+                (user_id,),
+            ).fetchone()
+            return row["last_synced_at"] if row else None
+        finally:
+            conn.close()
+
     def _get_sync_state_map(self, user_id: int) -> dict:
         try:
             conn = self._conn()
@@ -2468,7 +2479,8 @@ class SyncHub:
             self._notify_clients(["tasks", "habits", "habit_checkins", "reward_ledger", "user_wallets"])
 
     async def force_pull_ticktick(
-        self, user_id: int, request_id: str | None = None, job_id: str | None = None, manual: bool = False,
+        self, user_id: int, request_id: str | None = None, job_id: str | None = None,
+        manual: bool = False, validate_only: bool = False,
     ):
         """兼容 refresh=true 的 TickTick provider 对账入口。"""
         async with self._provider_reconcile_lock:
@@ -2480,7 +2492,7 @@ class SyncHub:
                     user_id,
                 )
                 return {
-                    "ok": True,
+                    "ok": True, "complete": False, "scope": "checklist", "provider": "ticktick",
                     "enabled": True,
                     "foreground": False,
                     "request_id": request_id,
@@ -2498,13 +2510,14 @@ class SyncHub:
             retry_at = None if manual else self._ticktick_cooldown_retry_at(user_id)
             if retry_at:
                 return {
-                    "ok": True, "status": "degraded", "enabled": True, "foreground": False,
+                    "ok": False, "complete": False, "scope": "checklist", "provider": "ticktick",
+                    "status": "degraded", "enabled": True, "foreground": False,
                     "request_id": request_id, "job_id": job_id, "skipped": True, "reason": "cooldown",
                     "retry_at": retry_at, "failure_summary": "外部任务源部分更新，冷却中等待自动重试",
                     "started_at": _now(), "finished_at": _now(), "elapsed_ms": 0, "merged_count": 0,
                     "tasks": {}, "habits": {}, "errors": ["tasks:incomplete_snapshot"],
                 }
-            reconcile = self._force_pull_ticktick_impl(user_id, request_id, job_id) if job_id else self._force_pull_ticktick_impl(user_id, request_id)
+            reconcile = self._force_pull_ticktick_impl(user_id, request_id, job_id, validate_only) if (job_id or validate_only) else self._force_pull_ticktick_impl(user_id, request_id)
             task = asyncio.create_task(reconcile)
             self._provider_reconcile_tasks[user_id] = task
         try:
@@ -2514,12 +2527,19 @@ class SyncHub:
                 if self._provider_reconcile_tasks.get(user_id) is task:
                     self._provider_reconcile_tasks.pop(user_id, None)
 
-    async def _force_pull_ticktick_impl(self, user_id: int, request_id: str | None = None, job_id: str | None = None):
+    async def _force_pull_ticktick_impl(
+        self, user_id: int, request_id: str | None = None, job_id: str | None = None,
+        validate_only: bool = False,
+    ):
         """执行单轮 TickTick provider 对账；由 force_pull_ticktick 做并发单飞。"""
         started_at = _now()
         started_perf = _time.perf_counter()
         diagnostics = {
             "ok": True,
+            "complete": False,
+            "scope": "checklist",
+            "provider": "ticktick",
+            "validate_only": validate_only,
             "status": "success",
             "enabled": False,
             "foreground": True,
@@ -2532,6 +2552,11 @@ class SyncHub:
             "tasks": {},
             "habits": {},
             "errors": [],
+            "provider_observed_at": None,
+            "last_success_at": self._ticktick_last_success_at(user_id),
+            "fresh": False,
+            "transport_mode": "direct",
+            "failure_stage": None,
         }
         logger.info("[ProviderReconcile] start request_id=%s user_id=%s", request_id, user_id)
         if request_id:
@@ -2555,6 +2580,7 @@ class SyncHub:
             logger.warning("[ProviderReconcile] skipped request_id=%s user_id=%s reason=ticktick_not_configured", request_id, user_id)
             return diagnostics
         diagnostics["enabled"] = True
+        diagnostics["transport_mode"] = getattr(settings, "transport_mode", "explicit_proxy" if getattr(settings, "proxy_url", None) else "direct")
         TickTickClient = _get_ticktick_client_class()
 
         changed = False
@@ -2564,17 +2590,24 @@ class SyncHub:
             verify_tls=settings.verify_tls,
             timeout_seconds=settings.timeout_seconds,
             request_id=request_id,
+            proxy_url=getattr(settings, "proxy_url", None),
         ) as client:
             try:
                 logger.info("[ProviderReconcile] tasks start request_id=%s user_id=%s", request_id, user_id)
-                diagnostics["tasks"] = await self._pull_tasks(client, user_id)
+                diagnostics["tasks"] = (
+                    await self._pull_tasks(client, user_id, publish=False)
+                    if validate_only else await self._pull_tasks(client, user_id)
+                )
                 if not diagnostics["tasks"].get("complete"):
+                    diagnostics["ok"] = False
                     diagnostics["status"] = "degraded"
                     diagnostics["retry_at"] = (datetime.now(CST) + timedelta(seconds=TICKTICK_DEGRADED_COOLDOWN_SECONDS)).isoformat(timespec="seconds")
                     diagnostics["failure_summary"] = "任务快照未完整读取，已保留已有任务，稍后重试"
                     diagnostics["failed_projects"] = diagnostics["tasks"].get("failed_projects", [])
                     diagnostics["errors"].append("tasks:incomplete_snapshot")
-                changed = True
+                changed = not validate_only
+                diagnostics["complete"] = bool(diagnostics["tasks"].get("complete"))
+                diagnostics["failure_stage"] = diagnostics["tasks"].get("failure_stage")
                 logger.info("[ProviderReconcile] tasks finish request_id=%s user_id=%s stats=%s", request_id, user_id, diagnostics["tasks"])
             except Exception as e:
                 error = f"tasks:{getattr(e, 'pull_code', type(e).__name__)}"
@@ -2582,6 +2615,7 @@ class SyncHub:
                 diagnostics["ok"] = False
                 diagnostics["status"] = "error"
                 diagnostics["errors"].append(error)
+                diagnostics["failure_stage"] = diagnostics["tasks"].get("failure_stage") if isinstance(diagnostics["tasks"], dict) else "task_pull"
                 logger.warning("[ProviderReconcile] tasks failed request_id=%s user_id=%s error=%s", request_id, user_id, error)
             try:
                 logger.info("[ProviderReconcile] habits start request_id=%s user_id=%s", request_id, user_id)
@@ -2600,6 +2634,7 @@ class SyncHub:
                 diagnostics["errors"].append(error)
                 logger.warning("[ProviderReconcile] habits failed request_id=%s user_id=%s error=%s", request_id, user_id, error)
 
+        changed = bool((diagnostics.get("tasks") or {}).get("published_upserts") or (diagnostics.get("tasks") or {}).get("deleted_tasks"))
         if changed:
             self._notify_clients(["tasks", "habits", "habit_checkins", "reward_ledger"])
         merged_count = 0
@@ -2612,26 +2647,15 @@ class SyncHub:
                 )
         diagnostics["merged_count"] = merged_count
         diagnostics["finished_at"] = _now()
+        diagnostics["provider_observed_at"] = diagnostics["finished_at"]
+        diagnostics["fresh"] = bool(diagnostics["ok"] and diagnostics["complete"])
+        if diagnostics["fresh"]:
+            diagnostics["last_success_at"] = diagnostics["finished_at"]
         diagnostics["elapsed_ms"] = round((_time.perf_counter() - started_perf) * 1000, 2)
-        if diagnostics["ok"]:
+        if not validate_only:
             self._record_sync_state(
-                user_id,
-                "ticktick",
-                "ticktick_to_server",
-                diagnostics["status"],
-                ";".join(diagnostics["errors"]) or None,
-                merged_count=merged_count,
-                diagnostics=diagnostics,
-            )
-        else:
-            self._record_sync_state(
-                user_id,
-                "ticktick",
-                "ticktick_to_server",
-                "error",
-                ";".join(diagnostics["errors"]),
-                merged_count,
-                diagnostics=diagnostics,
+                user_id, "ticktick", "ticktick_to_server", diagnostics["status"],
+                ";".join(diagnostics["errors"]) or None, merged_count, diagnostics=diagnostics,
             )
         logger.info(
             "[ProviderReconcile] finish request_id=%s user_id=%s ok=%s merged_count=%s errors=%s elapsed_ms=%s",
@@ -2652,11 +2676,13 @@ class SyncHub:
                       level=logging.INFO if diagnostics["ok"] else logging.WARNING)
         return diagnostics
 
-    async def _pull_tasks(self, client: "TickTickClient", user_id: int):
+    async def _pull_tasks(self, client: "TickTickClient", user_id: int, publish: bool = True):
         stats = {
             "projects": 0,
             "provider_requests": 0,
             "request_budget": TICKTICK_PULL_REQUEST_BUDGET,
+            "failure_stage": None,
+            "published": publish,
             "request_budget_exceeded": False,
             "project_failures": 0,
             "failed_projects": [],
@@ -2679,11 +2705,14 @@ class SyncHub:
             "completed_task_changes": 0,
             "completed_task_unchanged": 0,
             "completed_item_errors": [],
+            "active_item_errors": [],
+            "candidate_upserts": 0,
+            "published_upserts": 0,
             "sample_fields": [],
             "missing_fields": [],
         }
         try:
-            return await self._pull_tasks_impl(client, user_id, stats)
+            return await self._pull_tasks_impl(client, user_id, stats, publish)
         except ProviderPullError:
             raise
         except Exception as exc:
@@ -2691,7 +2720,7 @@ class SyncHub:
                 exc, f"task_pull_failed:{type(exc).__name__}", stats,
             )
 
-    async def _pull_tasks_impl(self, client: "TickTickClient", user_id: int, stats: dict):
+    async def _pull_tasks_impl(self, client: "TickTickClient", user_id: int, stats: dict, publish: bool = True):
         start_date = self._get_checklist_sync_start_date(user_id)
         async def provider_get(read):
             remaining = TICKTICK_PULL_REQUEST_BUDGET - stats["provider_requests"]
@@ -2709,7 +2738,9 @@ class SyncHub:
                 attempts = int(actual - before) if isinstance(before, int) and isinstance(actual, int) else int(getattr(client, "last_get_attempts", 1) or 1)
                 stats["provider_requests"] += max(1, min(attempts, remaining))
 
+        stats["failure_stage"] = "project_list"
         projects = await provider_get(client.get_projects)
+        stats["failure_stage"] = None
         stats["projects"] = len(projects)
         project_map = {
             str(p.get("id", "")): p.get("name", "")
@@ -2745,7 +2776,7 @@ class SyncHub:
         try:
             conn = self._conn()
             rows = conn.execute(
-                "SELECT id FROM server_tasks WHERE user_id = ? AND status = 0",
+                "SELECT id FROM server_tasks WHERE user_id = ? AND status = 0 AND source = 'ticktick'",
                 (user_id,)
             ).fetchall()
             db_active_tids = {row["id"] for row in rows if row["id"]}
@@ -2756,12 +2787,12 @@ class SyncHub:
             snapshot_columns = [
                 column for column in (
                     "id", "title", "priority", "due_date", "tags", "project_id",
-                    "project_name", "raw_json", "source_etag", "source_modified_time", "deleted_at",
+                    "project_name", "raw_json", "source", "source_etag", "source_modified_time", "deleted_at",
                 )
                 if column in columns
             ]
             known_rows = conn.execute(
-                f"SELECT {', '.join(snapshot_columns)} FROM server_tasks WHERE user_id = ?",
+                f"SELECT {', '.join(snapshot_columns)} FROM server_tasks WHERE user_id = ? AND source = 'ticktick'",
                 (user_id,)
             ).fetchall()
             db_known_tids = {
@@ -2774,6 +2805,10 @@ class SyncHub:
             logger.error(f"查询本地未完成任务失败 (user={user_id}): {e}")
 
         current_active_tids = set()
+        staged_active_tasks = {}
+        staged_completed_tasks = {}
+        staged_completed_sources = {}
+        snapshot_fingerprints = {}
         task_fingerprints = {}
         try:
             task_fingerprints = self.db.get_provider_fingerprints(user_id, "server_tasks")
@@ -2842,8 +2877,7 @@ class SyncHub:
                     if delta.unchanged:
                         stats["active_task_unchanged"] += 1
                         continue
-                    self._clear_task_reward(user_id, tid)
-                    changed = self.db.upsert_task(user_id, task_payload)
+                    staged_active_tasks[tid] = task_payload
                     if task_payload.get("etag"):
                         task_fingerprints[tid] = {
                             "id": tid,
@@ -2851,9 +2885,9 @@ class SyncHub:
                             "source_modified_time": task_payload.get("modifiedTime", ""),
                             "status": 0,
                         }
-                    if changed:
-                        stats["active_task_changes"] += 1
+                    stats["candidate_upserts"] += 1
             except Exception as e:
+                stats["failure_stage"] = "project_data"
                 stats["project_failures"] += 1
                 if len(stats["failed_projects"]) < 3:
                     stats["failed_projects"].append({"project_id_suffix": request_project_id[-6:], "error_type": type(e).__name__})
@@ -2874,8 +2908,26 @@ class SyncHub:
                 break
             await process_active_project(project)
 
+        # 活动任务 upsert 不会推断远端缺失，成功项目可安全地立即发布；失败项目仍由旧快照保留。
+        if publish:
+            for tid, task_payload in staged_active_tasks.items():
+                try:
+                    changed = self.db.upsert_task(user_id, task_payload)
+                    self._clear_task_reward(user_id, tid)
+                    if changed:
+                        stats["active_task_changes"] += 1
+                        stats["published_upserts"] += 1
+                except Exception as item_error:
+                    stats["active_item_errors"].append({
+                        "code": str(item_error).split(":", 1)[0] or type(item_error).__name__,
+                        "error_type": type(item_error).__name__, "task_id_suffix": str(tid)[-6:],
+                    })
+                    stats["failure_stage"] = "active_task_publish"
+
         completed_today_tids = set()
         try:
+            if not stats["failure_stage"]:
+                stats["failure_stage"] = "completed_tasks"
             utc_start = start_date.utc_start_for_ticktick_completed
             completed = []
             continuation = None
@@ -2907,6 +2959,8 @@ class SyncHub:
                     break
                 continuation = next_page
             stats["completed_pull_succeeded"] = True
+            if stats["failure_stage"] == "completed_tasks":
+                stats["failure_stage"] = None
             for t in completed:
                 if t.get("status") == 2:
                     tid = t.get("id", "")
@@ -2957,19 +3011,8 @@ class SyncHub:
                         stats["completed_task_unchanged"] += 1
                         continue
 
-                    try:
-                        # 首次出现的历史完成任务必须先持久化并建立默认奖励配置。
-                        changed = self.db.upsert_task(user_id, task_payload)
-                        self._reward_task_if_new(tid, title, t, user_id)
-                    except Exception as item_error:
-                        error = {
-                            "code": str(item_error).split(":", 1)[0] or type(item_error).__name__,
-                            "error_type": type(item_error).__name__, "task_id_suffix": str(tid)[-6:],
-                        }
-                        stats["completed_item_errors"].append(error)
-                        logger.warning("TickTick 已完成任务处理失败但继续 user=%s task_id_suffix=%s error=%s",
-                                       user_id, str(tid)[-6:], item_error)
-                        continue
+                    staged_completed_tasks[tid] = task_payload
+                    staged_completed_sources[tid] = (title, t)
                     if task_payload.get("etag"):
                         task_fingerprints[tid] = {
                             "id": tid,
@@ -2977,8 +3020,7 @@ class SyncHub:
                             "source_modified_time": task_payload.get("modifiedTime", ""),
                             "status": 2,
                         }
-                    if changed:
-                        stats["completed_task_changes"] += 1
+                    stats["candidate_upserts"] += 1
         except Exception as e:
             stats["completed_pull_error"] = f"{type(e).__name__}:{str(e) or 'empty_error'}"
             logger.warning(f"拉取已完成任务失败 (user={user_id}): {e}")
@@ -2987,14 +3029,34 @@ class SyncHub:
             not stats["request_budget_exceeded"]
             and stats["project_failures"] == 0
             and stats["completed_pull_succeeded"]
+            and not stats["active_item_errors"]
             and not stats["completed_item_errors"]
         )
-        if snapshot_complete:
+        if snapshot_complete and publish:
+            # 完成态会触发奖励副作用，只能在完整快照闸门后发布。
+            for tid, task_payload in staged_completed_tasks.items():
+                try:
+                    changed = self.db.upsert_task(user_id, task_payload)
+                    if tid in staged_completed_sources:
+                        title, source = staged_completed_sources[tid]
+                        self._reward_task_if_new(tid, title, source, user_id)
+                    if changed:
+                        stats["completed_task_changes"] += 1
+                        stats["published_upserts"] += 1
+                except Exception as item_error:
+                    stats["completed_item_errors"].append({
+                        "code": str(item_error).split(":", 1)[0] or type(item_error).__name__,
+                        "error_type": type(item_error).__name__, "task_id_suffix": str(tid)[-6:],
+                    })
+                    snapshot_complete = False
+                    stats["failure_stage"] = "snapshot_commit"
+                    break
+        if snapshot_complete and publish:
             missing_tids = db_known_tids - current_active_tids - completed_today_tids
             for tid in sorted(missing_tids):
                 if self._delete_provider_task(user_id, tid):
                     stats["deleted_tasks"] += 1
-        else:
+        elif not snapshot_complete:
             reasons = []
             if stats["request_budget_exceeded"]:
                 reasons.append("request_budget_exceeded")
@@ -3004,7 +3066,12 @@ class SyncHub:
                 reasons.append("completed_pull_failed")
             if stats["completed_item_errors"]:
                 reasons.append("task_persistence_failed")
+            if stats["active_item_errors"]:
+                reasons.append("active_task_persistence_failed")
             stats["deletion_skipped_reason"] = ",".join(reasons)
+        else:
+            stats["active_task_changes"] = 0
+            stats["completed_task_changes"] = 0
 
         stats["complete"] = snapshot_complete
 
@@ -3016,7 +3083,7 @@ class SyncHub:
         try:
             with conn:
                 row = conn.execute(
-                    "SELECT id FROM server_tasks WHERE user_id = ? AND id = ? AND deleted_at IS NULL",
+                    "SELECT id FROM server_tasks WHERE user_id = ? AND id = ? AND source = 'ticktick' AND deleted_at IS NULL",
                     (user_id, task_id),
                 ).fetchone()
                 if not row:

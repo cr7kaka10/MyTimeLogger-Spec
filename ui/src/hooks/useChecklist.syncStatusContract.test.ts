@@ -13,12 +13,18 @@ test('foreground checklist pull always clears syncing after an exception', () =>
   }
 })
 
-test('safe provider degradation is not rendered as a global sync failure', () => {
-  if (!source.includes("providerRefresh.status === 'degraded'") || !source.includes('本地已同步，外部任务源部分更新，稍后重试')) {
+test('provider degradation remains visible as an old snapshot', () => {
+  if (!source.includes("providerRefresh.status === 'degraded'") || !source.includes('滴答旧快照') || !source.includes('上次完整成功') || !source.includes('本次已安全更新')) {
     throw new Error('provider degradation must have an explicit safe status message')
   }
   if (!source.includes("reason: forceRefresh ? 'checklist-refresh' : 'checklist-enter'") || !worker.includes("params.provider_manual = 'true'")) {
     throw new Error('manual checklist refresh must be distinguishable from automatic refreshes')
+  }
+})
+
+test('complete provider refresh displays the remote observation time', () => {
+  if (!source.includes('providerRefresh.provider_observed_at') || !source.includes('滴答观察')) {
+    throw new Error('complete provider status must expose the remote observation time')
   }
 })
 
