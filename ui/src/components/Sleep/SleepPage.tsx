@@ -21,7 +21,7 @@ interface SleepPageProps extends UseSleepReturn {
 
 type DiaryType = 'morning' | 'evening'
 type MarkdownTable = { headers: string[]; rows: string[][] }
-export const MORNING_DIARY_TEMPLATE = '今天值得期待、也愿意主动创造的3件事：\n1. '
+export const MORNING_DIARY_TEMPLATE = '1. 睡醒后的感受：\n   1. xx\n2. 今天必须完成的一个小目标（只能写一个）：\n   1. xx'
 export const EVENING_DIARY_TEMPLATE = '让我开心/满意/感到耳目一新的3件事：\n1. '
 export const diaryInitialValue = (title: string, value: string) => value || (title === '晚间日记' ? EVENING_DIARY_TEMPLATE : MORNING_DIARY_TEMPLATE)
 export const continueDiaryNumbering = (value: string, cursorStart: number, cursorEnd: number) => {
@@ -554,7 +554,7 @@ const DiaryModal = memo(({ title, value, onChange, onClose, onSave }: {
             }
           }}
           rows={10}
-          placeholder={title === '晨间日记' ? '今天有什么值得期待？你想主动创造哪件好事？' : '回想三件让你开心、满意或感到耳目一新的事。'}
+          placeholder={title === '晨间日记' ? '写下睡醒后的感受，以及今天必须完成的一个小目标（只能写一个）。' : '回想三件让你开心、满意或感到耳目一新的事。'}
           className="w-full resize-none rounded-xl border border-gray-200 px-3.5 py-2.5 text-sm leading-6 outline-none focus:border-blue-400"
           autoFocus
         />
