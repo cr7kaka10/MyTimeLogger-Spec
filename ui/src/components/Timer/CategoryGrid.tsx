@@ -44,7 +44,7 @@ export const CategoryGrid = memo(({ categories, currentCategory, timerState, com
   )
   
   return (
-    <div className="grid grid-cols-5 gap-2 md:gap-1">
+    <div className="grid grid-cols-5 gap-2 md:min-h-0 md:flex-1 md:content-evenly md:gap-x-1 md:gap-y-0">
       {sortedCategories.length === 0 ? (
         <div className="col-span-full flex min-h-32 items-center justify-center rounded-xl border border-dashed border-gray-200 px-4 text-center text-sm text-gray-400">
           暂无计时分类，请确认初始化示例数据已写入或当前环境已登录同步
