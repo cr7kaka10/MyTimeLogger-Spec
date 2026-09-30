@@ -100,7 +100,7 @@ export const MainLayout = memo(({ activeTab, onTabChange, children, balance, the
         </div>
       )}
 
-      <main className="min-h-0 min-w-0 flex-1 overflow-y-auto pb-[calc(4rem+env(safe-area-inset-bottom,0px))]">
+      <main className={`min-h-0 min-w-0 flex-1 ${activeTab === 'timer' ? 'overflow-hidden' : 'overflow-y-auto'}`}>
         {children}
       </main>
       <TabBar activeTab={activeTab} onChange={onTabChange} />

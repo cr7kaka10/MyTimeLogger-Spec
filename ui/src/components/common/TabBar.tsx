@@ -23,7 +23,7 @@ export const TabBar = memo(({ activeTab, onChange }: TabBarProps) => {
   const handleClick = useCallback((tab: MainTab) => () => onChange(tab), [onChange])
 
   return (
-    <nav className="safe-area-tabbar fixed bottom-0 left-1/2 flex w-full max-w-[480px] -translate-x-1/2 items-center border-t border-gray-100 bg-white">
+    <nav className="safe-area-tabbar relative z-40 mx-auto flex w-full max-w-[480px] shrink-0 items-center border-t border-gray-100 bg-white">
       {/* 主要导航 tab 区域 - 使用 flex-1 均分空间 */}
       <div className="flex flex-1 items-center">
         {mainTabs.map((tab) => (

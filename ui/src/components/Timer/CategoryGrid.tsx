@@ -44,7 +44,7 @@ export const CategoryGrid = memo(({ categories, currentCategory, timerState, com
   )
   
   return (
-    <div className="grid grid-cols-5 gap-2">
+    <div className="grid grid-cols-5 gap-2 md:gap-1">
       {sortedCategories.length === 0 ? (
         <div className="col-span-full flex min-h-32 items-center justify-center rounded-xl border border-dashed border-gray-200 px-4 text-center text-sm text-gray-400">
           暂无计时分类，请确认初始化示例数据已写入或当前环境已登录同步
@@ -60,7 +60,7 @@ export const CategoryGrid = memo(({ categories, currentCategory, timerState, com
             onClick={handleClick(category.id)}
             disabled={disabled}
             aria-disabled={disabled}
-            className={`flex min-h-20 flex-col items-center justify-center gap-2 rounded-xl border border-transparent text-center text-sm font-semibold text-gray-900 transition-all dark:text-gray-100 ${
+            className={`flex min-h-20 flex-col items-center justify-center gap-2 rounded-xl border border-transparent text-center text-sm font-semibold text-gray-900 transition-all md:min-h-14 md:gap-1 dark:text-gray-100 ${
               disabled
                 ? 'cursor-not-allowed opacity-40 grayscale dark:opacity-35'
                 : 'active:bg-gray-100 dark:active:bg-gray-700 md:hover:bg-gray-50 dark:md:hover:bg-gray-800'
