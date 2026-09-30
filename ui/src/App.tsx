@@ -86,7 +86,7 @@ const AppSession = ({ initialAuthenticated, onAccountActivated }: { initialAuthe
   const ledgerHook = useLedger()
 
   const handleNavigate = useCallback((tab: MainTab) => {
-    if (tab === 'timebook') timeBook.resetToToday()
+    if (tab === 'timebook' || tab === 'timer') timeBook.resetToToday()
     userActionSyncRef.current?.request()
     setActiveTab(current => { if (current !== tab) { previousTabRef.current = current; recordBehavior('navigation.tab_opened', { tab }) }; return tab })
   }, [timeBook.resetToToday])
@@ -344,8 +344,8 @@ const AppSession = ({ initialAuthenticated, onAccountActivated }: { initialAuthe
     if (activeTab === 'backpack') return <BackpackPage {...backpack} />
     if (activeTab === 'exercise') return <ExercisePage theme={settings.theme} onToggleTheme={settings.toggleTheme} onStartFocus={handleStartExerciseFocus} />
     if (activeTab === 'learning') return <LearningPage onNavigate={handleNavigate} onStartFocus={handleStartLearningFocus} runtime={{ serverUrl: settings.selectedEnvironmentProfile.serverUrl, authToken: settings.selectedEnvironmentProfile.authToken }} />
-    if (activeTab === 'timer') return <TimerPage {...timer} theme={settings.theme} onToggleTheme={settings.toggleTheme} onNavigate={handleNavigate} onOpenLedger={() => setShowLedger(true)} onOpenSettings={() => handleNavigate('settings')} runtime={{ serverUrl: settings.selectedEnvironmentProfile.serverUrl, authToken: settings.selectedEnvironmentProfile.authToken }} onRecordFlashCard={timeBook.recordFlashCard} focusAiRequest={timerAiFocusRequest} onFocusAiHandled={handleTimerAiFocusHandled} />
-    if (activeTab === 'timebook') return <TimeBookPage {...timeBook} onNavigate={handleNavigate} onNavigateToSleep={handleNavigateToSleep} />
+    if (activeTab === 'timer') return <TimerPage {...timer} theme={settings.theme} onToggleTheme={settings.toggleTheme} onNavigate={handleNavigate} onOpenLedger={() => setShowLedger(true)} onOpenSettings={() => handleNavigate('settings')} runtime={{ serverUrl: settings.selectedEnvironmentProfile.serverUrl, authToken: settings.selectedEnvironmentProfile.authToken }} onRecordFlashCard={timeBook.recordFlashCard} diary={timeBook.diary} onSaveDiary={timeBook.saveDiary} onOpenLockedDiary={() => handleNavigateToSleep(timeBook.selectedDate)} focusAiRequest={timerAiFocusRequest} onFocusAiHandled={handleTimerAiFocusHandled} />
+    if (activeTab === 'timebook') return <TimeBookPage {...timeBook} onNavigate={handleNavigate} />
       if (activeTab === 'sleep') return (
         <SleepPage {...sleep}
           onPickImage={sleep.pickImage}

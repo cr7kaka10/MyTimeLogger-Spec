@@ -1,10 +1,9 @@
-import { memo, useCallback, useMemo, useState, useEffect } from 'react'
+import { memo, useCallback, useMemo, useState } from 'react'
 import type { MainTab, SessionEditData } from '../../types'
 import type { FlashCard, FlashPolishCorrectionInput, UseTimeBookReturn } from '../../hooks/useTimeBook'
 import { ConfirmSheet } from '../common/ConfirmSheet'
 import { EmptyState } from '../common/EmptyState'
 import { SessionEditSheet } from './SessionEditSheet'
-import { MarkdownInput } from '../common/MarkdownInput'
 import { WeekCalendar } from '../../pages/UnifiedChecklistPage/WeekCalendar'
 import { formatHoursMinutes } from '@core/displayFormat'
 import { DualTrackTimeline } from './DualTrackTimeline'
@@ -15,7 +14,6 @@ import { formatBeijingDateTime, parseBeijingDateTimeMs } from '@core/BeijingTime
 
 interface TimeBookPageProps extends UseTimeBookReturn {
   onNavigate: (tab: MainTab) => void
-  onNavigateToSleep?: (date: string) => void
 }
 
 const toDateTimeLocal = (value: string) => String(value || '').replace(' ', 'T').slice(0, 16)
@@ -61,76 +59,9 @@ const FlashCardEditor = ({ value, onSave, onCancel }: { value: FlashCard; onSave
   </div>
 }
 
-const DiaryCard = memo(({ id, title, type, content, isLocked = false, onSave, onLockedClick }: { id?: string; title: string; type: 'morning' | 'evening'; content?: string; isLocked?: boolean; onSave: (type: 'morning' | 'evening', val: string) => void; onLockedClick?: () => void }) => {
-  const [editing, setEditing] = useState(false)
-  const [val, setVal] = useState(content || '')
-
-  useEffect(() => {
-    setVal(content || '')
-  }, [content])
-
-  const handleBlur = () => {
-    setEditing(false)
-    if (val !== (content || '')) {
-      onSave(type, val)
-    }
-  }
-
-  return (
-    <div
-      id={id} role={isLocked ? 'button' : undefined}
-      tabIndex={isLocked ? 0 : undefined}
-      onClick={isLocked ? onLockedClick : undefined}
-      onKeyDown={isLocked ? event => {
-        if (event.key === 'Enter' || event.key === ' ') {
-          event.preventDefault()
-          onLockedClick?.()
-        }
-      } : undefined}
-      className={`rounded-2xl border border-gray-100 bg-white p-4 shadow-sm ${isLocked ? 'cursor-pointer active:bg-gray-50 dark:active:bg-gray-700' : ''}`}
-    >
-      <div className="text-xs font-bold text-gray-400 mb-1.5 flex items-center justify-between">
-        <span>{title}</span>
-        {isLocked ? (
-          <span className="text-gray-400 font-normal">🔒 已锁定</span>
-        ) : (
-          !editing && (
-            <button onClick={() => setEditing(true)} className="text-blue-500 hover:underline">
-              编辑
-            </button>
-          )
-        )}
-      </div>
-      {editing && !isLocked ? (
-        <MarkdownInput
-          value={val}
-          onChange={setVal}
-          onBlur={handleBlur}
-          onSubmit={handleBlur}
-          placeholder="记录些什么... (支持 Markdown，Ctrl+Enter 保存)"
-          className="w-full text-[13px] text-gray-700 outline-none border-b border-blue-400 py-1 bg-gray-50/50 min-h-[60px] resize-none"
-          autoFocus
-        />
-      ) : (
-        <p className="text-[13px] text-gray-600 leading-relaxed whitespace-pre-wrap">
-          {content || (
-            isLocked ? (
-              <span className="text-gray-300 italic">（暂无内容，已锁定不可编辑）</span>
-            ) : (
-              <span className="text-gray-300 italic">写点什么吧...</span>
-            )
-          )}
-        </p>
-      )}
-    </div>
-  )
-})
-
-DiaryCard.displayName = 'DiaryCard'
-
 export const TimeBookPage = memo(({
   sessions, selectedDate, setSelectedDate, todaySummary, onNavigate, syncError,
-  markedDates, categories, saveSession, deleteSession, diary, saveDiary, onNavigateToSleep,
+  markedDates, categories, saveSession, deleteSession,
   timelineEntries, flashError, taskRecommendations, taskSubmissions, createRecommendedTask, ignoreRecommendedTask, submitFlashClassificationFeedback, loadFlashProcessingLogs, correctFlashPolish, loadFlashSkillHistory, deleteFlashCard,
 }: TimeBookPageProps) => {
   const [editingSession, setEditingSession] = useState<any>(null)
@@ -178,11 +109,6 @@ export const TimeBookPage = memo(({
   }, [setSelectedDate])
 
   const handleStart = useCallback(() => onNavigate('timer'), [onNavigate])
-  const handleLockedDiaryClick = useCallback(() => {
-    window.alert('请上传睡眠截图')
-    onNavigateToSleep?.(selectedDate)
-  }, [onNavigateToSleep, selectedDate])
-
   const handleSaveSession = useCallback((data: SessionEditData) => {
     saveSession(data)
     setEditingSession(null)
@@ -199,34 +125,6 @@ export const TimeBookPage = memo(({
     <div className="flex min-h-full flex-col bg-[#FAFAFA] pb-[calc(4rem+env(safe-area-inset-bottom,0px))]">
       <div className="px-6 py-4 pb-2">
         <WeekCalendar selectedDate={calendarDate} onDateSelect={handleCalendarSelect} markedDates={markedDates} />
-      </div>
-
-      {/* 晨间与晚间日记卡片 */}
-      <div className="px-6 py-2 grid grid-cols-2 gap-3">
-        <DiaryCard
-          id="timebook-morning-diary"
-          title="☀️ 晨间日记"
-          type="morning"
-          content={diary?.morning_diary}
-          isLocked={diary ? ((diary as any).report_status !== 1 && (diary as any).report_status !== 2) : true}
-          onSave={saveDiary}
-          onLockedClick={handleLockedDiaryClick}
-        />
-        <DiaryCard
-          id="timebook-evening-diary"
-          title="🌙 晚间日记"
-          type="evening"
-          content={diary?.evening_diary}
-          isLocked={diary ? ((diary as any).report_status !== 2) : true}
-          onSave={saveDiary}
-          onLockedClick={handleLockedDiaryClick}
-        />
-      </div>
-      <div className="mx-6 flex gap-4 text-xs font-medium">
-        {(['morning', 'evening'] as const).map(type => {
-          const label = type === 'morning' ? '晨间' : '晚间', completed = diary?.[`${type}_diary_reward_status`] === 'completed'
-          return <p key={type} className={completed ? 'text-emerald-700' : 'text-amber-700'}>{completed ? `${label}日记奖励 +${diary?.[`${type}_diary_reward_amount`] || 0} 金币` : `${label}日记奖励待完成：${diary?.[`${type}_diary_reward_reason`] || `${label}日记尚未完成`}`}</p>
-        })}
       </div>
 
       {editingFlash && <section className="px-6 py-2"><FlashCardEditor value={editingFlash} onSave={correctFlashPolish} onCancel={() => setEditingFlash(null)} /></section>}

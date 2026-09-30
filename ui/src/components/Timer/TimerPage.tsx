@@ -11,6 +11,7 @@ import { SessionSummarySheet } from './SessionSummarySheet'
 import { StatusSwitchNoteSheet } from './StatusSwitchNoteSheet'
 import { TimerStats } from './TimerStats'
 import { TimerAiPrompt } from './TimerAiPrompt'
+import { DiaryQuickEntries, type DiaryType, type HomeDiary } from './DiaryQuickEntries'
 import { scheduleTimerInputFocus } from './summaryInputFocus'
 import { createTimerInputTrace, observeEventLoopLag, type TimerInputTrace } from './timerInputTelemetry'
 import { TIMER_NOTE_PRESETS } from './notePresets'
@@ -23,6 +24,9 @@ interface TimerPageProps extends UseTimerReturn {
   onOpenSettings?: () => void
   runtime: ManagementPlanRuntime
   onRecordFlashCard: (text: string) => Promise<string | undefined>
+  diary: HomeDiary | null
+  onSaveDiary: (type: DiaryType, value: string) => void
+  onOpenLockedDiary: () => void
   focusAiRequest?: number
   onFocusAiHandled?: () => void
 }
@@ -63,6 +67,9 @@ export const TimerPage = memo((props: TimerPageProps) => {
     onToggleTheme,
     runtime,
     onRecordFlashCard,
+    diary,
+    onSaveDiary,
+    onOpenLockedDiary,
     focusAiRequest,
     onFocusAiHandled,
   } = props
@@ -168,6 +175,7 @@ export const TimerPage = memo((props: TimerPageProps) => {
           onSubmit={onRecordFlashCard}
         />
       </div>
+      <DiaryQuickEntries diary={diary} onSave={onSaveDiary} onLockedClick={onOpenLockedDiary} />
       {showPauseReason ? (
         <PauseReasonSheet onConfirm={submitPauseReason} onSkip={skipPauseReason} />
       ) : null}
