@@ -23,6 +23,7 @@ try:
     from .domain.reward_config_service import RewardConfigService
     from .domain.reward_settlement_service import RewardSettlementService
     from .domain.reward_wallet_service import RewardWalletService
+    from .domain.reward_period import period_end
     from .domain.sleep_reward_service import SleepRewardService
     from .statistics_start_date import get_user_statistics_start_date, is_statistics_date_eligible
 except (ImportError, ValueError):
@@ -36,6 +37,7 @@ except (ImportError, ValueError):
     from domain.reward_config_service import RewardConfigService
     from domain.reward_settlement_service import RewardSettlementService
     from domain.reward_wallet_service import RewardWalletService
+    from domain.reward_period import period_end
     from domain.sleep_reward_service import SleepRewardService
     from statistics_start_date import get_user_statistics_start_date, is_statistics_date_eligible
 
@@ -94,6 +96,7 @@ class ServerSleepStore:
     def __init__(self, db_path=None):
         self.db_path = resolve_server_db_path(db_path)
         self._initialize()
+        self._migrate_reward_fragment_measure_modes()
         # 调用链路：server.py 路由/SyncHub -> ServerSleepStore 旧门面 -> domain service -> SQLite。
         # 这些 service 先承接金币、钱包、习惯取消等高风险业务，剩余 CRUD 后续再逐步迁移。
         self.reward_wallet_service = RewardWalletService(
@@ -102,6 +105,7 @@ class ServerSleepStore:
         self.reward_settlement_service = RewardSettlementService(
             self._transact, now_str, self.reward_wallet_service, self._record_server_change
         )
+        self._migrate_reward_period_expiry()
         self.reward_rule_service = RewardRuleService(now_str, self.get_item_reward)
         self.sleep_reward_service = SleepRewardService(
             self._transact, now_str, self.reward_wallet_service, self._record_server_change,
@@ -112,6 +116,67 @@ class ServerSleepStore:
             self._transact, now_str, self.reward_wallet_service, self.reward_settlement_service,
             self.reward_rule_service, self._record_server_change,
         )
+
+    def _migrate_reward_fragment_measure_modes(self):
+        """按显式掉落单位区分历史 percent 商品，其余切为精确枚数。"""
+        with self._connect() as conn:
+            user_ids = [row[0] for row in conn.execute("SELECT id FROM users")]
+        for user_id in user_ids:
+            with self._transact() as conn:
+                rows = conn.execute(
+                    """SELECT r.id,r.fragment_measure_mode FROM server_rewards r
+                       WHERE r.user_id=? AND r.fulfillment_mode='fragment'""", (user_id,),
+                ).fetchall()
+                for row in rows:
+                    explicit = conn.execute(
+                        """SELECT 1 FROM server_reward_source_bindings
+                           WHERE user_id=? AND reward_id=?
+                             AND (drop_min_units IS NOT NULL OR drop_max_units IS NOT NULL) LIMIT 1""",
+                        (user_id, row["id"]),
+                    ).fetchone()
+                    wanted = "percent" if explicit else "count"
+                    if row["fragment_measure_mode"] == wanted:
+                        continue
+                    stamp = now_str()
+                    conn.execute(
+                        """UPDATE server_rewards SET fragment_measure_mode=?,
+                           fragment_rule_version=fragment_rule_version+1,updated_at=? WHERE id=? AND user_id=?""",
+                        (wanted, stamp, row["id"], user_id),
+                    )
+                    conn.execute(
+                        "UPDATE server_reward_fragments SET fragment_measure_mode=?,updated_at=? WHERE reward_id=? AND user_id=?",
+                        (wanted, stamp, row["id"], user_id),
+                    )
+
+    def _migrate_reward_period_expiry(self):
+        """为历史周期碎片和完整商品补齐不可变自然周期边界。"""
+        with self._connect() as conn:
+            user_ids = [row[0] for row in conn.execute("SELECT id FROM users")]
+        for user_id in user_ids:
+            with self._transact() as conn:
+                stamp = now_str()
+                fragments = conn.execute(
+                    """SELECT f.id,f.issued_at,f.expires_at,f.status,r.inventory_mode FROM server_reward_fragments f
+                       JOIN server_rewards r ON r.id=f.reward_id AND r.user_id=f.user_id
+                       WHERE f.user_id=? AND r.inventory_mode IN ('daily','weekly','monthly')""", (user_id,),
+                ).fetchall()
+                for row in fragments:
+                    expires = period_end(row["issued_at"], row["inventory_mode"])
+                    status = "expired" if row["status"] == "active" and expires <= stamp else row["status"]
+                    if row["expires_at"] != expires or row["status"] != status:
+                        conn.execute("UPDATE server_reward_fragments SET expires_at=?,status=?,updated_at=? WHERE id=?", (expires, status, stamp, row["id"]))
+                ledgers = conn.execute(
+                    """SELECT l.id,l.target_date,l.expires_at,r.inventory_mode FROM server_reward_ledger l
+                       JOIN server_rewards r ON r.user_id=l.user_id AND (l.source_id=CAST(r.id AS TEXT)
+                         OR l.source_id LIKE CAST(r.id AS TEXT)||':%' OR l.source_id LIKE 'unlock:'||CAST(r.id AS TEXT)||':%')
+                       WHERE l.user_id=? AND l.source_type='reward_buy'
+                         AND r.inventory_mode IN ('daily','weekly','monthly')""", (user_id,),
+                ).fetchall()
+                for row in ledgers:
+                    if not row["expires_at"]:
+                        expires = period_end(row["target_date"], row["inventory_mode"])
+                        conn.execute("UPDATE server_reward_ledger SET expires_at=?,updated_at=? WHERE id=?", (expires, stamp, row["id"]))
+                self.reward_wallet_service.expire_backpack_items_in_txn(conn, user_id)
 
     def _connect(self):
         conn = sqlite3.connect(self.db_path, timeout=30.0)
@@ -1579,10 +1644,8 @@ class ServerSleepStore:
     @staticmethod
     def _validate_reward_rules(inventory_mode="unlimited", inventory_limit=None, unlock_source_type=None, unlock_required_count=1):
         mode = str(inventory_mode or "unlimited")
-        if mode == "weekly":
-            raise ValueError("每周库存已取消，请选不限量、每天或每月")
-        if mode not in {"unlimited", "daily", "monthly"}:
-            raise ValueError("库存周期只能选不限量、每天或每月")
+        if mode not in {"unlimited", "daily", "weekly", "monthly"}:
+            raise ValueError("库存周期只能选不限量、每天、每周或每月")
         if mode == "unlimited":
             inventory_limit = None
         else:
@@ -1641,6 +1704,13 @@ class ServerSleepStore:
                    drop_mode=excluded.drop_mode,drop_min_units=excluded.drop_min_units,drop_max_units=excluded.drop_max_units,updated_at=excluded.updated_at""",
                 (binding_id, user_id, reward_id, source["type"], source["id"], drop_mode, drop_min_units, drop_max_units, stamp, stamp),
             )
+            if drop_min_units is not None and reward["fragment_measure_mode"] != "percent":
+                conn.execute(
+                    """UPDATE server_rewards SET fragment_measure_mode='percent',
+                       fragment_rule_version=fragment_rule_version+1,updated_at=? WHERE id=? AND user_id=?""",
+                    (stamp, reward_id, user_id),
+                )
+                self._record_server_change(conn, user_id, "server_rewards", reward_id, "upsert", {"id": reward_id})
             self._record_server_change(conn, user_id, "server_reward_source_bindings", binding_id, "upsert", {"id": binding_id})
             return binding_id
 
@@ -1777,10 +1847,7 @@ class ServerSleepStore:
                     conn, user_id, row["unlock_source_type"], row["unlock_source_id"], reward_id
                 )
             effective_type = source["type"] if source_changed and source else None if source_changed else row["unlock_source_type"]
-            legacy_weekly = str(row["inventory_mode"] or "") == "weekly"
             requested_mode = row["inventory_mode"] if inventory_mode is UNSET else inventory_mode
-            if str(requested_mode or "") == "weekly" and legacy_weekly:
-                requested_mode = "unlimited"
             requested_limit = row["inventory_limit"] if inventory_limit is UNSET else inventory_limit
             requested_count = 1 if source_changed and source is None else row["unlock_required_count"] if unlock_required_count is UNSET else unlock_required_count
             mode, limit, required = self._validate_reward_rules(requested_mode, requested_limit, effective_type, requested_count)
@@ -1791,7 +1858,7 @@ class ServerSleepStore:
             requested_fulfillment, requested_target = self._validate_fragment_rules(
                 effective_type, requested_fulfillment, requested_target,
             )
-            if inventory_mode is not UNSET or inventory_limit is not UNSET or legacy_weekly:
+            if inventory_mode is not UNSET or inventory_limit is not UNSET:
                 fields.extend(["inventory_mode=?", "inventory_limit=?"])
                 params.extend([mode, limit])
             if unlock_required_count is not UNSET or (source_changed and effective_type != row["unlock_source_type"]):
@@ -1819,9 +1886,6 @@ class ServerSleepStore:
             query = f"UPDATE server_rewards SET {', '.join(fields)} WHERE id=? AND user_id=?"
             params.extend([reward_id, user_id])
             conn.execute(query, tuple(params))
-            conn.execute("UPDATE server_habits SET updated_at=?,pushed_at=NULL WHERE user_id=? AND id=?", (now_str(), user_id, habit_id))
-            changed = dict(conn.execute("SELECT * FROM server_habits WHERE user_id=? AND id=?", (user_id, habit_id)).fetchone())
-            self._record_server_change(conn, user_id, 'server_habits', habit_id, 'upsert', changed)
             self._record_server_change(conn, user_id, "server_rewards", reward_id, "upsert", {"id": reward_id})
             return True
 

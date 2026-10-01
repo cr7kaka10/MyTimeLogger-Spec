@@ -106,11 +106,16 @@ export const useRewards = (): UseRewardsReturn => {
   const saveReward = useCallback(async (method: 'POST' | 'PUT' | 'DELETE', path: string, body?: Record<string, any>) => {
     const db = await getDatabase()
     const runtime = requireActiveEnvironmentRuntimeConfig(db.getAllConfig(), `rewards.${method.toLowerCase()}`)
-    const response = await fetch(`${runtime.serverUrl}${path}`, {
-      method,
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${runtime.authToken}`, 'X-Auth-Token': runtime.authToken },
-      body: body ? JSON.stringify({ ...body, inventory_mode: body.inventory_mode === 'weekly' ? 'unlimited' : body.inventory_mode }) : undefined,
-    })
+    let response: Response
+    try {
+      response = await fetch(`${runtime.serverUrl}${path}`, {
+        method,
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${runtime.authToken}`, 'X-Auth-Token': runtime.authToken },
+        body: body ? JSON.stringify(body) : undefined,
+      })
+    } catch {
+      throw new Error('无法连接服务器，请检查服务是否启动及网络设置')
+    }
     if (!response.ok) {
       const payload = await response.json().catch(() => null)
       throw new Error(payload?.detail || '奖励保存失败')

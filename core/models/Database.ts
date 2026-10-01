@@ -112,13 +112,13 @@ export interface Reward {
   id: number | string; title: string; icon: string; price: number
   redemption_mode?: 'coins' | 'task' | 'goal' | 'pending_binding' | 'custom_spend'
   description?: string; unlock_task_id?: string; unlock_task_title?: string
-  fulfillment_mode?: 'immediate' | 'fragment'; fragment_target_count?: number; fragment_rule_version?: number
+  fulfillment_mode?: 'immediate' | 'fragment'; fragment_target_count?: number; fragment_measure_mode?: 'count' | 'percent'; fragment_rule_version?: number
   is_active: number; created_at?: string; updated_at?: string; pushed_at?: string | null
 }
 
 export interface LedgerEntry {
   id: number | string; amount: number; source_type: string; source_id?: number | string
-  description?: string; target_date?: string; occurred_at?: string | null; created_at?: string; updated_at?: string; pushed_at?: string | null
+  description?: string; target_date?: string; occurred_at?: string | null; expires_at?: string | null; created_at?: string; updated_at?: string; pushed_at?: string | null
 }
 
 export interface ServerLedgerSnapshot {
@@ -1614,17 +1614,17 @@ export class Database {
       this._run('DELETE FROM reward_ledger')
       this._run("DELETE FROM sync_outbox WHERE table_name = 'reward_ledger' AND status IN ('pending', 'failed', 'sending')")
       for (const row of rows) this._run(
-        `INSERT INTO reward_ledger (id, amount, source_type, source_id, description, target_date, occurred_at, created_at, updated_at, pushed_at, pulled_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)` ,
-        [row.id, row.amount, row.source_type, row.source_id ?? null, row.description ?? '', row.target_date ?? '', row.occurred_at ?? null, row.created_at ?? this._now(), row.updated_at ?? this._now(), this._now()],
+        `INSERT INTO reward_ledger (id, amount, source_type, source_id, description, target_date, occurred_at, expires_at, created_at, updated_at, pushed_at, pulled_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)` ,
+        [row.id, row.amount, row.source_type, row.source_id ?? null, row.description ?? '', row.target_date ?? '', row.occurred_at ?? null, row.expires_at ?? null, row.created_at ?? this._now(), row.updated_at ?? this._now(), this._now()],
       )
       this._run('DELETE FROM reward_fragments')
       for (const row of fragments) this._run(
         `INSERT INTO reward_fragments
-           (id,reward_id,source_type,source_id,completion_event_key,rule_version,progress_units,consumed_units,issued_at,expires_at,status,compose_batch_id,created_at,updated_at,pulled_at)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+           (id,reward_id,source_type,source_id,completion_event_key,rule_version,fragment_measure_mode,progress_units,consumed_units,issued_at,expires_at,status,compose_batch_id,created_at,updated_at,pulled_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
         [row.id, row.reward_id, row.source_type, row.source_id, row.completion_event_key,
-          row.rule_version, row.progress_units ?? 100, row.consumed_units ?? 0, row.issued_at, row.expires_at, row.status, row.compose_batch_id ?? null,
+          row.rule_version, row.fragment_measure_mode ?? 'count', row.progress_units ?? 1, row.consumed_units ?? 0, row.issued_at, row.expires_at, row.status, row.compose_batch_id ?? null,
           row.created_at, row.updated_at, this._now()],
       )
       const now = this._now()

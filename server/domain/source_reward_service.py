@@ -2,6 +2,7 @@
 """任务、习惯与学习最小执行单元的统一奖励摘要。"""
 from contextlib import closing
 from datetime import datetime, timezone, timedelta
+from .reward_period import period_end, period_window
 
 
 SOURCE_TYPES = {
@@ -19,8 +20,9 @@ class SourceRewardError(ValueError):
 
 
 class SourceRewardService:
-    def __init__(self, connect):
+    def __init__(self, connect, now_fn=None):
         self._connect = connect
+        self._now = now_fn or (lambda: datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m-%d %H:%M:%S"))
 
     @staticmethod
     def mapping(source_type: str) -> tuple[str, str]:
@@ -62,7 +64,7 @@ class SourceRewardService:
             fragment_rewards = [str(row["id"]) for row in rewards if str(row["fulfillment_mode"] or "immediate") == "fragment"]
             if fragment_rewards:
                 placeholders = ",".join("?" for _ in fragment_rewards)
-                now_text = datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m-%d %H:%M:%S")
+                now_text = self._now()
                 rows = conn.execute(
                     f"""SELECT reward_id,SUM(progress_units-consumed_units) AS active_units,MIN(expires_at) AS earliest_expires_at
                         FROM server_reward_fragments WHERE user_id=? AND reward_id IN ({placeholders})
@@ -77,18 +79,32 @@ class SourceRewardService:
                     row = counts.get(reward_id)
                     mode, limit = str(reward["inventory_mode"] or "unlimited"), int(reward["inventory_limit"] or 0)
                     used = 0
-                    if mode in {"daily", "monthly"} and limit > 0:
+                    if mode in {"daily", "weekly", "monthly"} and limit > 0:
                         today = now_text[:10]
-                        clause, value = ("target_date=?", today) if mode == "daily" else ("substr(target_date,1,7)=?", today[:7])
+                        start, end = period_window(today, mode)
                         used = int(conn.execute(
-                            f"""SELECT COUNT(*) count FROM server_reward_ledger WHERE user_id=? AND source_type='reward_buy'
-                                AND (source_id LIKE ? OR source_id LIKE ?) AND {clause}""",
-                            (user_id, f"{reward_id}:%", f"unlock:{reward_id}:%", value),
+                            """SELECT COUNT(*) count FROM server_reward_ledger WHERE user_id=? AND source_type='reward_buy'
+                                AND (source_id LIKE ? OR source_id LIKE ?) AND target_date BETWEEN ? AND ?""",
+                            (user_id, f"{reward_id}:%", f"unlock:{reward_id}:%", start, end),
                         ).fetchone()["count"] or 0)
                     units = int(row["active_units"] if row else 0)
+                    measure = str(reward["fragment_measure_mode"] or "count")
+                    target = int(reward["fragment_target_count"] or 1) if measure == "count" else 100
+                    available = int(conn.execute(
+                        """SELECT COUNT(*) count FROM server_reward_ledger l WHERE l.user_id=? AND l.source_type='reward_buy'
+                           AND (l.source_id LIKE ? OR l.source_id LIKE ?) AND (l.expires_at IS NULL OR l.expires_at>?)
+                           AND NOT EXISTS(SELECT 1 FROM server_reward_ledger a WHERE a.user_id=l.user_id
+                             AND a.source_type IN ('backpack_use','backpack_discard') AND a.source_id=l.id)""",
+                        (user_id, f"{reward_id}:%", f"unlock:{reward_id}:%", now_text),
+                    ).fetchone()["count"] or 0)
                     progress[reward_id] = {
-                        "active": units, "target": 100,
-                        "activeUnits": units, "targetUnits": 100, "percent": units,
+                        "active": units, "target": target,
+                        "activePieces": units if measure == "count" else None,
+                        "targetPieces": target if measure == "count" else None,
+                        "activeUnits": units, "targetUnits": target,
+                        "percent": min(100, round(units * 100 / target)), "measureMode": measure,
+                        "availableItems": available, "periodUsed": used, "periodMode": mode,
+                        "expiresAt": period_end(now_text, mode),
                         "inventoryUsed": used, "inventoryLimit": limit or None,
                         "inventoryLimitReached": mode != "unlimited" and limit > 0 and used >= limit,
                         "earliestExpiresAt": row["earliest_expires_at"] if row else None,

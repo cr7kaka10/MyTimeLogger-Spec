@@ -2,17 +2,17 @@ import { memo, useEffect, useMemo, useState } from 'react'
 import type { BackpackEvent, BackpackFragment, BackpackItem } from '../../types'
 import type { UseBackpackReturn } from '../../hooks/useBackpack'
 
-export const backpackFilters = [['available', '可使用'], ['used', '已使用']] as const
-const eventLabels: Record<BackpackEvent['event_type'], string> = { acquired: '获得', used: '使用', discarded: '丢弃', revoked: '撤销', fragment_acquired: '获得碎片', fragment_expired: '碎片过期', fragment_revoked: '碎片撤销', fragment_composed: '自动合成' }
+export const backpackFilters = [['available', '可使用'], ['used', '已使用'], ['expired', '已过期']] as const
+const eventLabels: Record<BackpackEvent['event_type'], string> = { acquired: '获得', used: '使用', discarded: '丢弃', revoked: '撤销', backpack_expired: '商品过期', fragment_acquired: '获得碎片', fragment_expired: '碎片过期', fragment_revoked: '碎片撤销', fragment_composed: '自动合成' }
 export type BackpackFilter = typeof backpackFilters[number][0]
 export const DEFAULT_BACKPACK_FILTER: BackpackFilter = 'available'
 export const BACKPACK_MINIMUM_SLOTS = 14
-export const canUseBackpackItem = (item: BackpackItem) => !item.is_used
+export const canUseBackpackItem = (item: BackpackItem) => !item.is_used && !item.is_expired
 export const getBackpackItemDescription = (item: BackpackItem) => item.description || '暂无物品说明'
 export const formatBackpackEvent = (event: BackpackEvent) => `[${event.created_at}]${eventLabels[event.event_type]}${event.item_title || '已下架奖励'}*${event.quantity ?? 1}${event.detail ? `（${event.detail}）` : ''}`
 export const groupBackpackItems = (items: BackpackItem[], filter: BackpackFilter) => {
-  const filtered = items.filter(item => filter === 'available' ? !item.is_used : item.is_used)
-  return [...new Map(filtered.map(item => [`${item.title}\u0000${item.icon}\u0000${item.is_used}`, { item, quantity: 0 }])).values()].map(group => ({ ...group, quantity: filtered.filter(item => item.title === group.item.title && item.icon === group.item.icon && item.is_used === group.item.is_used).length }))
+  const filtered = items.filter(item => filter === 'available' ? !item.is_used && !item.is_expired : filter === 'used' ? item.is_used : item.is_expired && !item.is_used)
+  return [...new Map(filtered.map(item => [`${item.title}\u0000${item.icon}\u0000${item.is_used}\u0000${item.is_expired}`, { item, quantity: 0 }])).values()].map(group => ({ ...group, quantity: filtered.filter(item => item.title === group.item.title && item.icon === group.item.icon && item.is_used === group.item.is_used && item.is_expired === group.item.is_expired).length }))
 }
 
 export const BackpackPage = memo(({ items, fragments, events, isLoading, hasMoreEvents, isLoadingMoreEvents, useItem, loadMoreEvents }: UseBackpackReturn) => {

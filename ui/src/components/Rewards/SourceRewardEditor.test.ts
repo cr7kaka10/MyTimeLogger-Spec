@@ -9,5 +9,7 @@ assert(editor.includes('source.bindItem(item.id)'), 'sources bind products throu
 assert(editor.includes('itemRewards.map'), 'all sources can retain multiple reward products')
 assert(editor.includes('source.unbindItem(item.id)'), 'each item reward can be removed without deleting the item')
 assert(editor.includes('<RewardAddSheet'), 'item creation and editing reuse the store sheet')
-assert(editor.includes('多个来源可共同收集'), 'all source reward editors explain shared fragment collection')
+assert(editor.includes('activePieces') && editor.includes('targetPieces'), 'count fragments render as exact piece progress')
+assert(editor.includes('本周期') && editor.includes('expiresAt'), 'period usage and clearing time are visible')
+assert(editor.includes("measureMode === 'percent'"), 'legacy percentage fragments remain renderable')
 console.log('source reward editor contracts passed')

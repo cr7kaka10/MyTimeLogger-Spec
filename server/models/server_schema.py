@@ -308,6 +308,7 @@ def ensure_server_schema(conn: sqlite3.Connection):
             unlock_threshold_started_at TEXT,     -- 阈值开始累计的服务端时间
             fulfillment_mode TEXT NOT NULL DEFAULT 'immediate', -- immediate/fragment
             fragment_target_count INTEGER NOT NULL DEFAULT 1, -- 碎片目标数 n，也是有效期自然日数
+            fragment_measure_mode TEXT NOT NULL DEFAULT 'count', -- count/percent
             fragment_rule_version INTEGER NOT NULL DEFAULT 1, -- 配置切换后的隔离版本
             is_active INTEGER DEFAULT 1,          -- 是否上架（1=是,0=否）
             created_at TEXT NOT NULL,             -- 创建时间
@@ -328,6 +329,7 @@ def ensure_server_schema(conn: sqlite3.Connection):
             source_id TEXT NOT NULL,
             completion_event_key TEXT NOT NULL,
             rule_version INTEGER NOT NULL,
+            fragment_measure_mode TEXT NOT NULL DEFAULT 'count',
             progress_units INTEGER NOT NULL DEFAULT 100,
             consumed_units INTEGER NOT NULL DEFAULT 0,
             issued_at TEXT NOT NULL,
@@ -437,6 +439,7 @@ def ensure_server_schema(conn: sqlite3.Connection):
             description TEXT,                     -- 流水描述
             target_date TEXT,                     -- 归属日期（补卡时为被补卡日期）
             occurred_at TEXT,                     -- 业务实际发生时间（北京时间，可为空）
+            expires_at TEXT,                      -- 周期商品不可变到期快照（北京时间）
             created_at TEXT NOT NULL,             -- 创建时间
             updated_at TEXT NOT NULL,             -- 最后更新时间
             pushed_at TEXT DEFAULT NULL,          -- 最后推送时间（NULL=待推送）
@@ -1121,10 +1124,19 @@ def ensure_server_schema(conn: sqlite3.Connection):
         ("redemption_mode", "TEXT NOT NULL DEFAULT 'coins'"),
         ("fulfillment_mode", "TEXT NOT NULL DEFAULT 'immediate'"),
         ("fragment_target_count", "INTEGER NOT NULL DEFAULT 1"),
+        ("fragment_measure_mode", "TEXT NOT NULL DEFAULT 'count'"),
         ("fragment_rule_version", "INTEGER NOT NULL DEFAULT 1"),
     ):
         try:
             conn.execute(f"ALTER TABLE server_rewards ADD COLUMN {column} {ddl}")
+        except Exception:
+            pass
+    for table, column, ddl in (
+        ("server_reward_fragments", "fragment_measure_mode", "TEXT NOT NULL DEFAULT 'count'"),
+        ("server_reward_ledger", "expires_at", "TEXT"),
+    ):
+        try:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
         except Exception:
             pass
     conn.execute(
@@ -1181,7 +1193,6 @@ def ensure_server_schema(conn: sqlite3.Connection):
           AND unlock_task_id <> ''
         """
     )
-    conn.execute("UPDATE server_rewards SET inventory_mode='unlimited', inventory_limit=NULL WHERE inventory_mode='weekly'")
     conn.execute(
         """
         UPDATE server_rewards

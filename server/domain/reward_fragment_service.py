@@ -6,6 +6,8 @@ from datetime import datetime, timedelta
 import hashlib
 import secrets
 
+from .reward_period import period_end
+
 
 class RewardFragmentService:
     def __init__(self, now_fn, reward_wallet_service, record_change_in_txn=None, inventory_available_in_txn=None):
@@ -55,6 +57,8 @@ class RewardFragmentService:
                 continue
             target = max(1, int(reward["fragment_target_count"] or 1))
             version = max(1, int(reward["fragment_rule_version"] or 1))
+            measure = str(reward["fragment_measure_mode"] or "count")
+            threshold = target if measure == "count" else 100
             self._expire(conn, user_id, reward["id"], now_text)
             fragment_id = hashlib.sha256(
                 f"{user_id}:{reward['id']}:{version}:{event_key}".encode("utf-8")
@@ -64,8 +68,10 @@ class RewardFragmentService:
             maximum = reward["drop_max_units"]
             if existing:
                 progress_units = int(existing["progress_units"])
+            elif measure == "count":
+                progress_units = 1
             elif minimum is None:
-                progress_units = max(1, (100 + target - 1) // target)
+                progress_units = 100
             elif str(reward["drop_mode"] or "fixed") == "random":
                 low, high = sorted((max(1, int(minimum)), max(1, int(maximum if maximum is not None else minimum))))
                 progress_units = low + secrets.randbelow(high - low + 1)
@@ -73,25 +79,28 @@ class RewardFragmentService:
                 progress_units = max(1, int(minimum))
             inserted = conn.execute(
                 """INSERT OR IGNORE INTO server_reward_fragments
-                   (id,user_id,reward_id,source_type,source_id,completion_event_key,rule_version,progress_units,consumed_units,issued_at,expires_at,status,created_at,updated_at)
-                   VALUES (?,?,?,?,?,?,?,?,0,?,?,'active',?,?)""",
+                   (id,user_id,reward_id,source_type,source_id,completion_event_key,rule_version,fragment_measure_mode,progress_units,consumed_units,issued_at,expires_at,status,created_at,updated_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,0,?,?,'active',?,?)""",
                 (fragment_id, user_id, str(reward["id"]), source_type, str(source_id), event_key, version,
-                 progress_units, now_text, self._expires_at(now_text, target), now_text, now_text),
+                 measure, progress_units, now_text,
+                 period_end(target_date, str(reward["inventory_mode"] or "unlimited")) or self._expires_at(now_text, target),
+                 now_text, now_text),
             ).rowcount > 0
             if inserted:
                 self._record(conn, user_id, fragment_id)
-                self._record_activity(conn, user_id, reward["id"], fragment_id, "fragment_acquired", detail=f"获得物品进度 {progress_units}%", occurred_at=now_text)
+                detail = "获得物品碎片 1 枚" if measure == "count" else f"获得物品进度 {progress_units}%"
+                self._record_activity(conn, user_id, reward["id"], fragment_id, "fragment_acquired", detail=detail, occurred_at=now_text)
             while True:
                 active = conn.execute(
                     """SELECT id,progress_units,consumed_units FROM server_reward_fragments WHERE user_id=? AND reward_id=? AND rule_version=?
-                       AND status='active' AND expires_at>? AND progress_units>consumed_units ORDER BY issued_at,id""",
-                    (user_id, str(reward["id"]), version, now_text),
+                       AND fragment_measure_mode=? AND status='active' AND expires_at>? AND progress_units>consumed_units ORDER BY issued_at,id""",
+                    (user_id, str(reward["id"]), version, measure, now_text),
                 ).fetchall()
-                if sum(int(row["progress_units"]) - int(row["consumed_units"] or 0) for row in active) < 100:
+                if sum(int(row["progress_units"]) - int(row["consumed_units"] or 0) for row in active) < threshold:
                     break
                 if self._inventory_available_in_txn and not self._inventory_available_in_txn(conn, user_id, reward, str(target_date)[:10]):
                     break
-                remaining, contributions = 100, []
+                remaining, contributions = threshold, []
                 for row in active:
                     available = int(row["progress_units"]) - int(row["consumed_units"] or 0)
                     take = min(available, remaining)
@@ -107,7 +116,11 @@ class RewardFragmentService:
                     self._record(conn, user_id, selected_id)
                 self._record_activity(conn, user_id, reward["id"], batch_id, "fragment_composed", quantity=1, detail=f"自动合成完整物品：{reward['title'] or title}", occurred_at=now_text)
                 ledger_id = f"reward:{user_id}:fragment:{reward['id']}:{batch_id}"
-                self._reward_wallet.append_ledger_in_txn(conn, user_id, 0, "reward_buy", f"unlock:{reward['id']}:fragment:{batch_id}", f"碎片自动合成: {reward['title'] or title}", str(target_date)[:10], ledger_id)
+                self._reward_wallet.append_ledger_in_txn(
+                    conn, user_id, 0, "reward_buy", f"unlock:{reward['id']}:fragment:{batch_id}",
+                    f"碎片自动合成: {reward['title'] or title}", str(target_date)[:10], ledger_id,
+                    expires_at=period_end(target_date, str(reward["inventory_mode"] or "unlimited")),
+                )
                 ledger_ids.append(ledger_id)
         return ledger_ids
 

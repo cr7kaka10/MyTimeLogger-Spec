@@ -287,9 +287,9 @@ class SyncHub:
             table_name=table_name, conn=conn,
         )
 
-    def _expire_reward_fragments_for_user(self, user_id: int) -> int:
+    def _reconcile_reward_inventory_for_user(self, user_id: int) -> dict:
         with self._transact() as conn:
-            return len(self._reward_settlement.expire_fragments_for_user_in_txn(conn, user_id))
+            return self._reward_settlement.reconcile_period_inventory_in_txn(conn, user_id)
 
     def get_record(self, table: str, record_id: int | str, user_id: int) -> dict | None:
         try:
@@ -2127,7 +2127,7 @@ class SyncHub:
                 "diagnostics": {"request_id": request_id, "reward_rebuild_in_progress": True},
                 "sync_state": self._get_sync_state_map(user_id),
             }
-        self._expire_reward_fragments_for_user(user_id)
+        self._reconcile_reward_inventory_for_user(user_id)
         logger.info(
             "[SyncHub] legacy pull start request_id=%s user_id=%s since=%s",
             request_id,
@@ -2200,6 +2200,7 @@ class SyncHub:
                 "sync_state": self._get_sync_state_map(user_id),
             }
         safe_limit = max(1, min(int(limit or PULL_LIMIT_DEFAULT), PULL_LIMIT_MAX))
+        self._reconcile_reward_inventory_for_user(user_id)
         logger.info(
             "[SyncHub] version pull start request_id=%s user_id=%s since_version=%s limit=%s",
             request_id,

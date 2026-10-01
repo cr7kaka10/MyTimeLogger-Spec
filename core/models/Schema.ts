@@ -150,6 +150,7 @@ export const DDL_STATEMENTS: string[] = [
     unlock_threshold_started_at TEXT DEFAULT NULL,
     fulfillment_mode TEXT NOT NULL DEFAULT 'immediate',
     fragment_target_count INTEGER NOT NULL DEFAULT 1,
+    fragment_measure_mode TEXT NOT NULL DEFAULT 'count',
     fragment_rule_version INTEGER NOT NULL DEFAULT 1,
     is_active INTEGER DEFAULT 1,                  -- 是否在架(1在架,0下架)
     created_at TEXT NOT NULL,                     -- 商品创建时间
@@ -165,6 +166,7 @@ export const DDL_STATEMENTS: string[] = [
     source_id TEXT NOT NULL,
     completion_event_key TEXT NOT NULL,
     rule_version INTEGER NOT NULL,
+    fragment_measure_mode TEXT NOT NULL DEFAULT 'count',
     progress_units INTEGER NOT NULL DEFAULT 100,
     consumed_units INTEGER NOT NULL DEFAULT 0,
     issued_at TEXT NOT NULL,
@@ -205,6 +207,7 @@ export const DDL_STATEMENTS: string[] = [
     description TEXT,                             -- 交易流水描述信息
     target_date TEXT,                             -- 归属打卡日期(YYYY-MM-DD)
     occurred_at  TEXT,                            -- 业务实际发生时间（北京时间，可为空）
+    expires_at   TEXT,                            -- 周期商品不可变到期快照
     created_at  TEXT NOT NULL,                    -- 流水生成时间戳
     updated_at  TEXT NOT NULL,                    -- 最后修改时间戳
     pushed_at   TEXT                              -- 服务端同步时间戳
@@ -836,6 +839,7 @@ function applyCompatibilityMigrations(db: SqlDB): void {
   }
   runIgnoreError(db, "ALTER TABLE external_rewards ADD COLUMN ext_id TEXT")
   runIgnoreError(db, "ALTER TABLE reward_ledger ADD COLUMN occurred_at TEXT")
+  runIgnoreError(db, "ALTER TABLE reward_ledger ADD COLUMN expires_at TEXT")
   runIgnoreError(db, "ALTER TABLE external_rewards ADD COLUMN updated_at TEXT")
   runIgnoreError(db, "ALTER TABLE rewards ADD COLUMN unlock_source_type TEXT")
   runIgnoreError(db, "ALTER TABLE rewards ADD COLUMN unlock_source_id TEXT")
@@ -846,6 +850,7 @@ function applyCompatibilityMigrations(db: SqlDB): void {
   runIgnoreError(db, "ALTER TABLE rewards ADD COLUMN redemption_mode TEXT NOT NULL DEFAULT 'coins'")
   runIgnoreError(db, "ALTER TABLE rewards ADD COLUMN fulfillment_mode TEXT NOT NULL DEFAULT 'immediate'")
   runIgnoreError(db, "ALTER TABLE rewards ADD COLUMN fragment_target_count INTEGER NOT NULL DEFAULT 1")
+  runIgnoreError(db, "ALTER TABLE rewards ADD COLUMN fragment_measure_mode TEXT NOT NULL DEFAULT 'count'")
   runIgnoreError(db, "ALTER TABLE rewards ADD COLUMN fragment_rule_version INTEGER NOT NULL DEFAULT 1")
   runIgnoreError(db, "ALTER TABLE external_rewards ADD COLUMN pushed_at TEXT")
   runIgnoreError(db, "UPDATE external_rewards SET ext_id = id WHERE ext_id IS NULL OR ext_id = ''")
@@ -890,6 +895,7 @@ function applyCompatibilityMigrations(db: SqlDB): void {
   runIgnoreError(db, "ALTER TABLE sleep_score_settlements ADD COLUMN evening_diary_reward_rule_version TEXT")
   runIgnoreError(db, "ALTER TABLE reward_fragments ADD COLUMN progress_units INTEGER")
   runIgnoreError(db, "ALTER TABLE reward_fragments ADD COLUMN consumed_units INTEGER")
+  runIgnoreError(db, "ALTER TABLE reward_fragments ADD COLUMN fragment_measure_mode TEXT NOT NULL DEFAULT 'count'")
   runIgnoreError(db, "ALTER TABLE reward_source_bindings ADD COLUMN drop_mode TEXT")
   runIgnoreError(db, "ALTER TABLE reward_source_bindings ADD COLUMN drop_min_units INTEGER")
   runIgnoreError(db, "ALTER TABLE reward_source_bindings ADD COLUMN drop_max_units INTEGER")

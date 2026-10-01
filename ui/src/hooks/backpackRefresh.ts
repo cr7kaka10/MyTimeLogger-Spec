@@ -6,6 +6,7 @@ export const normalizeBackpackItems = (items: BackpackItem[]): BackpackItem[] =>
   ...item,
   description: typeof item.description === 'string' ? item.description : '',
   is_used: Boolean(item.is_used),
+  is_expired: Boolean(item.is_expired),
 }))
 
 export const preserveBackpackSnapshot = <T,>(previous: T): T => previous

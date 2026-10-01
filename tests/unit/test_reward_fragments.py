@@ -9,7 +9,7 @@ def test_same_completion_event_only_issues_one_fragment(tmp_db_path):
     store = ServerSleepStore(db_path=tmp_db_path)
     with store._transact() as conn:
         conn.execute("INSERT INTO users (id, username, password_hash, created_at) VALUES (1, 'u1', 'x', '2026-08-01 00:00:00')")
-        conn.execute("INSERT INTO server_habits (id, user_id, name, is_active, created_at, updated_at) VALUES ('habit-1', 1, '刷牙', 0, '2026-08-01 00:00:00', '2026-08-01 00:00:00')")
+        conn.execute("INSERT INTO server_habits (id, user_id, name, is_active, source, created_at, updated_at) VALUES ('habit-1', 1, '刷牙', 0, 'local', '2026-08-01 00:00:00', '2026-08-01 00:00:00')")
     reward_id = store.create_reward(
         1, '手机', price=0, unlock_source_type='habit', unlock_source_id='habit-1',
         unlock_required_count=2, fulfillment_mode='fragment', fragment_target_count=2,
@@ -25,11 +25,36 @@ def test_same_completion_event_only_issues_one_fragment(tmp_db_path):
         assert conn.execute("SELECT COUNT(*) FROM server_reward_ledger WHERE source_type='reward_buy'").fetchone()[0] == 0
 
 
+def test_seven_count_fragments_compose_exactly_once_without_residue(tmp_db_path):
+    store = ServerSleepStore(db_path=tmp_db_path)
+    with store._transact() as conn:
+        conn.execute("INSERT INTO users VALUES (1,'u','x','2026-10-01')")
+        conn.execute("""INSERT INTO server_habits
+            (id,user_id,name,is_active,source,created_at,updated_at)
+            VALUES('brush',1,'刷牙',0,'local','2026-10-01','2026-10-01')""")
+    reward_id = store.create_reward(
+        1, '解锁手机', price=0, unlock_source_type='habit', unlock_source_id='brush',
+        fulfillment_mode='fragment', fragment_target_count=7,
+    )
+    with store._transact() as conn:
+        for index in range(1, 8):
+            created = store.reward_settlement_service.grant_task_unlocks_in_txn(
+                conn, 1, 'habit', 'brush', f'brush:{index}', '刷牙', '2026-10-01',
+            )
+            assert len(created) == (1 if index == 7 else 0)
+        active = conn.execute(
+            """SELECT COALESCE(SUM(progress_units-consumed_units),0) FROM server_reward_fragments
+               WHERE reward_id=? AND fragment_measure_mode='count' AND status='active'""", (reward_id,),
+        ).fetchone()[0]
+        purchases = conn.execute("SELECT COUNT(*) FROM server_reward_ledger WHERE source_type='reward_buy'").fetchone()[0]
+    assert (active, purchases) == (0, 1)
+
+
 def test_habit_and_one_time_task_can_fill_the_same_fragment_pool(tmp_db_path):
     store = ServerSleepStore(db_path=tmp_db_path)
     with store._transact() as conn:
         conn.execute("INSERT INTO users (id, username, password_hash, created_at) VALUES (1, 'u1', 'x', '2026-08-01 00:00:00')")
-        conn.execute("INSERT INTO server_habits (id,user_id,name,is_active,created_at,updated_at) VALUES ('habit-a',1,'刷牙',0,'2026-08-01','2026-08-01')")
+        conn.execute("INSERT INTO server_habits (id,user_id,name,is_active,source,created_at,updated_at) VALUES ('habit-a',1,'刷牙',0,'local','2026-08-01','2026-08-01')")
         conn.execute("INSERT INTO server_tasks (id,user_id,title,status,updated_at) VALUES ('task-c',1,'提交作业',0,'2026-08-01')")
     reward_id = store.create_reward(1, '手机', price=0, redemption_mode='task', fulfillment_mode='fragment', fragment_target_count=2)
     store.bind_reward_source(1, reward_id, 'habit', 'habit-a')
@@ -45,7 +70,7 @@ def test_custom_spend_template_cannot_be_bound_as_completion_reward(tmp_db_path)
     store = ServerSleepStore(db_path=tmp_db_path)
     with store._transact() as conn:
         conn.execute("INSERT INTO users (id, username, password_hash, created_at) VALUES (1, 'u1', 'x', '2026-08-01 00:00:00')")
-        conn.execute("INSERT INTO server_habits (id,user_id,name,is_active,created_at,updated_at) VALUES ('habit-a',1,'刷牙',0,'2026-08-01','2026-08-01')")
+        conn.execute("INSERT INTO server_habits (id,user_id,name,is_active,source,created_at,updated_at) VALUES ('habit-a',1,'刷牙',0,'local','2026-08-01','2026-08-01')")
     custom = store.create_reward(1, '零食', price=0, redemption_mode='custom_spend')
     with pytest.raises(ValueError, match='只有完成奖励型商品'):
         store.bind_reward_source(1, custom, 'habit', 'habit-a')
@@ -76,7 +101,7 @@ def test_random_progress_units_are_persisted_and_replay_does_not_reroll(tmp_db_p
     store = ServerSleepStore(db_path=tmp_db_path)
     with store._transact() as conn:
         conn.execute("INSERT INTO users VALUES (1,'u','x','2026-09-05')")
-        conn.execute("INSERT INTO server_habits(id,user_id,name,is_active,created_at,updated_at) VALUES('brush',1,'刷牙',0,'2026-09-05','2026-09-05')")
+        conn.execute("INSERT INTO server_habits(id,user_id,name,is_active,source,created_at,updated_at) VALUES('brush',1,'刷牙',0,'local','2026-09-05','2026-09-05')")
     reward_id = store.create_reward(1, '解锁手机', price=0, redemption_mode='task', fulfillment_mode='fragment', fragment_target_count=7)
     store.bind_reward_source(1, reward_id, 'habit', 'brush', 'random', 10, 20)
     rolls = []
@@ -93,7 +118,7 @@ def test_random_multi_source_progress_is_shared_and_each_100_composes_once(tmp_d
     store = ServerSleepStore(db_path=tmp_db_path)
     with store._transact() as conn:
         conn.execute("INSERT INTO users VALUES (1,'u','x','2026-09-05')")
-        conn.execute("INSERT INTO server_habits(id,user_id,name,is_active,created_at,updated_at) VALUES('brush',1,'刷牙',0,'2026-09-05','2026-09-05')")
+        conn.execute("INSERT INTO server_habits(id,user_id,name,is_active,source,created_at,updated_at) VALUES('brush',1,'刷牙',0,'local','2026-09-05','2026-09-05')")
         conn.execute("INSERT INTO server_tasks(id,user_id,title,status,updated_at) VALUES('ad',1,'发广告帖',0,'2026-09-05')")
     reward_id = store.create_reward(1, '解锁手机', price=0, redemption_mode='task', fulfillment_mode='fragment',
                                     fragment_target_count=100, inventory_mode='monthly', inventory_limit=10)
@@ -107,8 +132,9 @@ def test_random_multi_source_progress_is_shared_and_each_100_composes_once(tmp_d
             store.reward_settlement_service.grant_task_unlocks_in_txn(conn, 1, kind, source, f'event:{index}', source, '2026-09-06')
         store.reward_settlement_service.grant_task_unlocks_in_txn(conn, 1, 'habit', 'brush', 'event:0', '刷牙', '2026-09-06')
         assert conn.execute("SELECT COUNT(*) FROM server_reward_ledger WHERE source_type='reward_buy'").fetchone()[0] == 1
-    summaries = [SourceRewardService(store._connect).summary(1, kind, source) for kind, source in (('habit', 'brush'), ('checklist_task', 'ad'))]
+    summaries = [SourceRewardService(store._connect, lambda: '2026-09-06 12:00:00').summary(1, kind, source) for kind, source in (('habit', 'brush'), ('checklist_task', 'ad'))]
     assert [item['fragmentProgress'][reward_id]['percent'] for item in summaries] == [5, 5]
     assert all(item['fragmentProgress'][reward_id]['inventoryUsed'] == 1 for item in summaries)
+    store.reward_wallet_service._now = lambda: '2026-09-06 12:00:00'
     assert store.reward_wallet_service.list_backpack_fragments(1)[0]['progress_percent'] == 5
     assert len(rolls) == 7

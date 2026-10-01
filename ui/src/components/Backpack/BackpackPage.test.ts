@@ -8,14 +8,18 @@ const items: BackpackItem[] = [
   { id: 'a', title: '物品', icon: '🎁', created_at: '2026-08-04', is_used: false },
   { id: 'b', title: '物品', icon: '🎁', created_at: '2026-08-04', is_used: false },
   { id: 'c', title: '物品', icon: '🎁', created_at: '2026-08-04', is_used: true, used_at: '2026-08-04 12:00:00' },
+  { id: 'd', title: '月卡', icon: '📱', created_at: '2026-08-04', is_used: false, is_expired: true, expires_at: '2026-09-01 00:00:00' },
 ]
 
 const available = groupBackpackItems(items, 'available')
 assert(available.length === 1 && available[0].quantity === 2, 'available items share one grid slot')
 const used = groupBackpackItems(items, 'used')
 assert(used.length === 1 && used[0].item.id === 'c', 'used filter excludes available inventory')
+assert(groupBackpackItems(items, 'expired')[0].item.id === 'd', 'expired complete items remain historical but leave available inventory')
 assert(DEFAULT_BACKPACK_FILTER === 'available' && !backpackFilters.flat().join('|').includes('all') && !backpackFilters.flat().join('|').includes('全部'), 'backpack defaults to available and hides all')
+assert(backpackFilters.some(([key, label]) => key === 'expired' && label === '已过期'), 'backpack exposes a recent expired tab')
 assert(canUseBackpackItem(items[0]) && !canUseBackpackItem(items[2]), 'used inventory cannot be used again')
+assert(!canUseBackpackItem(items[3]), 'expired inventory cannot expose a use action')
 assert(getBackpackItemDescription({ ...items[0], description: '创建时填写的说明' }) === '创建时填写的说明', 'backpack detail preserves a reward description')
 assert(getBackpackItemDescription(items[0]) === '暂无物品说明', 'backpack detail only uses the empty-description placeholder when the source is empty')
 assert(BACKPACK_MINIMUM_SLOTS === 14, 'backpack reserves room for the event panel')

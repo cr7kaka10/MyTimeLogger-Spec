@@ -17,7 +17,7 @@ import re
 import sqlite3
 import uuid
 import hashlib
-from datetime import date, timedelta
+from .reward_period import period_end, period_window
 
 try:
     from ..statistics_start_date import is_user_statistics_date_eligible
@@ -200,7 +200,8 @@ class RewardSettlementService:
             """
             SELECT r.id, r.title, r.inventory_mode, r.inventory_limit, r.unlock_required_count,
                    r.unlock_threshold_started_at, r.fulfillment_mode, r.fragment_target_count,
-                   r.fragment_rule_version, b.drop_mode, b.drop_min_units, b.drop_max_units
+                   r.fragment_rule_version, r.fragment_measure_mode,
+                   b.drop_mode, b.drop_min_units, b.drop_max_units
             FROM server_reward_source_bindings b
             JOIN server_rewards r ON r.id=b.reward_id
             WHERE b.user_id=? AND b.source_type=? AND b.source_id=? AND r.is_active=1
@@ -224,6 +225,7 @@ class RewardSettlementService:
             self._reward_wallet.append_ledger_in_txn(
                 conn, user_id, 0, "reward_buy", source,
                 f"任务自动解锁兑换: {reward['title'] or title}", target_date, ledger_id,
+                expires_at=period_end(target_date, str(reward["inventory_mode"] or "unlimited")),
             )
             ledger_ids.append(ledger_id)
         return ledger_ids
@@ -233,6 +235,12 @@ class RewardSettlementService:
 
     def expire_fragments_for_user_in_txn(self, conn, user_id):
         return self._fragments.expire_for_user_in_txn(conn, user_id)
+
+    def reconcile_period_inventory_in_txn(self, conn, user_id):
+        """按固定顺序协调周期库存，确保过期事实不再可用。"""
+        fragments = self._fragments.expire_for_user_in_txn(conn, user_id)
+        items = self._reward_wallet.expire_backpack_items_in_txn(conn, user_id)
+        return {"expired_fragments": fragments, "expired_items": items}
 
     def inventory_available_in_txn(self, conn, user_id, reward, target_date: str) -> bool:
         """按服务端北京时间目标窗口判断商品是否还能入包。"""
@@ -258,15 +266,7 @@ class RewardSettlementService:
 
     @staticmethod
     def _inventory_window(target_date: str, mode: str) -> tuple[str, str]:
-        value = date.fromisoformat(str(target_date)[:10])
-        if mode == "daily":
-            return value.isoformat(), value.isoformat()
-        if mode == "weekly":
-            start = value - timedelta(days=value.weekday())
-            return start.isoformat(), (start + timedelta(days=6)).isoformat()
-        start = value.replace(day=1)
-        next_month = (start.replace(day=28) + timedelta(days=4)).replace(day=1)
-        return start.isoformat(), (next_month - timedelta(days=1)).isoformat()
+        return period_window(target_date, mode)
 
     def reconcile_habit_unlock_thresholds_in_txn(self, conn, user_id, habit_id, reward, fallback_title, reverse_used=False) -> list[str]:
         """让习惯阈值商品数量与服务端有效打卡数一致。"""
@@ -317,6 +317,7 @@ class RewardSettlementService:
             self._reward_wallet.append_ledger_in_txn(
                 conn, user_id, 0, "reward_buy", source,
                 f"习惯累计解锁兑换: {reward['title'] or fallback_title}", target_date, ledger_id,
+                expires_at=period_end(target_date, str(reward["inventory_mode"] or "unlimited")),
             )
             created.append(ledger_id)
         return created

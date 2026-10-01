@@ -1,34 +1,48 @@
 # -*- coding: utf-8 -*-
 import pytest
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
 
 from server.store import ServerSleepStore
+from server.domain.source_reward_service import SourceRewardService
 
 
 def _store(tmp_db_path):
     store = ServerSleepStore(db_path=tmp_db_path)
     with store._transact() as conn:
         conn.execute("INSERT INTO users (id, username, password_hash, created_at) VALUES (1, 'u1', 'x', '2026-08-01 00:00:00')")
-        conn.execute("INSERT INTO server_habits (id, user_id, name, is_active, created_at, updated_at) VALUES ('habit-1', 1, '刷牙', 0, '2026-08-01 00:00:00', '2026-08-01 00:00:00')")
+        conn.execute("INSERT INTO server_habits (id, user_id, name, is_active, source, created_at, updated_at) VALUES ('habit-1', 1, '刷牙', 0, 'local', '2026-08-01 00:00:00', '2026-08-01 00:00:00')")
     return store
 
 
-def test_weekly_inventory_is_rejected(tmp_db_path):
+def test_weekly_inventory_is_supported_and_requires_positive_limit(tmp_db_path):
     store = _store(tmp_db_path)
-    with pytest.raises(ValueError, match='每周库存已取消'):
-        store.create_reward(1, '周商品', price=1, inventory_mode='weekly', inventory_limit=1)
+    reward_id = store.create_reward(1, '周商品', price=1, inventory_mode='weekly', inventory_limit=1)
+    with store._connect() as conn:
+        assert tuple(conn.execute("SELECT inventory_mode,inventory_limit FROM server_rewards WHERE id=?", (reward_id,)).fetchone()) == ('weekly', 1)
+    with pytest.raises(ValueError, match='正整数'):
+        store.create_reward(1, '非法周商品', price=1, inventory_mode='weekly', inventory_limit=0)
 
 
-def test_updating_legacy_weekly_reward_normalizes_it_to_unlimited(tmp_db_path):
+def test_updating_weekly_reward_preserves_weekly_mode(tmp_db_path):
     store = _store(tmp_db_path)
     with store._transact() as conn:
         conn.execute(
             """INSERT INTO server_rewards
-               (id,user_id,title,icon,price,inventory_mode,is_active,created_at,updated_at)
-               VALUES ('legacy-weekly',1,'旧商品','🎁',1,'weekly',1,'2026-08-01 00:00:00','2026-08-01 00:00:00')"""
+               (id,user_id,title,icon,price,inventory_mode,inventory_limit,is_active,created_at,updated_at)
+               VALUES ('legacy-weekly',1,'旧商品','🎁',1,'weekly',1,1,'2026-08-01 00:00:00','2026-08-01 00:00:00')"""
         )
     assert store.update_reward(1, 'legacy-weekly', title='已迁移商品')
     with store._connect() as conn:
-        assert conn.execute("SELECT inventory_mode FROM server_rewards WHERE id='legacy-weekly'").fetchone()[0] == 'unlimited'
+        assert conn.execute("SELECT inventory_mode FROM server_rewards WHERE id='legacy-weekly'").fetchone()[0] == 'weekly'
+
+
+def test_weekly_inventory_window_resets_on_beijing_monday():
+    window = ServerSleepStore._validate_reward_rules('weekly', 10, None, 1)
+    assert window[:2] == ('weekly', 10)
+    from server.domain.reward_settlement_service import RewardSettlementService
+    assert RewardSettlementService._inventory_window('2026-10-04', 'weekly') == ('2026-09-28', '2026-10-04')
+    assert RewardSettlementService._inventory_window('2026-10-05', 'weekly') == ('2026-10-05', '2026-10-11')
 
 
 def test_one_time_source_can_contribute_to_shared_fragment_target():
@@ -53,7 +67,7 @@ def test_habit_fragments_compose_after_target_count(tmp_db_path):
             "SELECT status,expires_at,progress_units,consumed_units FROM server_reward_fragments WHERE reward_id=? ORDER BY id", (reward_id,),
         ).fetchall()
         assert len(fragments) == 3
-        assert sum(row['progress_units'] - row['consumed_units'] for row in fragments) == 2
+        assert sum(row['progress_units'] - row['consumed_units'] for row in fragments) == 0
         assert all(row['expires_at'] > service._now() for row in fragments)
         assert conn.execute("SELECT COUNT(*) FROM server_reward_ledger WHERE user_id=1 AND source_type='reward_buy'").fetchone()[0] == 1
 
@@ -71,9 +85,86 @@ def test_monthly_limit_is_checked_before_consuming_100_progress_units(tmp_db_pat
         purchases = conn.execute("SELECT COUNT(*) FROM server_reward_ledger WHERE source_type='reward_buy'").fetchone()[0]
         assert (held, purchases) == (100, 1)
         service.grant_task_unlocks_in_txn(conn, 1, 'habit', 'habit-1', 'oct:1', '刷牙', '2026-10-01')
-        held_next = conn.execute("SELECT SUM(progress_units-consumed_units) FROM server_reward_fragments WHERE reward_id=? AND status='active'", (reward_id,)).fetchone()[0]
+        service.grant_task_unlocks_in_txn(conn, 1, 'habit', 'habit-1', 'oct:2', '刷牙', '2026-10-01')
+        held_next = conn.execute("SELECT COALESCE(SUM(progress_units-consumed_units),0) FROM server_reward_fragments WHERE reward_id=? AND status='active'", (reward_id,)).fetchone()[0]
         purchases_next = conn.execute("SELECT COUNT(*) FROM server_reward_ledger WHERE source_type='reward_buy'").fetchone()[0]
-    assert (held_next, purchases_next) == (50, 2)
+    assert (held_next, purchases_next) == (0, 2)
+
+
+def test_monthly_seven_piece_reward_caps_at_ten_without_consuming_overflow(tmp_db_path):
+    store = _store(tmp_db_path)
+    reward_id = store.create_reward(
+        1, '解锁手机', price=0, redemption_mode='task', fulfillment_mode='fragment',
+        fragment_target_count=7, inventory_mode='monthly', inventory_limit=10,
+    )
+    store.bind_reward_source(1, reward_id, 'habit', 'habit-1')
+    with store._transact() as conn:
+        for index in range(77):
+            store.reward_settlement_service.grant_task_unlocks_in_txn(
+                conn, 1, 'habit', 'habit-1', f'oct:{index}', '刷牙', '2026-10-01',
+            )
+        purchases = conn.execute(
+            "SELECT COUNT(*) FROM server_reward_ledger WHERE source_type='reward_buy' AND source_id LIKE ?",
+            (f'unlock:{reward_id}:%',),
+        ).fetchone()[0]
+        held = conn.execute(
+            """SELECT SUM(progress_units-consumed_units) FROM server_reward_fragments
+               WHERE reward_id=? AND status='active'""", (reward_id,),
+        ).fetchone()[0]
+        for index in range(77):
+            store.reward_settlement_service.grant_task_unlocks_in_txn(
+                conn, 1, 'habit', 'habit-1', f'oct:{index}', '刷牙', '2026-10-01',
+            )
+    assert (purchases, held) == (10, 7)
+
+
+def test_concurrent_fragment_events_do_not_exceed_period_limit(tmp_db_path):
+    store = _store(tmp_db_path)
+    reward_id = store.create_reward(
+        1, '限量卡', price=0, redemption_mode='task', fulfillment_mode='fragment',
+        fragment_target_count=1, inventory_mode='monthly', inventory_limit=1,
+    )
+    store.bind_reward_source(1, reward_id, 'habit', 'habit-1')
+    gate = Barrier(2)
+
+    def grant(index):
+        local = ServerSleepStore(db_path=tmp_db_path)
+        gate.wait()
+        with local._transact() as conn:
+            return local.reward_settlement_service.grant_task_unlocks_in_txn(
+                conn, 1, 'habit', 'habit-1', f'parallel:{index}', '刷牙', '2026-10-01',
+            )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(grant, range(2)))
+    with store._connect() as conn:
+        purchases = conn.execute(
+            "SELECT COUNT(*) FROM server_reward_ledger WHERE source_type='reward_buy' AND source_id LIKE ?",
+            (f'unlock:{reward_id}:%',),
+        ).fetchone()[0]
+        held = conn.execute(
+            "SELECT COUNT(*) FROM server_reward_fragments WHERE reward_id=? AND status='active'", (reward_id,),
+        ).fetchone()[0]
+    assert sum(len(item) for item in results) == 1
+    assert (purchases, held) == (1, 1)
+
+
+def test_weekly_count_summary_reports_pieces_usage_and_expiry(tmp_db_path):
+    store = _store(tmp_db_path)
+    reward_id = store.create_reward(
+        1, '周卡', price=0, unlock_source_type='habit', unlock_source_id='habit-1',
+        fulfillment_mode='fragment', fragment_target_count=7,
+        inventory_mode='weekly', inventory_limit=10,
+    )
+    with store._transact() as conn:
+        store.reward_settlement_service.grant_task_unlocks_in_txn(
+            conn, 1, 'habit', 'habit-1', 'week:1', '刷牙', '2026-10-04',
+        )
+    summary = SourceRewardService(store._connect, lambda: '2026-10-04 23:59:59').summary(1, 'habit', 'habit-1')
+    progress = summary['fragmentProgress'][reward_id]
+    assert (progress['activePieces'], progress['targetPieces']) == (1, 7)
+    assert (progress['periodUsed'], progress['availableItems']) == (0, 0)
+    assert (progress['periodMode'], progress['expiresAt']) == ('weekly', '2026-10-05 00:00:00')
 
 
 def test_fragment_expiry_and_consumed_fragment_cancellation(tmp_db_path):
@@ -162,3 +253,29 @@ def test_habit_reward_edit_keeps_fragment_fields(tmp_db_path):
     assert reward['unlock_required_count'] == 5
     assert reward['fulfillment_mode'] == 'fragment'
     assert reward['fragment_target_count'] == 5
+
+
+def test_existing_reward_saves_seven_fragments_and_monthly_ten(tmp_db_path):
+    store = _store(tmp_db_path)
+    reward_id = store.create_reward(
+        1, '解锁手机', price=0, unlock_source_type='habit', unlock_source_id='habit-1',
+        fulfillment_mode='fragment', fragment_target_count=5,
+    )
+    with store._transact() as conn:
+        conn.execute("DELETE FROM server_change_log WHERE user_id=1")
+
+    assert store.update_reward(
+        1, reward_id, inventory_mode='monthly', inventory_limit=10,
+        fulfillment_mode='fragment', fragment_target_count=7,
+    )
+    with store._connect() as conn:
+        reward = conn.execute(
+            "SELECT inventory_mode,inventory_limit,fulfillment_mode,fragment_target_count "
+            "FROM server_rewards WHERE id=?", (reward_id,),
+        ).fetchone()
+        published = conn.execute(
+            "SELECT COUNT(*) FROM server_change_log WHERE user_id=1 AND table_name='server_rewards' AND record_id=?",
+            (reward_id,),
+        ).fetchone()[0]
+    assert tuple(reward) == ('monthly', 10, 'fragment', 7)
+    assert published == 1

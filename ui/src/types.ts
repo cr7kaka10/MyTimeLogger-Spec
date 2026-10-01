@@ -78,11 +78,12 @@ export interface Reward {
   unlock_task_title?: string | null
   unlock_source_type?: 'checklist_task' | 'habit' | 'learning_task' | 'learning_objective' | 'exercise_checkin' | 'goal' | null
   unlock_source_id?: string | null
-  inventory_mode?: 'unlimited' | 'daily' | 'monthly'
+  inventory_mode?: 'unlimited' | 'daily' | 'weekly' | 'monthly'
   inventory_limit?: number | null
   unlock_required_count?: number
   fulfillment_mode?: 'immediate' | 'fragment'
   fragment_target_count?: number
+  fragment_measure_mode?: 'count' | 'percent'
   fragment_rule_version?: number
   fragment_progress_units?: number
   inventory_used?: number
@@ -95,6 +96,7 @@ export interface RewardFragment {
   source_id: string
   completion_event_key: string
   rule_version: number
+  fragment_measure_mode?: 'count' | 'percent'
   issued_at: string
   expires_at: string
   status: 'active' | 'consumed' | 'expired' | 'revoked'
@@ -115,7 +117,14 @@ export interface FragmentProgress {
   target: number
   activeUnits?: number
   targetUnits?: number
+  activePieces?: number | null
+  targetPieces?: number | null
   percent?: number
+  measureMode?: 'count' | 'percent'
+  availableItems?: number
+  periodUsed?: number
+  periodMode?: 'unlimited' | 'daily' | 'weekly' | 'monthly'
+  expiresAt?: string | null
   inventoryUsed?: number
   inventoryLimit?: number | null
   inventoryLimitReached?: boolean
@@ -257,6 +266,8 @@ export interface BackpackItem {
   unlock_task_title?: string
   is_used: boolean
   used_at?: string | null
+  expires_at?: string | null
+  is_expired?: boolean
 }
 
 export interface BackpackFragment {
@@ -270,6 +281,7 @@ export interface BackpackFragment {
   earliest_expires_at: string
   rule_version: number
   progress_percent?: number
+  measure_mode?: 'count' | 'percent'
   inventory_used?: number
   inventory_limit?: number | null
   inventory_limit_reached?: boolean
@@ -278,7 +290,7 @@ export interface BackpackFragment {
 export interface BackpackEvent {
   id: string
   ledger_id: string
-  event_type: 'acquired' | 'used' | 'discarded' | 'revoked' | 'fragment_acquired' | 'fragment_expired' | 'fragment_revoked' | 'fragment_composed'
+  event_type: 'acquired' | 'used' | 'discarded' | 'revoked' | 'backpack_expired' | 'fragment_acquired' | 'fragment_expired' | 'fragment_revoked' | 'fragment_composed'
   created_at: string
   item_title: string
   quantity: number

@@ -22,7 +22,7 @@ interface Props {
 }
 
 const normalizeInventoryMode = (value?: string | null): NonNullable<Reward['inventory_mode']> => (
-  value === 'daily' || value === 'monthly' ? value : 'unlimited'
+  value === 'daily' || value === 'weekly' || value === 'monthly' ? value : 'unlimited'
 )
 
 export const RewardAddSheet = memo(({ reward, lockedSource, layerClass, onSave, onClose }: Props) => {
@@ -110,8 +110,8 @@ export const RewardAddSheet = memo(({ reward, lockedSource, layerClass, onSave, 
 
         {isFragmentSource && <div className="rounded-lg bg-blue-50 px-3 py-2 text-sm text-blue-800 dark:bg-blue-950/40 dark:text-blue-200">
           <div className="font-semibold">物品碎片</div>
-          <p className="mt-1 text-xs">任一绑定来源每次完成获得 1 枚；集满 n 枚自动合成，单枚有效期也是 n 天。</p>
-          <label className="mt-3 block text-xs">碎片目标数（也是有效期天数）
+          <p className="mt-1 text-xs">任一绑定来源每次完成获得 1 枚；集满 n 枚自动合成。周期商品的碎片和完整商品都只在当期有效。</p>
+          <label className="mt-3 block text-xs">碎片目标数
             <input type="number" min={1} step={1} value={fragmentTargetCount} onChange={e => setFragmentTargetCount(Number(e.target.value))} className="mt-1 w-full rounded-lg border border-blue-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none focus:border-blue-400" />
           </label>
         </div>}
@@ -119,8 +119,9 @@ export const RewardAddSheet = memo(({ reward, lockedSource, layerClass, onSave, 
         <div>
           <span className="text-xs text-gray-400">商品数量</span>
           <select value={inventoryMode} onChange={e => setInventoryMode(e.target.value as NonNullable<Reward['inventory_mode']>)} className="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2 text-sm outline-none focus:border-blue-400 bg-white">
-            <option value="unlimited">不限量</option><option value="daily">每天更新</option><option value="monthly">每月更新</option>
+            <option value="unlimited">不限量</option><option value="daily">每天更新</option><option value="weekly">每周更新</option><option value="monthly">每月更新</option>
           </select>
+          {inventoryMode === 'weekly' && <p className="mt-1 text-xs text-gray-500">按北京时间自然周计算：周一 00:00 至下周一 00:00。</p>}
           {inventoryMode !== 'unlimited' && <input type="number" min={1} step={1} value={inventoryLimit} onChange={e => setInventoryLimit(Number(e.target.value))} className="mt-2 w-full rounded-lg border border-gray-200 px-3 py-2 text-sm outline-none focus:border-blue-400" placeholder="每个周期的数量" />}
         </div>
 

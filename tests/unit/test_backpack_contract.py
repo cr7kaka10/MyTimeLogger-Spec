@@ -35,3 +35,34 @@ def test_backpack_returns_the_authoritative_reward_description(tmp_db_path):
 
     assert store.update_reward(1, 'r', description='编辑后的说明')
     assert store.list_backpack(1)[0]['description'] == '编辑后的说明'
+
+
+def test_period_item_freezes_expiry_and_rejects_use_at_boundary(tmp_db_path):
+    store = ServerSleepStore(db_path=tmp_db_path)
+    with store._transact() as conn:
+        conn.execute("INSERT INTO users VALUES (1,'u','x','2026-10-01')")
+        conn.execute("""INSERT INTO server_habits
+            (id,user_id,name,is_active,source,created_at,updated_at)
+            VALUES('h',1,'习惯',0,'local','2026-10-01','2026-10-01')""")
+    reward_id = store.create_reward(
+        1, '月卡', price=0, unlock_source_type='habit', unlock_source_id='h',
+        fulfillment_mode='fragment', fragment_target_count=1,
+        inventory_mode='monthly', inventory_limit=10,
+    )
+    with store._transact() as conn:
+        [ledger_id] = store.reward_settlement_service.grant_task_unlocks_in_txn(
+            conn, 1, 'habit', 'h', 'oct:one', '习惯', '2026-10-01',
+        )
+    assert store.update_reward(1, reward_id, inventory_mode='unlimited', inventory_limit=None)
+    with store._connect() as conn:
+        assert conn.execute("SELECT expires_at FROM server_reward_ledger WHERE id=?", (ledger_id,)).fetchone()[0] == '2026-11-01 00:00:00'
+
+    store.reward_wallet_service._now = lambda: '2026-11-01 00:00:00'
+    assert store.use_backpack_item(1, ledger_id) == (False, '商品已过期')
+    assert store.use_backpack_item(1, ledger_id) == (False, '商品已过期')
+    with store._transact() as conn:
+        store.reward_wallet_service.expire_backpack_items_in_txn(conn, 1)
+    with store._connect() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM server_reward_ledger WHERE source_type='backpack_use'").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM server_backpack_events WHERE ledger_id=? AND event_type='backpack_expired'", (ledger_id,)).fetchone()[0] == 1
+    assert store.list_backpack(1)[0]['is_expired'] is True

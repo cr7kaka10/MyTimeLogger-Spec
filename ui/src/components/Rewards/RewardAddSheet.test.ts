@@ -7,5 +7,7 @@ assert(source.includes('物品碎片'), 'reward sheet must expose a fragment rul
 assert(source.includes('完成奖励型'), 'reward sheet must expose the reward-only product type')
 assert(source.includes('商品页不设置绑定来源'), 'product sheet must not contain source binding controls')
 assert(source.includes('任一绑定来源每次完成获得 1 枚'), 'fragment target must be a shared product property')
-assert(source.includes("value === 'daily' || value === 'monthly' ? value : 'unlimited'"), 'legacy weekly inventory must display as unlimited')
+assert(source.includes("value === 'daily' || value === 'weekly' || value === 'monthly'"), 'weekly inventory must survive edit and reopen')
+assert(source.includes('<option value="weekly">每周更新</option>'), 'reward sheet must expose weekly inventory')
+assert(source.includes('周一 00:00 至下周一 00:00'), 'weekly inventory must explain the Beijing natural week')
 console.log('reward add sheet fragment contracts passed')

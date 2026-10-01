@@ -4927,6 +4927,8 @@ async def claim_rewards(request: Request, user: dict = Depends(get_current_user_
 
 @app.get("/api/rewards/backpack")
 def get_backpack(user: dict = Depends(get_current_user_optional)):
+    with store._transact() as conn:
+        store.reward_settlement_service.reconcile_period_inventory_in_txn(conn, user["id"])
     backpack = store.list_backpack(user["id"])
     fragments = store.reward_wallet_service.list_backpack_fragments(user["id"])
     return {"status": "ok", "backpack": backpack, "fragments": fragments}
