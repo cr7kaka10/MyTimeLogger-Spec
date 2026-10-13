@@ -1,4 +1,6 @@
-import { BACKPACK_MINIMUM_SLOTS, backpackFilters, canUseBackpackItem, DEFAULT_BACKPACK_FILTER, formatBackpackEvent, getBackpackItemDescription, groupBackpackItems } from './BackpackPage'
+import { BackpackPage, BACKPACK_MINIMUM_SLOTS, backpackFilters, canUseBackpackItem, DEFAULT_BACKPACK_FILTER, formatBackpackEvent, getBackpackItemDescription, groupBackpackItems } from './BackpackPage'
+import { createElement } from 'react'
+import { renderToStaticMarkup } from 'react-dom/server'
 import type { BackpackItem } from '../../types'
 import { readFileSync } from 'node:fs'
 import { BACKPACK_REFRESH_EVENTS } from '../../hooks/backpackRefresh'
@@ -29,5 +31,12 @@ assert(BACKPACK_REFRESH_EVENTS.includes('sync-pull-complete'), 'a completed frag
 const source = readFileSync(new URL('./BackpackPage.tsx', import.meta.url), 'utf8')
 assert(source.includes('theme-page') && source.includes('theme-surface') && source.includes('dark:bg-slate-950'), 'backpack must use shared page/card theme surfaces and a dark event ledger')
 assert(source.includes('selectedFragment') && source.includes('current_count') && source.includes('未合成，暂不可使用'), 'unfinished fragments are shown as unavailable backpack entries')
-assert(source.includes('progress_percent') && source.includes('本月已满'), 'fragment cards use percentage progress and show a full monthly limit')
+assert(source.includes('target_count') && source.includes('本周期已满'), 'count fragments show exact pieces and a generic period limit')
+assert(source.includes('selected.is_expired') && source.includes('到期：'), 'complete item expiry remains visible in history')
+assert(source.includes('isRefreshing &&') && source.includes('正在刷新'), 'background refresh shows a small status instead of a full-page skeleton')
+assert(source.includes('最近没有过期物品') && source.includes('已过期，仅供查看'), 'expired fragments are read-only and have an empty state')
+const props: any = { items: [items[0]], fragments: [], expiredFragments: [], events: [], isLoading: false, isRefreshing: true, hasMoreEvents: false, isLoadingMoreEvents: false, syncState: 'fresh', errorMessage: '', lastSuccessfulAt: null, serverUrl: '', useItem: async () => {}, loadMoreEvents: async () => {} }
+const refreshing = renderToStaticMarkup(createElement(BackpackPage, props))
+assert(refreshing.includes('正在刷新') && refreshing.includes('物品') && !refreshing.includes('animate-pulse'), 'refresh keeps inventory visible without a full-page skeleton')
+assert(renderToStaticMarkup(createElement(BackpackPage, { ...props, isLoading: true })).includes('animate-pulse'), 'first load still shows a placeholder')
 console.log('Backpack page contracts passed')

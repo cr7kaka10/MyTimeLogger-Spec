@@ -1,6 +1,8 @@
 import type { BackpackItem } from '../types'
 
-export const BACKPACK_REFRESH_EVENTS = ['reward-catalog-updated', 'sync-pull-complete'] as const
+export const BACKPACK_REFRESH_EVENTS = [
+  'reward-catalog-updated', 'sync-pull-complete', 'balance-updated', 'backpack-updated',
+] as const
 
 export const normalizeBackpackItems = (items: BackpackItem[]): BackpackItem[] => items.map(item => ({
   ...item,

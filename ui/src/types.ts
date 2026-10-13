@@ -287,10 +287,16 @@ export interface BackpackFragment {
   inventory_limit_reached?: boolean
 }
 
+export interface ExpiredBackpackFragment extends BackpackFragment {
+  fragment_id: string
+  expired_at: string
+  status: 'expired'
+}
+
 export interface BackpackEvent {
   id: string
   ledger_id: string
-  event_type: 'acquired' | 'used' | 'discarded' | 'revoked' | 'backpack_expired' | 'fragment_acquired' | 'fragment_expired' | 'fragment_revoked' | 'fragment_composed'
+  event_type: 'acquired' | 'used' | 'discarded' | 'revoked' | 'backpack_expired' | 'fragment_acquired' | 'fragment_expired' | 'fragment_revoked' | 'fragment_composed' | 'fragment_batch_reversed' | 'fragment_debt_created' | 'fragment_debt_settled'
   created_at: string
   item_title: string
   quantity: number
