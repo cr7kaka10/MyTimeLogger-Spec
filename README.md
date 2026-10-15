@@ -189,9 +189,17 @@ npm.cmd --prefix desktop start
 .\start-all.bat
 ```
 
-它会先安装/检查依赖，再检查 Android 条件。当前脚本固定使用 AVD 名称 `aTimeLogger_Extraction_API35` 和 `emulator-5554`；需要事先在 Android Studio 创建匹配的 AVD，并具备 JDK/SDK。没有 Android 环境时可能在 PC 启动前就停止，因此首次只用 PC 请走前面的三个窗口步骤。
+它会先安装/检查依赖，再检查 Android 条件。当前脚本固定使用 AVD 名称 `aTimeLogger_Extraction_API35` 和 `emulator-5554`；需要事先在 Android Studio 创建匹配的 AVD，并具备 JDK/SDK。
 
 日志位于 `tests/runtime/startup-logs/`，Android 摘要为 `android-*.summary.json`。只有最终各端 ready 才表示完整启动成功；脚本可能重启它识别出的本项目实例，不应在正在进行的重要计时中途反复运行。
+
+本机使用 Windows Subsystem for Android（WSA）时改用：
+
+```powershell
+.\start-all-pc.bat
+```
+
+这个入口同样启动 Server、Vite、Electron PC 和 Android，但 Android 目标是 WSA：它会构建当前工作区 Debug APK、使用 `adb install -r` 保留数据覆盖安装、建立 `tcp:8000` reverse，并验证 `MainActivity` 前台可交互。默认尝试 `127.0.0.1:58526`；端口变化时先设置 `$env:MTL_WSA_SERIAL='实际地址:端口'`。摘要为 `tests/runtime/startup-logs/wsa-*.summary.json`。不要同时把 AVD 版 `start-all.bat` 当作 WSA 入口。
 
 <a id="first-use"></a>
 
@@ -674,6 +682,7 @@ python .\server\restore_s3_snapshot.py --snapshot .\backups-local\snapshot.db.gz
 | Vite 启动在 5174、Electron 白屏 | Electron 默认加载 5173；解决 5173 占用或将 `MTL_DEV_SERVER_URL` 改为实际 Vite 地址 |
 | 浏览器 5173 提示数据库不可用 | 使用 Electron/EXE 或 APK；当前不支持纯浏览器存储运行 |
 | `start-all.bat` 卡在 Android 检查 | 只用 PC 就按第 3.4–3.6 节启动；完整入口需指定名称的 AVD、JDK/SDK |
+| `start-all-pc.bat` 找不到 WSA | 先确认 MyTimeLogger 已注册到 Windows 开始菜单；用 `adb devices -l` 查看 `Subsystem_for_Android` 地址，必要时设置 `MTL_WSA_SERIAL` |
 | 注册失败“用户已存在” | 在当前服务器改为登录；不同服务器的同名账号不是同一份数据 |
 | 登录 401 | 检查账号密码和服务地址；全新服务端要先注册。连续失败可能触发登录限流，默认锁定配置为 5 次/300 秒 |
 | 手机无法连接 | 手机不要填无映射的 `127.0.0.1`；检查服务监听、局域网、VPN、无线客户端隔离及防火墙，先用手机浏览器访问 `/ping` |
