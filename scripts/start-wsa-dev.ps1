@@ -3,6 +3,13 @@ param([ValidateRange(10, 300)][int]$TimeoutSeconds = 90)
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
+$runStamp = [DateTime]::UtcNow.AddHours(8).ToString('yyyyMMdd-HHmmss')
+$logDirectory = Join-Path $root 'tests\runtime\startup-logs'
+New-Item -ItemType Directory -Force -Path $logDirectory | Out-Null
+$summaryPattern = 'wsa-*.summary.json'
+$summaryPath = Join-Path $logDirectory "wsa-$runStamp.summary.json"
+$stage = 'preflight'; $serial = ''; $inputReady = $false
+try {
 $localProperties = Join-Path $root 'ui\android\local.properties'
 $buildScript = Join-Path $root 'deploy\build-android.ps1'
 $apkPath = Join-Path $root 'deploy\artifacts\MyTimeLogger-debug.apk'
@@ -74,3 +81,34 @@ if (-not (Test-Path -LiteralPath $apkPath -PathType Leaf)) {
     throw "WSA build stage did not produce APK: $apkPath"
 }
 Write-Host "[wsa] APK ready: $apkPath"
+$stage = 'install'
+& $adb -s $serial install -r $apkPath | Out-Host
+if ($LASTEXITCODE -ne 0) { throw "adb install -r failed (exit $LASTEXITCODE)." }
+$stage = 'reverse'
+& $adb -s $serial reverse tcp:8000 tcp:8000
+if ($LASTEXITCODE -ne 0) { throw "adb reverse tcp:8000 failed (exit $LASTEXITCODE)." }
+$stage = 'activity_start'
+& $adb -s $serial shell am start -W -n 'com.mytimelogger.app/.MainActivity' | Out-Host
+if ($LASTEXITCODE -ne 0) { throw "MainActivity start failed (exit $LASTEXITCODE)." }
+$deadline = [DateTime]::UtcNow.AddSeconds(20)
+do {
+    $activities = (& $adb -s $serial shell dumpsys activity activities 2>$null) -join "`n"
+    $windows = (& $adb -s $serial shell dumpsys window windows 2>$null) -join "`n"
+    $inputDump = (& $adb -s $serial shell dumpsys input 2>$null) -join "`n"
+    $foreground = $activities -match '(?:topResumedActivity|mResumedActivity)=.*com\.mytimelogger\.app/\.MainActivity'
+    $window = [regex]::Match($windows, '(?s)Window #\d+ Window\{[^\r\n]*com\.mytimelogger\.app/(?:com\.mytimelogger\.app\.)?MainActivity\}:(.*?)(?=\r?\n\s*Window #|\z)')
+    $surface = $window.Success -and $window.Value -match 'Surface:\s+shown=true'
+    $inputReady = $inputDump -match 'com\.mytimelogger\.app.*MainActivity' -and $inputDump -match 'responsive=true'
+    if ($foreground -and $surface -and $inputReady) { break }
+    Start-Sleep -Milliseconds 500
+} while ([DateTime]::UtcNow -lt $deadline)
+if (-not ($foreground -and $surface -and $inputReady)) { throw "MainActivity readiness timed out: foreground=$foreground;surface=$surface;input=$inputReady" }
+[pscustomobject]@{ timestamp_beijing=[DateTime]::UtcNow.AddHours(8).ToString('yyyy-MM-dd HH:mm:ss'); result='success'; stage='ready'; error_category=''; error_reason=''; serial=$serial; apk_path=$apkPath; input_ready=$true; summary_path=$summaryPath } | ConvertTo-Json | Set-Content -LiteralPath $summaryPath -Encoding utf8
+Write-Host "[wsa] Android ready: serial=$serial; summary=$summaryPath"
+exit 0
+} catch {
+    $reason = $_.Exception.Message
+    [pscustomobject]@{ timestamp_beijing=[DateTime]::UtcNow.AddHours(8).ToString('yyyy-MM-dd HH:mm:ss'); result='failed'; stage=$stage; error_category="${stage}_failed"; error_reason=$reason; serial=$serial; apk_path=$apkPath; input_ready=$false; summary_path=$summaryPath } | ConvertTo-Json | Set-Content -LiteralPath $summaryPath -Encoding utf8
+    [Console]::Error.WriteLine("[wsa] Startup failed at $stage`: $reason Summary: $summaryPath")
+    exit 1
+}
