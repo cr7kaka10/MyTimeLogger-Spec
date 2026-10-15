@@ -5,6 +5,9 @@ const Database = require('better-sqlite3');
 const { accountDatabasePath, isolateSharedDatabases } = require('./account-storage');
 const { createTimerFlowLogger } = require('./timer-flow-logger');
 if (process.env.MTL_TIMER_INPUT_E2E === '1') require('./timer-input-slow-fetch.cjs');
+if (process.env.MTL_ELECTRON_USER_DATA_DIR) {
+  app.setPath('userData', path.resolve(process.env.MTL_ELECTRON_USER_DATA_DIR));
+}
 
 const gotTheLock = app.requestSingleInstanceLock();
 if (!gotTheLock) {

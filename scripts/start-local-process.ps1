@@ -111,7 +111,23 @@ try {
         } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $logDirectory "$safeName.state.json") -Encoding utf8
     }
     if ($Name -eq 'Electron') {
-        Write-Host "[start] Fresh Electron launch requested: PID $($process.Id). Logs: $output"
+        $deadline = [DateTime]::UtcNow.AddSeconds(30)
+        do {
+            $ready = @(Get-ProjectElectronPrimaries | Where-Object {
+                $candidate = Get-Process -Id ([int]$_.ProcessId) -ErrorAction SilentlyContinue
+                $candidate -and $candidate.MainWindowHandle -ne 0
+            }) | Select-Object -First 1
+            if ($ready) { break }
+            Start-Sleep -Milliseconds 250
+        } while ([DateTime]::UtcNow -lt $deadline)
+        if (-not $ready) {
+            $tail = if (Test-Path -LiteralPath $errorLog) {
+                (Get-Content -LiteralPath $errorLog -Tail 10 -ErrorAction SilentlyContinue) -join ' | '
+            } else { '(stderr log unavailable)' }
+            [Console]::Error.WriteLine("[start] Electron window_not_ready after 30s. Logs: $errorLog. Tail: $tail")
+            exit 2
+        }
+        Write-Host "[start] Electron window ready: PID $($ready.ProcessId). Logs: $output"
     } else {
         Write-Host "[start] $Name started: PID $($process.Id), logs: $output"
     }

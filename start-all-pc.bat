@@ -1,7 +1,6 @@
 @echo off
 setlocal EnableExtensions
-set "ROOT=%~dp0"
-cd /d "%ROOT%"
+set "ROOT=%~dp0" & cd /d "%~dp0"
 set "MTL_STARTUP_RUN_ID=%RANDOM%%RANDOM%%RANDOM%"
 echo [start-pc] Checking and bootstrapping local dependencies...
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%ROOT%scripts\bootstrap-dev.ps1"
@@ -15,6 +14,7 @@ echo [start-pc] Waiting for local services...
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%ROOT%scripts\wait-local-readiness.ps1" -TimeoutSeconds 90
 if errorlevel 1 goto :failed
 echo [start-pc] Launching Electron...
+set "MTL_ELECTRON_USER_DATA_DIR=%ROOT%tests\runtime\electron-user-data"
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%ROOT%scripts\start-local-process.ps1" -Name Electron
 set "ELECTRON_EXIT=%ERRORLEVEL%"
 echo [start-pc] Launching WSA Android...
