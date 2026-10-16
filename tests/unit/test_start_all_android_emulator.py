@@ -40,6 +40,13 @@ def test_start_all_orchestrates_android_without_destructive_operations():
     assert "wscript.shell" in bounds
     assert "appactivate" in bounds
     assert "request-targetemulatorforeground" in helper
+    assert "function resolve-androidsdk" in helper
+    assert "getenvironmentvariable('android_sdk_root', 'user')" in helper
+    assert "getfolderpath([environment+specialfolder]::localapplicationdata)" in helper
+    assert "test-path $script:adb" not in helper
+    assert "test-path $script:emulator" not in helper
+    assert "-not $script:adb -or -not (test-path -literalpath $script:adb -pathtype leaf)" in helper
+    assert "-not $script:emulator -or -not (test-path -literalpath $script:emulator -pathtype leaf)" in helper
     assert "stop-process" not in helper
     assert "kill" not in helper
     assert "wipe-data" not in helper

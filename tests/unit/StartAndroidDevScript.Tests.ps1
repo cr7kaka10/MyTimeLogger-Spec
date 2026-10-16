@@ -68,6 +68,34 @@ Describe 'legacy fastboot configuration cleanup' {
     }
 }
 
+Describe 'Android SDK discovery' {
+    It 'prefers a valid process candidate and falls back to a valid user candidate' {
+        $source = Get-Content -Raw -LiteralPath $scriptPath
+        $functionText = [regex]::Match($source, '(?s)function Resolve-AndroidSdk.*?(?=function Write-Stage)').Value
+        . ([scriptblock]::Create($functionText))
+        $root = Join-Path $env:TEMP "mtl-sdk-$([guid]::NewGuid().ToString('N'))"
+        $processSdk = Join-Path $root 'process'; $userSdk = Join-Path $root 'user'
+        try {
+            foreach ($sdk in @($processSdk, $userSdk)) {
+                New-Item -ItemType Directory -Force -Path (Join-Path $sdk 'platform-tools'), (Join-Path $sdk 'emulator') | Out-Null
+                New-Item -ItemType File -Force -Path (Join-Path $sdk 'platform-tools\adb.exe'), (Join-Path $sdk 'emulator\emulator.exe') | Out-Null
+            }
+            (Resolve-AndroidSdk -ProcessCandidates @($processSdk) -UserCandidates @($userSdk) -LocalAppData '' -UserProfile '') | Should Be $processSdk
+            (Resolve-AndroidSdk -ProcessCandidates @('', $null) -UserCandidates @($userSdk) -LocalAppData '' -UserProfile '') | Should Be $userSdk
+        } finally { if (Test-Path -LiteralPath $root) { Remove-Item -LiteralPath $root -Recurse -Force } }
+    }
+
+    It 'returns null without throwing when every candidate is absent' {
+        $source = Get-Content -Raw -LiteralPath $scriptPath
+        $functionText = [regex]::Match($source, '(?s)function Resolve-AndroidSdk.*?(?=function Write-Stage)').Value
+        . ([scriptblock]::Create($functionText))
+        $missing = Join-Path $env:TEMP "mtl-sdk-missing-$([guid]::NewGuid().ToString('N'))"
+        $result = Resolve-AndroidSdk -ProcessCandidates @($missing) -UserCandidates @() -LocalAppData '' -UserProfile ''
+        [bool]$result | Should Be $false
+        @($script:androidSdkCandidates).Count | Should Be 1
+    }
+}
+
 Describe 'start-all Android handoff' {
     It 'preserves the Android exit code and surfaces its summary path' {
         $batch = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot '..\..\start-all.bat')

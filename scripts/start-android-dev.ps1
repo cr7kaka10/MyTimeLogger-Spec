@@ -12,8 +12,6 @@ $targetSerial = 'emulator-5554'
 $serverUrl = 'http://127.0.0.1:8000'
 $gradleWrapper = Join-Path $root 'ui\android\gradlew.bat'
 $windowBoundsHelper = Join-Path $PSScriptRoot 'ensure-window-visible.ps1'
-$androidSdk = @($env:ANDROID_SDK_ROOT, $env:ANDROID_HOME, (Join-Path $env:LOCALAPPDATA 'Android\Sdk')) |
-    Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
 $runStamp = [DateTimeOffset]::UtcNow.ToOffset([TimeSpan]::FromHours(8)).ToString('yyyyMMdd-HHmmss')
 $logDirectory = Join-Path $root 'tests\runtime\startup-logs'
 $script:logPath = Join-Path $logDirectory "android-$runStamp.log"
@@ -38,7 +36,32 @@ $script:activitySurface = $false
 $script:appCrashed = $false
 $script:appRecoveryCount = 0
 $script:activityDiagnostics = 'not_checked'
+$script:androidSdkCandidates = @()
 New-Item -ItemType Directory -Force -Path $logDirectory | Out-Null
+
+function Resolve-AndroidSdk {
+    param(
+        [string[]]$ProcessCandidates = @($env:ANDROID_SDK_ROOT, $env:ANDROID_HOME),
+        [string[]]$UserCandidates = @([Environment]::GetEnvironmentVariable('ANDROID_SDK_ROOT', 'User'), [Environment]::GetEnvironmentVariable('ANDROID_HOME', 'User')),
+        [string]$LocalAppData = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData),
+        [string]$UserProfile = [Environment]::GetFolderPath([Environment+SpecialFolder]::UserProfile)
+    )
+    $candidates = @($ProcessCandidates) + @($UserCandidates)
+    if ($LocalAppData) { $candidates += Join-Path $LocalAppData 'Android\Sdk' }
+    if ($UserProfile) { $candidates += Join-Path $UserProfile 'AppData\Local\Android\Sdk' }
+    $seen = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    $script:androidSdkCandidates = @()
+    foreach ($candidate in $candidates) {
+        if ([string]::IsNullOrWhiteSpace([string]$candidate)) { continue }
+        try { $candidatePath = [IO.Path]::GetFullPath([Environment]::ExpandEnvironmentVariables(([string]$candidate).Trim().Trim('"'))) } catch { continue }
+        if (-not $seen.Add($candidatePath)) { continue }
+        $script:androidSdkCandidates += $candidatePath
+        $adb = Join-Path $candidatePath 'platform-tools\adb.exe'
+        $emulator = Join-Path $candidatePath 'emulator\emulator.exe'
+        if ((Test-Path -LiteralPath $adb -PathType Leaf) -and (Test-Path -LiteralPath $emulator -PathType Leaf)) { return $candidatePath }
+    }
+    return $null
+}
 
 function Write-Stage([string]$message) {
     $line = "[$([DateTimeOffset]::UtcNow.ToOffset([TimeSpan]::FromHours(8)).ToString('yyyy-MM-dd HH:mm:ss'))] [$script:stage] $message"
@@ -159,11 +182,12 @@ function Show-Plan {
 
 function Invoke-Preflight {
     $missing = [System.Collections.Generic.List[string]]::new()
-    if (-not $androidSdk) { $missing.Add('Android SDK (set ANDROID_SDK_ROOT or ANDROID_HOME)') }
+    $androidSdk = Resolve-AndroidSdk
+    if (-not $androidSdk) { $missing.Add("Android SDK (checked: $(@($script:androidSdkCandidates) -join '; '))") }
     $script:adb = if ($androidSdk) { Join-Path $androidSdk 'platform-tools\adb.exe' }
     $script:emulator = if ($androidSdk) { Join-Path $androidSdk 'emulator\emulator.exe' }
-    if (-not (Test-Path $script:adb)) { $missing.Add('Android SDK platform-tools\\adb.exe') }
-    if (-not (Test-Path $script:emulator)) { $missing.Add('Android SDK emulator\\emulator.exe') }
+    if (-not $script:adb -or -not (Test-Path -LiteralPath $script:adb -PathType Leaf)) { $missing.Add('Android SDK platform-tools\\adb.exe') }
+    if (-not $script:emulator -or -not (Test-Path -LiteralPath $script:emulator -PathType Leaf)) { $missing.Add('Android SDK emulator\\emulator.exe') }
     $jdkHomes = @($env:JAVA_HOME, (Join-Path $env:ProgramFiles 'Android\Android Studio\jbr')) |
         Where-Object { $_ -and (Test-Path (Join-Path $_ 'bin\javac.exe')) }
     $script:jdkHome = $jdkHomes | Where-Object {
@@ -171,17 +195,18 @@ function Invoke-Preflight {
     } | Select-Object -First 1
     if (-not $script:jdkHome) { $missing.Add('JDK 21 (set JAVA_HOME or install Android Studio JBR)') }
     if (-not (Test-Path $gradleWrapper)) { $missing.Add('ui\\android\\gradlew.bat') }
-    if (Test-Path $script:emulator) {
+    if ($script:emulator -and (Test-Path -LiteralPath $script:emulator -PathType Leaf)) {
         $avds = & $script:emulator -list-avds
         if ($LASTEXITCODE -ne 0 -or $avdName -notin $avds) { $missing.Add("AVD $avdName") }
     }
-    if (Test-Path $script:adb) {
+    if ($script:adb -and (Test-Path -LiteralPath $script:adb -PathType Leaf)) {
         $script:adbPath = $script:adb
         & $script:adb start-server
         if ($LASTEXITCODE -ne 0) { $missing.Add('Android SDK adb server') }
     }
     if ($missing.Count) {
         $missing | ForEach-Object { [Console]::Error.WriteLine("[android] Missing: $_") }
+        $script:errorReason = "Preflight missing: $($missing -join '; ')"
         return $false
     }
     $env:ANDROID_HOME = $androidSdk
