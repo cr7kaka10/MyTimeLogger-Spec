@@ -290,6 +290,7 @@ class SampleDataInitializationService:
             definitions["v2"] = v2
         for version, definition in definitions.items():
             self._insert_exercise_plan_definition(conn, user_id, version, definition, now)
+        self._repair_v5_cardio_revision(conn, user_id, definitions.get("v5") or {}, now)
         self._repair_v4_diet_rule_keys(conn, user_id, now)
         self._migrate_exercise_scoring(conn, user_id, definitions, now)
         self._publish_complete_exercise_v2(conn, user_id)
@@ -335,6 +336,43 @@ class SampleDataInitializationService:
             self._write_seed_change(conn, user_id, "server_system_config", "system_config", "active_exercise_plan_version", namespace="exercise-v5-complete-v1")
             self._mark(conn, user_id, "exercise_plan_v5", now)
         self._mark(conn, user_id, module, now)
+
+    def _repair_v5_cardio_revision(self, conn: sqlite3.Connection, user_id: int, definition: dict, now: str) -> int:
+        module, namespace = "exercise_plan_v5_cardio_v2", "exercise-v5-cardio-v2"
+        if conn.execute("SELECT 1 FROM server_sample_data_initializations WHERE user_id=? AND module=?", (user_id, module)).fetchone():
+            return 0
+        expected = {}
+        for day_key, day in (definition.get("exercisePlan") or {}).items():
+            for variant in ("gym", "rain"):
+                for index, item in enumerate(day.get(variant) or []):
+                    item_id = f"v5-{day_key}-{variant}-{index}"
+                    tags = dict(item)
+                    tags["label"] = day.get("label") or day_key
+                    expected[item_id] = (day_key, variant, index, item.get("s") or "", item.get("name") or "",
+                                         item.get("sets") or "", item.get("intensity") or "",
+                                         json.dumps(tags, ensure_ascii=False), item.get("prog"), day.get("color"))
+        rows = conn.execute("""SELECT id,day_key,variant,sort_order,section,name,sets,intensity,tags_json,progression,color
+            FROM server_exercise_plan_items WHERE user_id=? AND plan_version='v5'""", (user_id,)).fetchall()
+        actual = {row["id"]: row for row in rows}
+        if not expected or set(actual) != set(expected):
+            raise RuntimeError("v5_cardio_revision_incomplete_plan")
+        changed = 0
+        for item_id, values in expected.items():
+            row = actual[item_id]
+            current = tuple(row[key] for key in ("day_key", "variant", "sort_order", "section", "name", "sets",
+                                                  "intensity", "tags_json", "progression", "color"))
+            if current == values:
+                continue
+            if current[:3] != values[:3]:
+                raise RuntimeError(f"v5_cardio_revision_identity_mismatch:{item_id}")
+            conn.execute("""UPDATE server_exercise_plan_items SET section=?,name=?,sets=?,intensity=?,tags_json=?,
+                progression=?,color=?,is_active=1,updated_at=? WHERE user_id=? AND id=?""",
+                         (*values[3:], now, user_id, item_id))
+            self._write_seed_change(conn, user_id, "server_exercise_plan_items", "exercise_plan_item", item_id,
+                                    namespace=namespace)
+            changed += 1
+        self._mark(conn, user_id, module, now)
+        return changed
 
     def _repair_v4_diet_rule_keys(self, conn: sqlite3.Connection, user_id: int, now: str) -> int:
         changed = 0

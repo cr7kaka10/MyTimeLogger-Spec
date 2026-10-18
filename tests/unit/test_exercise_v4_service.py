@@ -58,6 +58,53 @@ def test_v5_publish_is_idempotent_and_does_not_override_manual_v4_switch(tmp_db_
     assert (active, items, markers) == ("v4", 41, 1)
 
 
+def test_v5_cardio_revision_updates_existing_rows_idempotently(tmp_db_path):
+    store, _ = _setup(tmp_db_path)
+    seed = SampleDataInitializationService(tmp_db_path)
+    with store._transact() as conn:
+        _daily(conn, 1, "2026-10-18")
+        conn.execute("""INSERT INTO server_exercise_checkins(id,user_id,log_id,plan_version,item_key,status,date,created_at,updated_at)
+            VALUES ('historic-v5-check',1,'log-1-2026-10-18','v5','v5-日-gym-2',1,'2026-10-18','2026-10-18','2026-10-18')""")
+        conn.execute("""INSERT INTO server_exercise_item_scores(id,user_id,date,plan_version,item_key,earned_points,max_points,created_at)
+            VALUES ('historic-v5-score',1,'2026-10-18','v5','v5-日-gym-2',15,15,'2026-10-18')""")
+        conn.execute("UPDATE server_system_config SET value='v4' WHERE user_id=1 AND key='active_exercise_plan_version'")
+        conn.execute("""UPDATE server_exercise_plan_items SET name='卧式健身车（无则椭圆）'
+            WHERE user_id=1 AND id='v5-日-gym-2'""")
+        conn.execute("DELETE FROM server_sample_data_initializations WHERE user_id=1 AND module='exercise_plan_v5_cardio_v2'")
+        conn.execute("DELETE FROM server_change_log WHERE user_id=1 AND change_id LIKE 'exercise-v5-cardio-v2:%'")
+    seed.ensure_user_sample_data(1)
+    seed.ensure_user_sample_data(1)
+    with store._connect() as conn:
+        active = conn.execute("SELECT value FROM server_system_config WHERE user_id=1 AND key='active_exercise_plan_version'").fetchone()[0]
+        rows = conn.execute("SELECT id,day_key,name FROM server_exercise_plan_items WHERE user_id=1 AND plan_version='v5'").fetchall()
+        markers = conn.execute("SELECT COUNT(*) FROM server_sample_data_initializations WHERE user_id=1 AND module='exercise_plan_v5_cardio_v2'").fetchone()[0]
+        changes = conn.execute("SELECT COUNT(*) FROM server_change_log WHERE user_id=1 AND change_id LIKE 'exercise-v5-cardio-v2:%'").fetchone()[0]
+        history = conn.execute("SELECT (SELECT status FROM server_exercise_checkins WHERE id='historic-v5-check'),(SELECT earned_points FROM server_exercise_item_scores WHERE id='historic-v5-score')").fetchone()
+    assert active == "v4"
+    assert len(rows) == 41 and len({row["id"] for row in rows}) == 41
+    assert [row["day_key"] for row in rows if "爬楼机" in row["name"]] == ["周三", "周五", "日"]
+    assert all("卧式健身车" not in row["name"] for row in rows)
+    assert markers == 1 and changes > 0
+    assert tuple(history) == (1, 15.0)
+
+
+def test_v5_cardio_revision_rolls_back_on_identity_mismatch(tmp_db_path):
+    store, _ = _setup(tmp_db_path)
+    seed = SampleDataInitializationService(tmp_db_path)
+    with store._transact() as conn:
+        conn.execute("DELETE FROM server_sample_data_initializations WHERE user_id=1 AND module='exercise_plan_v5_cardio_v2'")
+        conn.execute("DELETE FROM server_change_log WHERE user_id=1 AND change_id LIKE 'exercise-v5-cardio-v2:%'")
+        conn.execute("UPDATE server_exercise_plan_items SET name='迁移前名称' WHERE user_id=1 AND id='v5-周二-gym-0'")
+        conn.execute("UPDATE server_exercise_plan_items SET day_key='错误日' WHERE user_id=1 AND id='v5-日-gym-2'")
+    with pytest.raises(RuntimeError, match="identity_mismatch"):
+        seed.ensure_user_sample_data(1)
+    with store._connect() as conn:
+        name = conn.execute("SELECT name FROM server_exercise_plan_items WHERE user_id=1 AND id='v5-周二-gym-0'").fetchone()[0]
+        marker = conn.execute("SELECT COUNT(*) FROM server_sample_data_initializations WHERE user_id=1 AND module='exercise_plan_v5_cardio_v2'").fetchone()[0]
+        changes = conn.execute("SELECT COUNT(*) FROM server_change_log WHERE user_id=1 AND change_id LIKE 'exercise-v5-cardio-v2:%'").fetchone()[0]
+    assert (name, marker, changes) == ("迁移前名称", 0, 0)
+
+
 def test_v5_state_endpoint_returns_authoritative_domains(tmp_db_path, monkeypatch):
     store, _ = _setup(tmp_db_path)
     monkeypatch.setattr(server_module, "store", store)

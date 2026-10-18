@@ -27,7 +27,28 @@ def test_v5_prescriptions_are_executable_and_cover_three_strength_days():
         assert all("组" in item["sets"] or "×" in item["sets"] for item in strength)
         assert all(len(item["intensity"]) >= 25 for item in strength)
     cardio_names = " ".join(item["name"] for day in plan["exercisePlan"].values() for item in day["gym"])
-    assert all(name in cardio_names for name in ("跑步机", "爬楼机", "椭圆机", "卧式健身车"))
+    assert all(name in cardio_names for name in ("跑步机", "爬楼机", "椭圆漫步机"))
+    assert "卧式健身车" not in cardio_names
+
+
+def test_v5_has_three_stair_days_and_walking_only_treadmills():
+    plan = _plan()
+    stair_days = [day for day, value in plan["exercisePlan"].items()
+                  if any("爬楼机" in item["name"] for item in value["gym"])]
+    assert stair_days == ["周三", "周五", "日"]
+    treadmills = [item for day in plan["exercisePlan"].values()
+                  for item in day["gym"] if "跑步机" in item["name"]]
+    assert treadmills and all("不跑" in item["intensity"] for item in treadmills)
+    sunday = plan["exercisePlan"]["日"]["gym"]
+    assert next(item for item in sunday if "爬楼机" in item["name"])["durationRange"] == [5, 10]
+    assert sum(item["durationMinutes"] for item in sunday) == 90
+
+
+def test_v5_personal_calorie_budget_contract():
+    text = " ".join(item["when"] + item["text"] for item in _plan()["progress"])
+    assert all(value in text for value in ("37岁", "5000步", "1800", "2000", "2100", "1950"))
+    assert all(value in text for value in ("1990", "150g", "7日均值", "150–200"))
+    assert "不吃回" in text
 
 
 def test_v5_diet_progression_and_safety_contract():
