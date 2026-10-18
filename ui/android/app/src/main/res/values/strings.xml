@@ -4,4 +4,6 @@
     <string name="title_activity_main">MyTimeLogger</string>
     <string name="package_name">com.mytimelogger.app</string>
     <string name="custom_url_scheme">com.mytimelogger.app</string>
+    <string name="sleep_automation_service_label">华为睡眠自动化</string>
+    <string name="sleep_automation_service_description">仅在您明确开启后，于北京时间 08:40 操作华为运动健康的睡眠、分享和保存按钮，再上传本次新生成的睡眠图片。不会读取其他应用、绕过锁屏或输入帐号密码。</string>
 </resources>

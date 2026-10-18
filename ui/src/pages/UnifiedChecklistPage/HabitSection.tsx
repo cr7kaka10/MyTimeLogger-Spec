@@ -7,7 +7,6 @@ import { SourceRewardEditor } from '../../components/Rewards/SourceRewardEditor'
 import { getDatabase, syncNow } from '../../db'
 import { HabitActions } from './HabitActions'
 import { useLocalHabitMutation } from '../../hooks/useLocalHabitMutation'
-import { LocalHabitHistory } from './LocalHabitHistory'
 import { requireActiveHabitRewardSource } from '../../hooks/sourceRewardApi'
 
 interface HabitSectionProps {
@@ -53,16 +52,16 @@ export const HabitSection = memo(({
   }
   const localMutation = useLocalHabitMutation()
   const habitCreator = mode !== 'completed' && (
-    <><form className="mb-2 flex gap-2 px-1" onSubmit={async event => {
+    <form className="mb-2 flex gap-2 px-1" onSubmit={async event => {
       event.preventDefault()
       const name = draftHabit.trim()
       if (!name) return
-      if (await localMutation.run(db => db.addHabit(name, '✅', 'easy'))) setDraftHabit('')
+      if (await localMutation.run(db => db.addHabit(name, '✅'), 'create')) setDraftHabit('')
     }}>
       <input value={draftHabit} disabled={localMutation.busy} onChange={event => setDraftHabit(event.target.value)} className="min-w-0 flex-1 rounded border px-2 py-1 text-sm dark:border-gray-600 dark:bg-gray-800" placeholder="新建原生习惯" aria-label="习惯名称" />
       <button type="submit" disabled={localMutation.busy} className="theme-accent-button rounded px-3 text-sm disabled:opacity-50">＋习惯</button>
       {localMutation.message && <span role="status" className="text-xs">{localMutation.message}</span>}
-    </form><LocalHabitHistory /></>
+    </form>
   )
 
 
@@ -116,12 +115,12 @@ export const HabitSection = memo(({
   const sortedHabits = useMemo(() => {
     console.log('=== HabitSection 排序习惯 ===')
     console.log('输入 habits:', habits)
-    
+
     if (!Array.isArray(habits)) {
       console.warn('⚠️ habits 不是数组')
       return []
     }
-    
+
     const filtered = habits.filter(habit => {
       if (Number(habit.is_active || 0) !== 0) return false
       const checkin = todayCheckins.find(c => c.habit_id === habit.id)
@@ -136,10 +135,10 @@ export const HabitSection = memo(({
       const checkinB = todayCheckins.find(c => c.habit_id === b.id)
       const statusA = checkinA ? checkinA.status : 0
       const statusB = checkinB ? checkinB.status : 0
-      
+
       const weightA = statusA === 0 ? 0 : 1
       const weightB = statusB === 0 ? 0 : 1
-      
+
       if (weightA !== weightB) {
         return weightA - weightB
       }
@@ -225,7 +224,7 @@ export const HabitSection = memo(({
                   onEdit={() => { void openReward(habit) }}
                 />
               </span>
-              
+
               {/* 打卡历史标记（已由卡片状态颜色及右侧按钮状态呈现，为保持高度一致移除了纯文本标签） */}
             </span>
 
@@ -239,8 +238,8 @@ export const HabitSection = memo(({
                   onToggleCheckin(habit.id, selectedDateStr, 2)
                 }}
                 className={`${statusControlClass(todayStatus === 2 ? 'success' : 'idle')} hover:bg-green-50 hover:text-green-500 hover:border-green-300`}
-                title="标记成功"
-                aria-label={`标记习惯「${habit.name}」为成功`}
+                title={todayStatus === 2 ? '取消成功，恢复未完成' : '标记成功'}
+                aria-label={todayStatus === 2 ? `取消习惯「${habit.name}」的成功状态` : `标记习惯「${habit.name}」为成功`}
                 aria-pressed={todayStatus === 2}
               >
                 ✓
@@ -252,8 +251,8 @@ export const HabitSection = memo(({
                   onToggleCheckin(habit.id, selectedDateStr, 1)
                 }}
                 className={`${statusControlClass(todayStatus === 1 ? 'failure' : 'idle')} hover:bg-red-50 hover:text-red-500 hover:border-red-300`}
-                title="标记失败"
-                aria-label={`标记习惯「${habit.name}」为失败`}
+                title={todayStatus === 1 ? '取消失败，恢复未完成' : '标记失败'}
+                aria-label={todayStatus === 1 ? `取消习惯「${habit.name}」的失败状态` : `标记习惯「${habit.name}」为失败`}
                 aria-pressed={todayStatus === 1}
               >
                 ✕
@@ -263,7 +262,15 @@ export const HabitSection = memo(({
         )
       })}
     </div>
-    {managedHabit && <HabitActions key={String(managedHabit.id)} habit={managedHabit} onClose={() => setManagedHabit(null)} />}
+    {managedHabit && (
+      <HabitActions
+        key={String(managedHabit.id)}
+        habit={managedHabit}
+        categories={categories}
+        onClose={() => setManagedHabit(null)}
+        onEditReward={habit => { setManagedHabit(null); void openReward(habit) }}
+      />
+    )}
     {rewardHabit && (
       <SourceRewardEditor
         sourceType="habit"

@@ -868,7 +868,16 @@ export class SyncWorker {
     if (syncState.ticktick_to_server_synced_at) {
       this._db.setConfig('ticktick_to_server_synced_at', syncState.ticktick_to_server_synced_at)
     }
-    this._emitSyncEvents(walletChanged)
+    const providerRefresh = diagnostics.provider_refresh as Record<string, any> | undefined
+    this._emitSyncEvents(walletChanged, {
+      scope: diagnostics.scope || context.scope || 'core',
+      provider: providerRefresh ? 'ticktick' : 'core',
+      request_id: providerRefresh?.request_id || diagnostics.request_id || context.syncRunId,
+      complete: mergeSucceeded && (!providerRefresh || providerRefresh.complete === true),
+      status: providerRefresh?.status || (mergeSucceeded ? 'success' : 'error'),
+      errors: providerRefresh?.errors || diagnostics.errors || mergeErrors,
+      retry_at: providerRefresh?.retry_at || diagnostics.retry_at,
+    })
     if (mergeErrors.length > 0) {
       const firstFailure = bulkFailures[0]
       this._logSync('warn', { event: 'pull_merge_failed', sync_run_id: context.syncRunId,
@@ -883,13 +892,13 @@ export class SyncWorker {
     if (conflicts.length > 0) {
       return { ok: false, merged, diagnostics, error: 'local_outbox_conflict' }
     }
-    if (refresh && diagnostics && diagnostics.ok === false) {
+    if (refresh && (diagnostics.ok === false || providerRefresh?.ok === false || providerRefresh?.complete === false)) {
       console.warn('[SyncWorker] provider refresh failed', {
         sync_run_id: context.syncRunId,
         merged,
         diagnostics,
       })
-      return { ok: false, merged, diagnostics, error: diagnostics.errors?.[0] || 'ticktick_refresh_failed' }
+      return { ok: false, merged, diagnostics, error: providerRefresh?.errors?.[0] || diagnostics.errors?.[0] || 'ticktick_refresh_failed' }
     }
     if (resp.data.has_more === true) {
       const page = Number(context.page || 1)
@@ -1320,10 +1329,10 @@ export class SyncWorker {
     if (name && w?.dispatchEvent && w?.CustomEvent) w.dispatchEvent(new w.CustomEvent(name))
   }
 
-  private _emitSyncEvents(walletChanged: boolean): void {
+  private _emitSyncEvents(walletChanged: boolean, detail: Record<string, any>): void {
     const w = (globalThis as any).window
     if (!w || typeof w.dispatchEvent !== 'function' || typeof w.CustomEvent !== 'function') return
-    w.dispatchEvent(new w.CustomEvent('sync-pull-complete'))
+    w.dispatchEvent(new w.CustomEvent('sync-pull-complete', { detail }))
     if (walletChanged) {
       w.dispatchEvent(new w.CustomEvent('balance-updated'))
       w.dispatchEvent(new w.CustomEvent('local-shortcut-trigger', { detail: 'balance-updated' }))

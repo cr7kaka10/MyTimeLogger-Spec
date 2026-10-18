@@ -7,7 +7,7 @@ from tests.unit.test_habit_checkin_command_service import _service, _count, Habi
 @pytest.mark.parametrize("confirmed", [False, True])
 def test_stale_command_is_terminal_and_cannot_create_history(tmp_path, deleted, confirmed):
     store, service = _service(tmp_path)
-    hid = "ticktick:1:habit-1"
+    hid = "habit-1"
     service._commands.create_or_get(1, "stale", hid, "2026-09-22", 2)
     if confirmed:
         service._commands.mark(1, "stale", "provider_confirmed")
@@ -22,14 +22,11 @@ def test_stale_command_is_terminal_and_cannot_create_history(tmp_path, deleted, 
     assert _count(store, "server_habit_checkins") == _count(store, "server_reward_ledger") == 0
 
 
-def test_archive_during_provider_request_blocks_finalize(tmp_path):
+def test_active_provider_habit_is_rejected_without_remote_request(tmp_path):
     store, service = _service(tmp_path)
-    class ArchivingClient(HabitClient):
-        async def checkin_habit(self, *args):
-            await super().checkin_habit(*args)
-            with store._transact() as conn:
-                conn.execute("UPDATE server_habits SET is_active=1")
-    client = ArchivingClient()
+    with store._transact() as conn:
+        conn.execute("UPDATE server_habits SET id='ticktick:1:habit-1',source='ticktick' WHERE id='habit-1'")
+    client = HabitClient()
     result = asyncio.run(service.execute(1, "race", "ticktick:1:habit-1", "2026-09-22", 2, client))
-    assert result["status"] == "failed" and result["error_code"] == "habit_archived"
-    assert client.calls == 1 and _count(store, "server_habit_checkins") == 0
+    assert result["status"] == "failed" and result["error_code"] == "provider_habit_sync_disabled"
+    assert client.calls == 0 and _count(store, "server_habit_checkins") == 0

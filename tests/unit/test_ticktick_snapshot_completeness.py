@@ -76,9 +76,20 @@ def test_task_pull_never_spends_past_the_provider_request_budget(tmp_path, monke
     path, hub = _hub(tmp_path)
     monkeypatch.setattr(sync_hub_module, "TICKTICK_PULL_REQUEST_BUDGET", 2)
 
-    stats = asyncio.run(hub._pull_tasks(_Client("normal"), 1))
+    class ExpensiveClient(_Client):
+        def __init__(self):
+            super().__init__("normal")
+            self.get_request_attempts = 0
+        async def get_projects(self):
+            self.get_request_attempts += 2
+            return await super().get_projects()
+        async def get_project_data(self, project_id):
+            self.get_request_attempts += 100
+            return await super().get_project_data(project_id)
 
-    assert stats["provider_requests"] == 2
+    stats = asyncio.run(hub._pull_tasks(ExpensiveClient(), 1))
+
+    assert stats["provider_requests"] == stats["request_budget"]
     assert stats["request_budget_exceeded"] and stats["deleted_tasks"] == 0
     with sqlite3.connect(path) as conn:
         assert conn.execute("SELECT deleted_at FROM server_tasks WHERE id='keep'").fetchone()[0] is None
@@ -106,6 +117,57 @@ def test_304_task_partial_snapshot_publishes_safe_active_upserts_only(tmp_path):
     assert stats["candidate_upserts"] == 304
     assert stats["published_upserts"] == stats["active_task_changes"] == 104
     assert stats["completed_task_changes"] == 0
+
+
+def test_eight_tomorrow_tasks_across_projects_commit_as_one_complete_snapshot(tmp_path):
+    path, hub = _hub(tmp_path)
+    class Client:
+        async def get_projects(self):
+            return [{"id": f"p{i}", "name": f"项目{i}"} for i in range(4)]
+        async def get_project_data(self, project_id):
+            if project_id == "inbox": return {"tasks": []}
+            return {"tasks": [{"id": f"{project_id}-{i}", "title": f"任务{i}", "status": 0,
+                    "priority": 0, "dueDate": "2099-01-02 00:00:00", "tags": [],
+                    "etag": f"e-{project_id}-{i}", "modifiedTime": "2099-01-01 00:00:00"} for i in range(2)]}
+        async def get_completed_tasks(self, _start): return []
+
+    stats = asyncio.run(hub._pull_tasks(Client(), 1))
+    with sqlite3.connect(path) as conn:
+        rows = conn.execute("SELECT COUNT(*) FROM server_tasks WHERE user_id=1 AND deleted_at IS NULL").fetchone()[0]
+    assert stats["complete"] and stats["active_tasks"] == 8 and rows == 8
+
+
+def test_project_list_timeout_is_identified_and_preserves_snapshot(tmp_path):
+    path, hub = _hub(tmp_path)
+    class Client(_Client):
+        async def get_projects(self): raise TimeoutError("project list")
+
+    with pytest.raises(TimeoutError) as raised:
+        asyncio.run(hub._pull_tasks(Client("normal"), 1))
+    assert raised.value.diagnostics["failure_stage"] == "project_list"
+    with sqlite3.connect(path) as conn:
+        assert conn.execute("SELECT deleted_at FROM server_tasks WHERE id='keep'").fetchone()[0] is None
+
+
+def test_dynamic_budget_reads_more_projects_than_legacy_cap(tmp_path):
+    _, hub = _hub(tmp_path)
+    class Client:
+        async def get_projects(self): return [{"id": f"p{i}", "name": str(i)} for i in range(25)]
+        async def get_project_data(self, _project_id): return {"tasks": []}
+        async def get_completed_tasks(self, _start): return []
+
+    stats = asyncio.run(hub._pull_tasks(Client(), 1))
+    assert stats["complete"] and stats["provider_requests"] > 20
+    assert stats["request_budget"] > sync_hub_module.TICKTICK_PULL_REQUEST_BUDGET
+
+
+def test_validate_only_snapshot_never_publishes_or_deletes(tmp_path):
+    path, hub = _hub(tmp_path)
+    stats = asyncio.run(hub._pull_tasks(_Client("normal"), 1, publish=False))
+    with sqlite3.connect(path) as conn:
+        row = conn.execute("SELECT title,deleted_at FROM server_tasks WHERE id='keep'").fetchone()
+    assert stats["complete"] and stats["published"] is False
+    assert row == ("fixture", None)
 
 
 def test_partial_snapshot_publishes_four_new_and_one_rescheduled_task(tmp_path):

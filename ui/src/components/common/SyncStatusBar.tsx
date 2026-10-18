@@ -1,5 +1,5 @@
 import { memo, useEffect, useState } from 'react'
-import { emitSharedSyncStatus, type SharedSyncState, type SharedSyncStatus } from '../../db'
+import { type SharedSyncState, type SharedSyncStatus } from '../../db'
 import { formatBeijingDateTime } from '@core/BeijingTime'
 
 const labels: Record<SharedSyncState, string> = {
@@ -28,16 +28,13 @@ export const SyncStatusBar = memo(() => {
 
   useEffect(() => {
     const update = (event: Event) => setStatus((event as CustomEvent<SharedSyncStatus>).detail)
-    const pullComplete = () => emitSharedSyncStatus('synced')
     const online = () => setStatus({ state: 'connecting', at: formatBeijingDateTime() })
     const offline = () => setStatus({ state: 'offline', at: formatBeijingDateTime() })
     window.addEventListener('mtl:sync-status', update)
-    window.addEventListener('sync-pull-complete', pullComplete)
     window.addEventListener('online', online)
     window.addEventListener('offline', offline)
     return () => {
       window.removeEventListener('mtl:sync-status', update)
-      window.removeEventListener('sync-pull-complete', pullComplete)
       window.removeEventListener('online', online)
       window.removeEventListener('offline', offline)
     }

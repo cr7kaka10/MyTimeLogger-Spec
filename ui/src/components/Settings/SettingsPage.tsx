@@ -4,6 +4,9 @@ import type { UseSettingsReturn } from '../../hooks/useSettings'
 import { NumberSheet } from '../common/NumberSheet'
 import { LoggingSettings } from './LoggingSettings'
 import { NotificationSettings } from './NotificationSettings'
+import { SleepAutomationSettings, type SleepPermissions } from './SleepAutomationSettings'
+import { sleepAutomation } from '../../platform/sleepAutomation'
+import { createCapacitorAppLifecycleService, installSleepAutomationStatusLifecycle } from '../../platform/lifecycle'
 import { AVAILABLE_AUDIO_FILES } from '../../utils/audio'
 import { getDatabase, syncNow } from '../../db'
 import { getElectronCapabilities } from '../../platform/electron'
@@ -13,6 +16,7 @@ import { platformFetch } from '../../platform'
 import { formatPlatformNetworkError } from '../../platform/fetch'
 import { logRewardRebuildStage, parseRewardRebuildFailure, rewardRebuildHeader } from './rewardRebuildDiagnostics'
 import type { RewardRebuildFailureView } from './rewardRebuildDiagnostics'
+import { beijingDateOffset, isAllowedStatisticsStartDate } from '../../utils/statisticsStartDate'
 
 interface SettingsPageProps extends UseSettingsReturn {
   onOpenSleep: () => void
@@ -179,13 +183,34 @@ export const SettingsPage = memo(({
   const [rewardRebuildMessage, setRewardRebuildMessage] = useState('')
   const [rewardRebuildFailure, setRewardRebuildFailure] = useState<RewardRebuildFailureView | null>(null)
   const [statisticsStartDateDraft, setStatisticsStartDateDraft] = useState(settings.statistics_start_date)
+  const [sleepStatus, setSleepStatus] = useState(() => sleepAutomation.status())
   const atimeloggerPasswordRef = useRef<HTMLInputElement>(null)
   const desktopCapabilities = getElectronCapabilities()
-  const beijingToday = new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString().slice(0, 10)
+  const maximumStatisticsStartDate = beijingDateOffset(1)
+  const nativeSleepPermissions = (sleepStatus as any).permissions || {}
+  const sleepPermissions: SleepPermissions = { accessibility: nativeSleepPermissions.accessibility === true, notifications: nativeSleepPermissions.notifications === true, media: nativeSleepPermissions.media === true, battery: nativeSleepPermissions.battery === true }
+  const refreshSleepStatus = useCallback(() => setSleepStatus(sleepAutomation.status()), [])
+  const toggleSleepAutomation = useCallback((enabled: boolean) => { enabled ? sleepAutomation.enable() : sleepAutomation.disable(); refreshSleepStatus() }, [refreshSleepStatus])
+  const testSleepAutomation = useCallback(() => { sleepAutomation.test(); setSleepStatus(sleepAutomation.status()) }, [])
+  const stopSleepAutomation = useCallback(() => { sleepAutomation.cancel(); setSleepStatus(sleepAutomation.status()) }, [])
+  const authorizeSleepAutomation = useCallback((permission: keyof SleepPermissions) => { sleepAutomation.authorize(permission) }, [])
+  const updateSleepConsent = useCallback(async (value: boolean) => {
+    if (!value) {
+      const disabled = sleepAutomation.disable()
+      refreshSleepStatus()
+      if (!disabled.ok) { window.alert('无法停止睡眠自动化，请重试'); return }
+    }
+    const saved = await updateSetting('sleep_automation_consent', value)
+    if (!saved.ok) window.alert(saved.error || '设置保存失败，请重试')
+  }, [refreshSleepStatus, updateSetting])
 
   useEffect(() => {
     setStatisticsStartDateDraft(settings.statistics_start_date)
   }, [settings.statistics_start_date])
+
+  useEffect(() => installSleepAutomationStatusLifecycle(
+    createCapacitorAppLifecycleService(), refreshSleepStatus,
+  ), [refreshSleepStatus])
 
   const playPreview = useCallback((srcKey: string) => {
     if (srcKey && srcKey !== 'none') {
@@ -514,9 +539,9 @@ export const SettingsPage = memo(({
         <div className="flex min-h-14 w-full items-center justify-between gap-4 border-b border-gray-50 px-4 py-2">
           <div><div className="font-medium text-gray-900">统计起始日期</div>{rewardRebuildMessage && <div className="mt-0.5 text-xs text-gray-400">{rewardRebuildMessage}</div>}</div>
           <div className="flex items-center gap-2">
-            <input type="date" max={beijingToday} value={statisticsStartDateDraft} onChange={event => {
+            <input type="date" max={maximumStatisticsStartDate} value={statisticsStartDateDraft} onChange={event => {
               const value = event.target.value
-              if (resolveStatisticsStartDate(value).date === value && value <= beijingToday) setStatisticsStartDateDraft(value)
+              if (resolveStatisticsStartDate(value).date === value && isAllowedStatisticsStartDate(value)) setStatisticsStartDateDraft(value)
             }} className="bg-transparent text-sm text-gray-400 outline-none hover:text-gray-600 focus:text-blue-600" />
             <button type="button" disabled={rewardRebuildBusy} onClick={() => void rebuildRewardLedger(statisticsStartDateDraft)} className="text-xs text-blue-600 hover:text-blue-700 disabled:text-gray-300">{rewardRebuildBusy ? '处理中' : '重新拉取并重算金币'}</button>
           </div>
@@ -610,6 +635,11 @@ export const SettingsPage = memo(({
       </section>
 
       <NotificationSettings />
+
+      {sleepStatus.available ? <SleepAutomationSettings status={sleepStatus} consented={settings.sleep_automation_consent === true} permissions={sleepPermissions}
+        onConsent={value => { void updateSleepConsent(value) }} onToggle={toggleSleepAutomation} onAuthorize={authorizeSleepAutomation}
+        onTest={testSleepAutomation} onRetry={testSleepAutomation} onStop={stopSleepAutomation} />
+        : <section className={sectionClass}><div className="px-4 py-3 font-medium">睡眠图片自动分析</div><div className="border-t border-gray-50 px-4 py-3 text-sm text-gray-400">仅 Android 手机端可用；PC/Web 不会访问华为运动健康或本地图片。</div></section>}
 
       {/* 声音设置 */}
       <section className={sectionClass}>

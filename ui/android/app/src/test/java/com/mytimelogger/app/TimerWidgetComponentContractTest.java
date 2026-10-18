@@ -17,8 +17,8 @@ public class TimerWidgetComponentContractTest {
                 ".TimerWidgetBootReceiver", "android.intent.action.BOOT_COMPLETED",
                 "android.permission.RECEIVE_BOOT_COMPLETED"))
             assertTrue(token, manifest.contains(token));
-        assertFalse(manifest.contains("SCHEDULE_EXACT_ALARM"));
-        assertFalse(manifest.contains("AlarmReceiver"));
+        assertTrue(manifest.contains("android.permission.SCHEDULE_EXACT_ALARM"));
+        assertTrue(manifest.contains(".SleepAutomationAlarmReceiver"));
     }
 
     @Test public void gradleUsesCoreAndroidxWithoutCompose() throws Exception {

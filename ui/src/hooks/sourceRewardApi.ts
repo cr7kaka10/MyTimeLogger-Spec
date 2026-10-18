@@ -1,6 +1,6 @@
 import { requireActiveEnvironmentRuntimeConfig } from '@core/EnvironmentProfiles'
 import { getDatabase, pullSync } from '../db'
-import { platformFetch } from '../platform/fetch'
+import { protectedPlatformFetch } from '../platform/protectedRequest'
 import type { SourceRewardSummaryData, SourceRewardType } from '../types'
 import { notifyRewardCatalogUpdated } from './rewardCatalogRefresh'
 
@@ -11,9 +11,9 @@ export const SOURCE_COIN_TYPE: Record<SourceRewardType, 'task' | 'habit' | 'lear
 const request = async (path: string, init?: RequestInit) => {
   const db = await getDatabase()
   const runtime = requireActiveEnvironmentRuntimeConfig(db.getAllConfig(), 'source-reward')
-  const response = await platformFetch(`${runtime.serverUrl}${path}`, {
+  const response = await protectedPlatformFetch(runtime, path, {
     ...init,
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${runtime.authToken}`, 'X-Auth-Token': runtime.authToken, ...(init?.headers || {}) },
+    headers: { 'Content-Type': 'application/json', ...(init?.headers || {}) },
   })
   const payload = await response.json().catch(() => null)
   if (!response.ok) throw new Error(payload?.detail || '奖励读取或保存失败')

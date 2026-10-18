@@ -29,6 +29,33 @@ describe('LogicEngine', () => {
     expect(engine.state).toBe('countup_studying')
   })
 
+  it('焦点组原位交接保留计时进度、deadline、周期和休息计划', () => {
+    vi.useFakeTimers()
+    engine.start(1, '输入', '阅读')
+    vi.advanceTimersByTime(1000)
+    const before = engine.exportSnapshot()
+    const timer = (engine as any)._timer
+    const breakTimer = (engine as any)._microBreakTimer
+    expect(engine.handoffWithinFocusGroup(2, '输出', '写作')).toMatchObject({ ok: true, status: 'switched' })
+    const after = engine.exportSnapshot()
+    expect((engine as any)._timer).toBe(timer)
+    expect((engine as any)._microBreakTimer).toBe(breakTimer)
+    expect(after.timing.elapsedMs).toBeGreaterThanOrEqual(before.timing.elapsedMs)
+    expect(after.timing.elapsedMs - before.timing.elapsedMs).toBeLessThan(50)
+    expect(Math.abs((after.timing.deadlineEpochMs || 0) - (before.timing.deadlineEpochMs || 0))).toBeLessThan(50)
+    expect(after.revision).toBe((before.revision || 0) + 1)
+    expect(after.segments[0]).toMatchObject({ categoryName: '输入', focusCycleId: before.focusCycleId })
+    expect(engine.handoffWithinFocusGroup(9, '工作')).toMatchObject({ ok: false, errorCode: 'focus_group_mismatch' })
+    engine.togglePause()
+    expect(engine.handoffWithinFocusGroup(1, '输入')).toMatchObject({ ok: false, errorCode: 'invalid_state' })
+  })
+
+  it.each(['副业生产', '副业研发', '副业营销', '工作'])('%s 使用结构化倒计时', name => {
+    engine.start(10, name)
+    expect(engine.state).toBe('studying')
+    expect(engine.exportSnapshot().timing.mode).toBe('countdown')
+  })
+
   it('endStudyNow: 提前结束倒计时，状态回到 stopped', async () => {
     engine.start(1, '输入', '编程')
     expect(engine.state).toBe('studying')

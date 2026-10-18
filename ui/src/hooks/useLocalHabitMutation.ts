@@ -1,6 +1,7 @@
 import { useRef, useState } from 'react'
 import type { Database } from '@models/Database'
 import { getDatabase, syncNow } from '../db'
+import { recordBehavior } from '../utils/behaviorAudit'
 
 export const LOCAL_HABITS_UPDATED = 'local-habits-updated'
 
@@ -8,7 +9,7 @@ export function useLocalHabitMutation() {
   const running = useRef(false)
   const [busy, setBusy] = useState(false)
   const [message, setMessage] = useState('')
-  const run = async (write: (db: Database) => void): Promise<boolean> => {
+  const run = async (write: (db: Database) => void, operation: 'create' | 'update' | 'delete' = 'update'): Promise<boolean> => {
     if (running.current) return false
     running.current = true
     setBusy(true); setMessage('')
@@ -23,9 +24,11 @@ export function useLocalHabitMutation() {
       } catch {
         setMessage('已保存到本机，待同步；请检查网络后重试同步')
       }
+      recordBehavior('local_habit.mutation.completed', { operation, has_reward_config: false, result: 'succeeded' })
       return true
     } catch (error) {
       setMessage(error instanceof Error ? error.message : '保存失败，请重试')
+      recordBehavior('local_habit.mutation.completed', { operation, has_reward_config: false, result: 'failed', error_code: 'local_habit_write_failed' })
       return false
     } finally {
       running.current = false; setBusy(false)

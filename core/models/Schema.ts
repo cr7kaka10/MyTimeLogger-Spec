@@ -283,6 +283,7 @@ export const DDL_STATEMENTS: string[] = [
     synced_at TEXT,                               -- 外部来源同步时间
     sync_status TEXT DEFAULT 'success',           -- 外部同步状态
     sync_error TEXT,                              -- 外部同步错误信息
+    image_uploaded_at TEXT,                       -- 首次有效睡眠图片接收时间（北京时间）
     updated_at TEXT,                              -- 最后更新时间戳
     pushed_at TEXT                                -- 服务端同步时间戳
   )`,
@@ -949,6 +950,7 @@ function applyCompatibilityMigrations(db: SqlDB): void {
   runIgnoreError(db, "ALTER TABLE huawei_sleep_data ADD COLUMN evening_diary_written_at TEXT")
   runIgnoreError(db, "ALTER TABLE huawei_sleep_data ADD COLUMN full_report_state TEXT")
   runIgnoreError(db, "ALTER TABLE huawei_sleep_data ADD COLUMN tracked_duration_seconds INTEGER")
+  runIgnoreError(db, "ALTER TABLE huawei_sleep_data ADD COLUMN image_uploaded_at TEXT")
   runIgnoreError(db, "ALTER TABLE habits ADD COLUMN raw_json TEXT")
   runIgnoreError(db, "ALTER TABLE habits ADD COLUMN source_etag TEXT")
   runIgnoreError(db, "ALTER TABLE habits ADD COLUMN source_modified_time TEXT")

@@ -10,6 +10,12 @@ Describe 'start-android-dev terminal summaries' {
         @{ name = 'boot timeout'; scenario = 'boot_timeout'; code = 1; stage = 'boot_wait'; result = 'failed'; error = 'boot_timeout' },
         @{ name = 'missing adb transport'; scenario = 'transport_unavailable'; code = 1; stage = 'transport_wait'; result = 'failed'; error = 'adb_transport_unavailable'; ports = '5554=missing' },
         @{ name = 'ready adb transport'; scenario = 'transport_ready'; code = 0; stage = 'boot_wait'; result = 'success'; error = ''; action = 'adb_transport_ready'; ports = '5554=listening' },
+        @{ name = 'launcher and child runtime identity'; scenario = 'target_identity_child'; code = 0; stage = 'transport_wait'; result = 'success'; error = ''; action = 'target_avd_identity_confirmed'; launcher = 25608; runtime = 13560 },
+        @{ name = 'unrelated runtime identity'; scenario = 'target_identity_other'; code = 1; stage = 'transport_wait'; result = 'failed'; error = 'adb_transport_unavailable'; launcher = 25608; runtime = 22222 },
+        @{ name = 'snapshot warning self recovers'; scenario = 'snapshot_self_recovered'; code = 0; stage = 'boot_wait'; result = 'success'; error = ''; action = 'snapshot_warning_self_recovered'; snapshot = 'default_boot_load_failed'; attempts = 1 },
+        @{ name = 'snapshot cold recovery succeeds'; scenario = 'snapshot_cold_recovered'; code = 0; stage = 'boot_wait'; result = 'success'; error = ''; action = 'snapshot_load_failed,cold_restart_target_avd'; snapshot = 'default_boot_load_failed'; attempts = 2 },
+        @{ name = 'snapshot cold recovery is exhausted'; scenario = 'snapshot_cold_exhausted'; code = 1; stage = 'transport_wait'; result = 'failed'; error = 'adb_transport_unavailable'; action = 'snapshot_load_failed,cold_restart_target_avd'; snapshot = 'default_boot_load_failed'; attempts = 2 },
+        @{ name = 'emulator output is redirected'; scenario = 'emulator_output_redirected'; code = 0; stage = 'avd_acquisition'; result = 'success'; error = ''; output = $true; attempts = 1 },
         @{ name = 'window service registration pending'; scenario = 'window_service_pending'; code = 0; stage = 'boot_wait'; result = 'success'; error = ''; systemDiagnostic = 'window_service_pending' },
         @{ name = 'boot animation still running'; scenario = 'bootanim_running'; code = 1; stage = 'boot_wait'; result = 'failed'; error = 'system_window_unstable'; boot = '1'; bootanim = 'running'; stable = 0 },
         @{ name = 'unstable SystemUI sample'; scenario = 'systemui_unstable'; code = 1; stage = 'boot_wait'; result = 'failed'; error = 'system_window_unstable'; boot = '1'; bootanim = 'stopped'; stable = 0; crashed = $false },
@@ -38,6 +44,9 @@ Describe 'start-android-dev terminal summaries' {
             if ($case.action) { (@($summary.recovery_actions) -join ',') | Should Be $case.action }
             if ($case.error) { $summary.error_reason | Should Not Be '' }
             if ($case.ports) { $summary.adb_path | Should Match 'platform-tools'; (@($summary.transport_ports) -contains $case.ports) | Should Be $true }
+            if ($case.launcher) { $summary.launcher_emulator_pid | Should Be $case.launcher; $summary.runtime_emulator_pid | Should Be $case.runtime }
+            if ($case.snapshot) { $summary.snapshot_diagnostic | Should Be $case.snapshot; $summary.emulator_start_attempts | Should Be $case.attempts; $summary.emulator_start_attempts | Should BeLessThan 3 }
+            if ($case.output) { @($summary.emulator_stdout_paths).Count | Should Be 1; @($summary.emulator_stderr_paths).Count | Should Be 1; $summary.timestamp_beijing | Should Match '^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$' }
             if ($null -ne $case.inputReady) { $summary.input_ready | Should Be $case.inputReady }
             if ($case.boot) { $summary.boot_completed | Should Be $case.boot; $summary.boot_animation | Should Be $case.bootanim; $summary.system_stable_samples | Should Be $case.stable }
             if ($case.systemDiagnostic) { $summary.system_diagnostics | Should Match $case.systemDiagnostic }
@@ -125,5 +134,14 @@ Describe 'Android readiness contracts' {
         $source | Should Match 'adb reboot disconnected transport'
         $source | Should Match 'window_service_pending'
         $source | Should Match "Can't find service: window"
+    }
+}
+
+Describe 'Emulator output isolation contract' {
+    It 'redirects diagnostics without opening another terminal' {
+        $source = Get-Content -Raw -LiteralPath $scriptPath
+        $source | Should Match 'RedirectStandardOutput'
+        $source | Should Match 'RedirectStandardError'
+        $source | Should Match 'NoNewWindow'
     }
 }

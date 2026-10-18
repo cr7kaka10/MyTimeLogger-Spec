@@ -7,17 +7,23 @@ const categories = [
   { id: 1, name: '输入', icon: 'book', color: '#f00', sort_order: 1 },
   { id: 2, name: '输出', icon: 'trophy', color: '#f00', sort_order: 2 },
   { id: 8, name: '娱乐', icon: 'game', color: '#00f', sort_order: 3 },
+  { id: 3, name: '副业生产', icon: 'tool', color: '#00f', sort_order: 4 },
+  { id: 4, name: '副业研发', icon: 'lab', color: '#00f', sort_order: 5 },
+  { id: 5, name: '副业营销', icon: 'money', color: '#00f', sort_order: 6 },
+  { id: 6, name: '工作', icon: 'work', color: '#00f', sort_order: 7 },
 ] as any
 const render = (name: string | null, state: any) => renderToStaticMarkup(
   <CategoryGrid categories={categories} currentCategory={name ? categories.find((item: any) => item.name === name) : null} timerState={state} onStart={() => undefined} onSwitch={() => undefined} />,
 )
 
 const input = render('输入', 'studying')
-assert((input.match(/disabled=""/g) || []).length === 2, 'input focus should disable two other cards')
-assert((input.match(/aria-disabled="true"/g) || []).length === 2, 'disabled cards should expose aria-disabled')
+assert((input.match(/disabled=""/g) || []).length === 5, 'input focus should keep only input/output enabled')
+assert((input.match(/aria-disabled="true"/g) || []).length === 5, 'disabled cards should expose aria-disabled')
 assert(input.includes('grayscale'), 'disabled cards should be visibly grey')
 const output = render('输出', 'studying')
-assert((output.match(/disabled=""/g) || []).length === 2, 'output focus should disable two other cards')
+assert((output.match(/disabled=""/g) || []).length === 5, 'output focus should keep only input/output enabled')
+assert((render('副业研发', 'studying').match(/disabled=""/g) || []).length === 4, 'side-business focus should keep three peers enabled')
+assert((render('工作', 'studying').match(/disabled=""/g) || []).length === 6, 'work focus should keep only work enabled')
 assert(!render('娱乐', 'countup_studying').includes('disabled=""'), 'normal focus should keep grid enabled')
 assert(!render('输入', 'stopped').includes('disabled=""'), 'stopped input should unlock grid')
 

@@ -82,13 +82,23 @@ def test_candidate_replays_v4_diet_and_body_deadline_facts_without_schedule_scor
 
 
 def test_candidate_reference_report_keeps_stable_check_and_safe_suffix():
-    error = RewardRebuildService._candidate_error("orphan_backpack_event", "sensitive-record-123456")
+    error = RewardRebuildService._candidate_error(
+        "invalid_composed_fragment_event", "sensitive-record-123456",
+        expected_units=7, actual_units=6, provenance_kind="exact",
+    )
 
-    report = failure_report(error, trace_id="trace-1234", job_id="job-1")
+    report = failure_report(
+        error, trace_id="trace-1234", job_id="job-1",
+        recovery={"status": "restored", "verified": True},
+    )
 
     assert report["code"] == "candidate_reference_invalid"
-    assert report["causes"][-1]["code"] == "orphan_backpack_event"
+    assert report["causes"][-1]["code"] == "invalid_composed_fragment_event"
     assert report["causes"][-1]["record_id_suffix"] == "123456"
+    assert report["causes"][-1]["expected_units"] == 7
+    assert report["causes"][-1]["actual_units"] == 6
+    assert report["causes"][-1]["provenance_kind"] == "exact"
+    assert report["recovery"]["verified"] is True
 
 
 def test_candidate_failure_path_records_its_current_stage():

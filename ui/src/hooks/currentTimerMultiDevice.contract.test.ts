@@ -16,6 +16,9 @@ const assert = (value: unknown, message: string) => { if (!value) throw new Erro
 const timerHook = readFileSync(new URL('./useTimer.ts', import.meta.url), 'utf8')
 assert(!timerHook.includes('db.logSession('), 'current-state mirrors must never write a local completed session')
 assert(timerHook.includes("reason: 'server-authoritative-history'"), 'completed history must be reserved for stable server pull')
+assert(timerHook.includes("authoritative?.summary_state === 'pending'") && timerHook.includes('summary_owner_device_id === timerDeviceIdRef.current'), 'only the authoritative summary owner may edit')
+assert(timerHook.includes("'resolve_summary'") && timerHook.includes("'skip_summary'"), 'summary completion must use authoritative lifecycle commands')
+assert(timerHook.includes('active || summaryVisibleRef.current'), 'an unresolved local summary keeps bounded reconciliation alive')
 
 class Authority {
   current: CurrentTimerState | null = null

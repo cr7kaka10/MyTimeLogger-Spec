@@ -7,13 +7,13 @@ import { SessionEditSheet } from './SessionEditSheet'
 import { WeekCalendar } from '../../pages/UnifiedChecklistPage/WeekCalendar'
 import { formatHoursMinutes } from '@core/displayFormat'
 import { DualTrackTimeline } from './DualTrackTimeline'
-import { TimeBookScheduleRail } from './TimeBookScheduleRail'
+import { TimeBookDailySummary, type DailySummaryNavigationIntent } from './TimeBookDailySummary'
 import { useExercise } from '../../hooks/useExercise'
-import { planDayForDate } from '../../utils/exerciseDate'
 import { formatBeijingDateTime, parseBeijingDateTimeMs } from '@core/BeijingTime'
 
 interface TimeBookPageProps extends UseTimeBookReturn {
   onNavigate: (tab: MainTab) => void
+  onSummaryNavigate: (intent: DailySummaryNavigationIntent) => void
 }
 
 const toDateTimeLocal = (value: string) => String(value || '').replace(' ', 'T').slice(0, 16)
@@ -60,7 +60,7 @@ const FlashCardEditor = ({ value, onSave, onCancel }: { value: FlashCard; onSave
 }
 
 export const TimeBookPage = memo(({
-  sessions, selectedDate, setSelectedDate, todaySummary, onNavigate, syncError,
+  sessions, selectedDate, setSelectedDate, todaySummary, diary, dailyGoals, dailySummaryLedger, onNavigate, onSummaryNavigate, syncError,
   markedDates, categories, saveSession, deleteSession,
   timelineEntries, flashError, taskRecommendations, taskSubmissions, createRecommendedTask, ignoreRecommendedTask, submitFlashClassificationFeedback, loadFlashProcessingLogs, correctFlashPolish, loadFlashSkillHistory, deleteFlashCard,
 }: TimeBookPageProps) => {
@@ -73,7 +73,6 @@ export const TimeBookPage = memo(({
   const [deleteError, setDeleteError] = useState('')
   const [deleting, setDeleting] = useState(false)
   const exercise = useExercise(selectedDate)
-  const planDay = useMemo(() => planDayForDate(selectedDate), [selectedDate])
   const confirmDelete = async () => { if (!deletingFlash) return; setDeleting(true); setDeleteError(''); try { await deleteFlashCard(deletingFlash.id); setDeletingFlash(null) } catch (cause: any) { setDeleteError(String(cause?.message || '删除闪念失败')) } finally { setDeleting(false) } }
 
   const totalMinutes = useMemo(() => todaySummary.reduce((sum, item) => sum + item.minutes, 0), [todaySummary])
@@ -140,7 +139,7 @@ export const TimeBookPage = memo(({
       {syncError && <div className="mx-6 text-[10px] text-amber-600">本地记录已显示 · {syncError}</div>}
 
       <div className="mx-3 grid min-w-0 grid-cols-[42%_minmax(0,58%)] gap-0 lg:mx-6 lg:grid-cols-[minmax(250px,320px)_minmax(0,1fr)] lg:gap-4">
-        <TimeBookScheduleRail day={planDay} date={selectedDate} definition={exercise.planDefinition} states={exercise.checkins} locked={exercise.locked} onSetState={exercise.setState} />
+        <TimeBookDailySummary date={selectedDate} diary={diary} planVersion={exercise.planVersion} dietRulesValid={exercise.planDefinition?.dietRulesValid} dietCheckins={exercise.dietCheckins} bodyMetrics={exercise.log} dailyGoals={dailyGoals} ledger={dailySummaryLedger} onNavigate={onSummaryNavigate} />
         <div className="min-w-0">{timelineEntries.length === 0 ? (
           <EmptyState icon="📭" title="这一天还没有记录" description="开始专注后，时间会自动流进这里。" actionLabel="开始专注" onAction={handleStart} />
         ) : (

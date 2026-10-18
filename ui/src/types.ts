@@ -85,6 +85,7 @@ export interface Reward {
   fragment_target_count?: number
   fragment_measure_mode?: 'count' | 'percent'
   fragment_rule_version?: number
+  legacy_percent_binding_count?: number
   fragment_progress_units?: number
   inventory_used?: number
 }
@@ -173,6 +174,7 @@ export interface SleepData {
   synced_at?: string
   sync_status?: string
   sync_error?: string
+  image_uploaded_at?: string
   report_status?: number
   full_report_state?: 'generated' | 'insufficient_time_records' | 'no_main_sleep'
   tracked_duration_seconds?: number
@@ -225,6 +227,7 @@ export interface SystemSettings {
   // 睡眠同步
   sleep_sync_enabled?: boolean
   sleep_sync_interval?: number
+  sleep_automation_consent?: boolean
   // AI 模型
   ai_text_model?: string
   ai_text_api_key?: string

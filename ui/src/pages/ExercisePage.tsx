@@ -191,7 +191,7 @@ export const ExercisePage = memo(({ theme, onToggleTheme, onStartFocus }: Props)
       ) : <main>
         <section className="record-card">
           <label>{x.locked ? '历史评分已固定' : '今日数据记录'}</label>
-          <div className="body-metrics">
+          <div id="exercise-body-metrics" className="body-metrics">
             <label className="body-metric"><span>体重</span><span className="body-metric-input"><input
               type="number" inputMode="decimal" min="30" max="200" step=".1" placeholder="体重" value={weight}
               disabled={!canEditWeight} title="当天全天可录入；北京时间 06:00-09:00 计为按时称重" onPointerDown={event => requestCapacitorInputFocus(event.currentTarget)} onChange={event => setWeight(event.target.value)}

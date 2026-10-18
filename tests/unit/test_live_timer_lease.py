@@ -5,6 +5,7 @@ import sqlite3
 from server.domain.live_timer_lease_service import (
     LiveTimerStateService,
     decide_current_state,
+    same_focus_group,
 )
 from server.models.server_schema import ensure_server_schema
 
@@ -20,7 +21,7 @@ def _service(tmp_path, now=None):
     conn.execute("INSERT INTO users(username,password_hash,created_at) VALUES ('u','x','now')")
     conn.executemany(
         "INSERT INTO server_categories(user_id,name,group_name,updated_at) VALUES (1,?,'默认','now')",
-        [(name,) for name in ('输入', '输出', '吃饭', '工作', '睡觉', '运动', '家庭')],
+        [(name,) for name in ('输入', '输出', '副业生产', '副业研发', '副业营销', '吃饭', '工作', '睡觉', '运动', '家庭')],
     )
     conn.commit()
     conn.close()
@@ -56,6 +57,12 @@ def test_current_state_decision_uses_revision_not_device_owner():
     assert decide_current_state(current, "stop", 7) == "accepted"
     assert decide_current_state(current, "switch", 6) == "stale_timer_revision"
     assert decide_current_state(None, "start", 0) == "accepted"
+
+
+def test_extended_focus_groups_have_independent_rollback(monkeypatch):
+    monkeypatch.setenv("MTL_EXTENDED_FOCUS_GROUPS", "0")
+    assert same_focus_group("输入", "输出")
+    assert not same_focus_group("副业生产", "副业研发")
 
 
 def test_timer_category_uses_server_id_and_rejects_unknown_name(tmp_path):
@@ -99,6 +106,27 @@ def test_cross_device_switch_pause_resume_and_time_baseline(tmp_path):
     assert resumed["state"]["state"] == "running"
     assert resumed["state"]["revision"] == 4
     assert resumed["state"]["current_note"] == "午餐"
+
+
+def test_focus_handoff_preserves_session_deadline_and_revision_conflict(tmp_path):
+    clock = [datetime(2026, 7, 24, 20, 0, tzinfo=BEIJING)]
+    service, path = _service(tmp_path, now=lambda: clock[0])
+    started = service.command(1, "start", _command("start", 0, "start", session_id="focus", duration_ms=600000))
+    clock[0] += timedelta(seconds=5)
+    handoff = service.command(1, "handoff", _command("handoff", 1, "pc", category="输出", duration_ms=1))
+    stale = service.command(1, "handoff", _command("handoff", 1, "android", device="android", category="输出"))
+    assert handoff["state"]["session_id"] == started["state"]["session_id"] == "focus"
+    assert handoff["state"]["started_at"] == started["state"]["started_at"]
+    assert handoff["state"]["duration_ms"] == 600000
+    assert handoff["state"]["active_elapsed_ms"] == 5000
+    assert stale["error_code"] == "stale_timer_revision"
+    clock[0] += timedelta(seconds=3)
+    stopped = service.command(1, "stop", _command("stop", 2, "stop-focus"))
+    assert stopped["completed_session_id"] == "focus"
+    conn = sqlite3.connect(path)
+    assert conn.execute("SELECT category_name,active_elapsed_ms FROM live_timer_segments ORDER BY created_at").fetchall() == [("输入", 5000), ("输出", 3000)]
+    assert conn.execute("SELECT net_duration_seconds FROM server_study_sessions WHERE id='focus'").fetchone()[0] == 8
+    conn.close()
 
 
 def test_switch_and_stop_enqueue_distinct_stable_backup_jobs(tmp_path):
@@ -256,6 +284,39 @@ def test_stop_is_cross_device_idempotent_and_publishes_one_history(tmp_path):
     assert changes == 1
     assert segments == 1
     assert backups == ("stable-session", "pending", 1)
+
+
+def test_summary_owner_resolves_once_and_other_device_converges(tmp_path):
+    service, path = _service(tmp_path)
+    service.command(1, "start", _command("start", 0, "start", session_id="summary-session"))
+    pending = service.command(1, "request_summary", _command("request_summary", 1, "summary-pending"))
+    assert pending["state"]["summary_state"] == "pending"
+    assert pending["state"]["summary_owner_device_id"] == "pc"
+    with sqlite3.connect(path) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM server_study_sessions").fetchone()[0] == 0
+    rejected = service.command(1, "resolve_summary", _command(
+        "resolve_summary", 2, "android-resolve", device="android", summary_revision=1, session_summary="重复总结"))
+    assert rejected["error_code"] == "summary_not_owner"
+    request = _command("resolve_summary", 2, "pc-resolve", summary_revision=1, session_summary="唯一总结")
+    resolved = service.command(1, "resolve_summary", request)
+    assert service.command(1, "resolve_summary", request) == resolved
+    assert resolved["state"]["summary_state"] == "resolved"
+    assert resolved["completed_session_id"] == "summary-session"
+    with sqlite3.connect(path) as conn:
+        assert conn.execute("SELECT COUNT(*),session_summary FROM server_study_sessions").fetchone() == (1, "唯一总结")
+
+
+def test_pending_summary_can_be_taken_over_only_after_timeout(tmp_path):
+    clock = [datetime(2026, 9, 24, 20, 0, tzinfo=BEIJING)]
+    service, _ = _service(tmp_path, now=lambda: clock[0])
+    service.command(1, "start", _command("start", 0, "start", session_id="takeover"))
+    service.command(1, "request_summary", _command("request_summary", 1, "pending"))
+    early = service.command(1, "takeover_summary", _command("takeover_summary", 2, "early", device="android", summary_revision=1))
+    assert early["error_code"] == "summary_owner_still_active"
+    clock[0] += timedelta(seconds=91)
+    taken = service.command(1, "takeover_summary", _command("takeover_summary", 2, "taken", device="android", summary_revision=1))
+    assert taken["state"]["summary_owner_device_id"] == "android"
+    assert taken["state"]["summary_revision"] == 2
 
 
 def test_concurrent_same_revision_accepts_one_then_returns_latest_state(tmp_path):

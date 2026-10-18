@@ -1,7 +1,8 @@
 import type { TimerState } from '@core/LogicEngine'
+import { canHandoffFocusCategory, focusCategoryPolicy } from '@core/FocusCategoryPolicy'
 
 export const isStructuredFocusLocked = (categoryName: string | null | undefined, state: TimerState): boolean => (
-  (categoryName === '输入' || categoryName === '输出')
+  focusCategoryPolicy(categoryName).structured
   && state !== 'stopped'
   && state !== 'long_break_finished'
 )
@@ -11,7 +12,11 @@ export const isTimerCategoryGridBlocked = (
   targetCategoryId: number,
   currentCategoryName: string | null | undefined,
   state: TimerState,
-): boolean => isStructuredFocusLocked(currentCategoryName, state) && currentCategoryId !== targetCategoryId
+  targetCategoryName?: string | null,
+  isPaused = false,
+): boolean => isStructuredFocusLocked(currentCategoryName, state)
+  && currentCategoryId !== targetCategoryId
+  && !canHandoffFocusCategory(state, isPaused, currentCategoryName, targetCategoryName)
 
 export const isDirectTimerCategoryActionBlocked = (
   currentCategoryName: string | null | undefined,
@@ -24,4 +29,8 @@ export const shouldBlockTimerCategoryAction = (
   action: TimerCategoryAction,
   currentCategoryName: string | null | undefined,
   state: TimerState,
-): boolean => (action === 'start' || action === 'switchCategory') && isDirectTimerCategoryActionBlocked(currentCategoryName, state)
+  targetCategoryName?: string | null,
+  isPaused = false,
+): boolean => (action === 'start' || action === 'switchCategory')
+  && isDirectTimerCategoryActionBlocked(currentCategoryName, state)
+  && !canHandoffFocusCategory(state, isPaused, currentCategoryName, targetCategoryName)

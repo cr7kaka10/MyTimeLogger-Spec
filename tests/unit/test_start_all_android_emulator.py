@@ -47,7 +47,8 @@ def test_start_all_orchestrates_android_without_destructive_operations():
     assert "test-path $script:emulator" not in helper
     assert "-not $script:adb -or -not (test-path -literalpath $script:adb -pathtype leaf)" in helper
     assert "-not $script:emulator -or -not (test-path -literalpath $script:emulator -pathtype leaf)" in helper
-    assert "stop-process" not in helper
+    assert "stop-process -id $confirmedpid -erroraction stop" in helper
+    assert "stop-process -name" not in helper
     assert "kill" not in helper
     assert "wipe-data" not in helper
     assert "pm clear" not in helper

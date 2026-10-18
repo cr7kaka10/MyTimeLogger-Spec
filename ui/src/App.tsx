@@ -5,6 +5,7 @@ import { createRoot } from 'react-dom/client'
 
 import { TimerPage } from './components/Timer/TimerPage'
 import { TimeBookPage } from './components/TimeBook/TimeBookPage'
+import type { DailySummaryNavigationIntent } from './components/TimeBook/TimeBookDailySummary'
 import { HabitsPage } from './components/Habits/HabitsPage'
 import { GoalsPage } from './components/Goals/GoalsPage'
 import { RewardsPage } from './components/Rewards/RewardsPage'
@@ -61,6 +62,7 @@ const AppSession = ({ initialAuthenticated, onAccountActivated }: { initialAuthe
   const [managementPlanDraft, setManagementPlanDraft] = useState<ManagementPlanDraft | null>(null)
   const [mindmapReturnContext, setMindmapReturnContext] = useState<MindmapRewardReturnContext | null>(null)
   const [timerAiFocusRequest, setTimerAiFocusRequest] = useState(0)
+  const [sleepFocusIntent, setSleepFocusIntent] = useState<DailySummaryNavigationIntent | null>(null)
   const handleTimerAiFocusHandled = useCallback(() => setTimerAiFocusRequest(0), [])
   const [explosionPos, setExplosionPos] = useState<{ x: number; y: number } | null>(null)
   const [authenticated, setAuthenticated] = useState(initialAuthenticated)
@@ -129,7 +131,7 @@ const AppSession = ({ initialAuthenticated, onAccountActivated }: { initialAuthe
       if (!target) return
       const dialog = target.closest('[role="dialog"]') as HTMLElement | null
       const surface = dialog?.getAttribute('aria-label')?.includes('管理方案') ? 'management_plan' : activeTab
-      recordBehavior('control.activated', { surface, control: target.getAttribute('aria-label') || target.textContent?.trim().slice(0, 80) || target.tagName.toLowerCase() })
+      recordBehavior('control.activated', { surface, control: target.getAttribute('aria-label') || target.id || target.tagName.toLowerCase() })
     }
     const onInput = (event: Event) => {
       const target = event.target as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement | null
@@ -166,8 +168,11 @@ const AppSession = ({ initialAuthenticated, onAccountActivated }: { initialAuthe
 
   useEffect(() => {
     let remove = () => {}; let closed = false
-    void getNotificationRuntime()?.notifications.subscribe(route => notificationNavigatorRef.current.open(route)).then(unsubscribe => { if (closed) unsubscribe(); else remove = unsubscribe }).catch(() => {})
-    const expire = () => {
+    void getNotificationRuntime()?.notifications.subscribe(route => { const result = notificationNavigatorRef.current.open(route); recordBehavior('notification.open', { notification_type: route, result }); return result }).then(unsubscribe => { if (closed) unsubscribe(); else remove = unsubscribe }).catch(() => {})
+    const expire = (event: Event) => {
+      const environment = (event as CustomEvent<{ environment?: typeof settings.activeEnvironment }>).detail?.environment
+      if (environment && environment !== settings.activeEnvironment) return
+      settings.markEnvironmentUnauthorized(environment || settings.activeEnvironment)
       if (detectPlatformRuntime() !== 'capacitor-android') { setAuthenticated(false); return }
       void settings.clearActiveSession().then(() => setAuthenticated(false)).catch(() => {})
     }
@@ -181,7 +186,7 @@ const AppSession = ({ initialAuthenticated, onAccountActivated }: { initialAuthe
     window.addEventListener('mtl:auth-expired', expire)
     window.addEventListener('mtl:auth-challenge', challenge)
     return () => { closed = true; remove(); window.removeEventListener('mtl:auth-expired', expire); window.removeEventListener('mtl:auth-challenge', challenge) }
-  }, [settings.clearActiveSession, settings.verifyActiveSession])
+  }, [settings.activeEnvironment, settings.clearActiveSession, settings.markEnvironmentUnauthorized, settings.verifyActiveSession])
 
   useEffect(() => createBackNavigationService().subscribe(() => runBackNavigation(() => {
     if (showOnboarding) { setShowOnboarding(false); return true }
@@ -271,6 +276,15 @@ const AppSession = ({ initialAuthenticated, onAccountActivated }: { initialAuthe
     sleep.setSelectedDate(date)
     setActiveTab('sleep')
   }, [sleep])
+  const handleSummaryNavigate = useCallback((intent: DailySummaryNavigationIntent) => {
+    if (intent.tab === 'sleep') {
+      sleep.setSelectedDate(intent.date)
+      setSleepFocusIntent(intent.target ? intent : null)
+      setActiveTab('sleep')
+      return
+    }
+    handleNavigate(intent.tab)
+  }, [handleNavigate, sleep.setSelectedDate])
 
   const handleOpenSleepFromSettings = useCallback(() => handleNavigate('sleep'), [handleNavigate])
   const handleOpenCategoryManager = useCallback(() => setShowCategoryManager(true), [])
@@ -345,13 +359,15 @@ const AppSession = ({ initialAuthenticated, onAccountActivated }: { initialAuthe
     if (activeTab === 'exercise') return <ExercisePage theme={settings.theme} onToggleTheme={settings.toggleTheme} onStartFocus={handleStartExerciseFocus} />
     if (activeTab === 'learning') return <LearningPage onNavigate={handleNavigate} onStartFocus={handleStartLearningFocus} runtime={{ serverUrl: settings.selectedEnvironmentProfile.serverUrl, authToken: settings.selectedEnvironmentProfile.authToken }} />
     if (activeTab === 'timer') return <TimerPage {...timer} theme={settings.theme} onToggleTheme={settings.toggleTheme} onNavigate={handleNavigate} onOpenLedger={() => setShowLedger(true)} onOpenSettings={() => handleNavigate('settings')} runtime={{ serverUrl: settings.selectedEnvironmentProfile.serverUrl, authToken: settings.selectedEnvironmentProfile.authToken }} onRecordFlashCard={timeBook.recordFlashCard} diary={timeBook.diary} onSaveDiary={timeBook.saveDiary} onOpenLockedDiary={() => handleNavigateToSleep(timeBook.selectedDate)} focusAiRequest={timerAiFocusRequest} onFocusAiHandled={handleTimerAiFocusHandled} />
-    if (activeTab === 'timebook') return <TimeBookPage {...timeBook} onNavigate={handleNavigate} />
+    if (activeTab === 'timebook') return <TimeBookPage {...timeBook} onNavigate={handleNavigate} onSummaryNavigate={handleSummaryNavigate} />
       if (activeTab === 'sleep') return (
         <SleepPage {...sleep}
           onPickImage={sleep.pickImage}
           onSleepAnalysis={sleep.runAnalysis}
           onFullAnalysis={sleep.runFullAnalysis}
           onForceRefresh={sleep.forceRefresh}
+          focusIntent={sleepFocusIntent?.target ? { date: sleepFocusIntent.date, target: sleepFocusIntent.target, nonce: sleepFocusIntent.nonce } : null}
+          onFocusHandled={nonce => setSleepFocusIntent(current => current?.nonce === nonce ? null : current)}
         />
       )
     if (activeTab === 'settings') return (
@@ -379,7 +395,7 @@ const AppSession = ({ initialAuthenticated, onAccountActivated }: { initialAuthe
         onNavigate={handleNavigate}
       />
     )
-    }, [activeTab, goals, habits, backpack, ledgerHook, showCategoryManager, handleHabitSectionChange, handleNavigate, handleNavigateToSleep, handleStartExerciseFocus, handleStartLearningFocus, rewards, settings, sleep, timeBook, timer, handleOpenSleepFromSettings, handleOpenCategoryManager, handleCloseCategoryManager, openManagementPlan, openManagementPlanDraft, timerAiFocusRequest])
+    }, [activeTab, goals, habits, backpack, ledgerHook, showCategoryManager, handleHabitSectionChange, handleNavigate, handleNavigateToSleep, handleSummaryNavigate, handleStartExerciseFocus, handleStartLearningFocus, rewards, settings, sleep, sleepFocusIntent, timeBook, timer, handleOpenSleepFromSettings, handleOpenCategoryManager, handleCloseCategoryManager, openManagementPlan, openManagementPlanDraft, timerAiFocusRequest])
 
   const hasSavedToken = Boolean(settings.selectedEnvironmentProfile.authToken)
   const waitingForSavedToken = hasSavedToken && settings.connectionStatus === 'checking'

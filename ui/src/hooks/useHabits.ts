@@ -4,6 +4,7 @@ import type { Habit, HabitCheckin } from '../types'
 import { getCurrentTimerClient, getDatabase, syncNow } from '../db'
 import { useEventRefresh } from './useEventRefresh'
 import { LOCAL_HABITS_UPDATED } from './useLocalHabitMutation'
+import { isHabitScheduledForDate as scheduledForDate } from '@core/HabitSchedule'
 
 export interface UseHabitsReturn {
   habits: Habit[]
@@ -15,40 +16,12 @@ export interface UseHabitsReturn {
   toggleCheckin: (habitId: number | string, date?: string, forceStatus?: number) => Promise<void>
   habitCommandStatus: Record<string, 'syncing' | 'retryable_failed'>
   retryHabitCheckin: (habitId: number | string) => Promise<void>
-  addHabit: (name: string, icon: string, difficulty: string) => void
+  addHabit: (name: string, icon: string) => void
   deleteHabit: (id: number | string) => void
 }
 
 export function isHabitScheduledForDate(repeatRule: string | undefined | null, dateStr: string): boolean {
-  if (!repeatRule) return true // 默认每天出现
-
-  try {
-    const parts = dateStr.split('-')
-    const year = parseInt(parts[0], 10)
-    const month = parseInt(parts[1], 10) - 1
-    const day = parseInt(parts[2], 10)
-    const date = new Date(year, month, day)
-    const dayOfWeek = date.getDay() // 0 (周日) 到 6 (周六)
-
-    const weekdayMap = ["SU", "MO", "TU", "WE", "TH", "FR", "SA"]
-    const targetDay = weekdayMap[dayOfWeek]
-
-    const rrule = repeatRule.toUpperCase()
-    if (rrule.includes("FREQ=DAILY")) {
-      return true
-    }
-
-    if (rrule.includes("FREQ=WEEKLY")) {
-      const bydayMatch = rrule.match(/BYDAY=([^;]+)/)
-      if (bydayMatch) {
-        const activeDays = bydayMatch[1].split(",")
-        return activeDays.includes(targetDay)
-      }
-    }
-  } catch (e) {
-    console.error("Failed to parse repeat rule:", repeatRule, e)
-  }
-  return true
+  return scheduledForDate(repeatRule, dateStr)
 }
 
 export const useHabits = (): UseHabitsReturn => {
@@ -148,7 +121,7 @@ export const useHabits = (): UseHabitsReturn => {
       return next
     })
     setRefreshTrigger(previous => previous + 1)
-    window.dispatchEvent(new CustomEvent('local-shortcut-trigger', { detail: 'balance-updated' }))
+    window.dispatchEvent(new CustomEvent('balance-updated'))
   }, [])
 
   const toggleCheckin = useCallback(async (habitId: number | string, date?: string, forceStatus?: number) => {
@@ -169,9 +142,9 @@ export const useHabits = (): UseHabitsReturn => {
     await submitHabitCommand(habitId, selectedDate, 0, idempotencyKey, true)
   }, [selectedDate, submitHabitCommand])
 
-  const addHabit = useCallback((name: string, icon: string, difficulty: string) => {
+  const addHabit = useCallback((name: string, icon: string) => {
     getDatabase().then(db => {
-      db.addHabit(name, icon, difficulty)
+      db.addHabit(name, icon)
       setRefreshTrigger(prev => prev + 1)
     })
   }, [])

@@ -206,6 +206,7 @@ try:
     from .statistics_start_date import get_user_statistics_start_date, resolve_statistics_start_date
     from .runtime_config import bootstrap_server_system_config, ensure_server_runtime_config
     from .analyzer import SleepAnalyzer
+    from . import analyzer as sleep_analyzer_module
     from .domain.sleep_automation_service import BEIJING, SleepAutomationService, STEP_BEDTIME_DEADLINE, STEP_TIMER_SWITCH, due_step, beijing_now
     from .domain.sleep_reward_service import BEDTIME_COIN_EFFECTIVE_DATE
     from .domain.exercise_v4_service import ExerciseV4Service
@@ -246,6 +247,7 @@ except (ImportError, ValueError):
     from statistics_start_date import get_user_statistics_start_date, resolve_statistics_start_date
     from runtime_config import bootstrap_server_system_config, ensure_server_runtime_config
     from analyzer import SleepAnalyzer
+    import analyzer as sleep_analyzer_module
     from domain.sleep_automation_service import BEIJING, SleepAutomationService, STEP_BEDTIME_DEADLINE, STEP_TIMER_SWITCH, due_step, beijing_now
     from domain.sleep_reward_service import BEDTIME_COIN_EFFECTIVE_DATE
     from domain.exercise_v4_service import ExerciseV4Service
@@ -268,12 +270,12 @@ ensure_server_runtime_config()
 
 try:
     from .db_wrapper import ServerDBWrapper
-    from .sync_hub import SyncHub
+    from .sync_hub import SyncHub, TICKTICK_STAGING_MAX_AGE_SECONDS
     from .sync_constants import SSE_KEEPALIVE_INTERVAL_SEC
     from .webdav_backup import S3BackupConfig, S3BackupService, S3Client
 except (ImportError, ValueError):
     from db_wrapper import ServerDBWrapper
-    from sync_hub import SyncHub
+    from sync_hub import SyncHub, TICKTICK_STAGING_MAX_AGE_SECONDS
     from sync_constants import SSE_KEEPALIVE_INTERVAL_SEC
     from webdav_backup import S3BackupConfig, S3BackupService, S3Client
 
@@ -1055,6 +1057,12 @@ def build_ai_cfg_for_user(user_id: int):
         "vision_base_url": cfg.get("vision_base_url", ""),
         "vision_api_key": cfg.get("vision_api_key", ""),
         "vision_model": cfg.get("vision_model", ""),
+        "vision_backup_1_base_url": cfg.get("vision_backup_1_base_url", ""),
+        "vision_backup_1_api_key": cfg.get("vision_backup_1_api_key", ""),
+        "vision_backup_1_model": cfg.get("vision_backup_1_model", ""),
+        "vision_backup_2_base_url": cfg.get("vision_backup_2_base_url", ""),
+        "vision_backup_2_api_key": cfg.get("vision_backup_2_api_key", ""),
+        "vision_backup_2_model": cfg.get("vision_backup_2_model", ""),
         "text_base_url": cfg.get("text_base_url", ""),
         "text_api_key": cfg.get("text_api_key", ""),
         "text_model": cfg.get("text_model", ""),
@@ -1638,6 +1646,7 @@ def _set_job_image_path(request_id, image_path):
 
 
 def _cleanup_temp_upload_image(request_id, image_path=None):
+    _cleanup_expired_failed_sleep_images()
     candidates = []
     if image_path:
         candidates.append(image_path)
@@ -1656,6 +1665,8 @@ def _cleanup_temp_upload_image(request_id, image_path=None):
         name = os.path.basename(path)
         if re.fullmatch(r"sleep_\d{4}-\d{2}-\d{2}\.jpg", name):
             continue
+        if re.fullmatch(r"failed_\d+_[0-9a-f]+_\d+\.jpg", name, re.I):
+            continue
         abs_path = os.path.abspath(path)
         try:
             is_attachment_file = os.path.commonpath([attachments_root, abs_path]) == attachments_root
@@ -1671,6 +1682,40 @@ def _cleanup_temp_upload_image(request_id, image_path=None):
                 logger.info("🧹 已清理临时上传图片: %s", name)
         except OSError as exc:
             logger.warning("清理临时上传图片失败: %s", exc)
+
+
+def _retain_failed_sleep_image(image_path, request_id, user_id, now_ts=None):
+    if not image_path or not os.path.exists(image_path):
+        return image_path
+    if re.fullmatch(r"sleep_\d{4}-\d{2}-\d{2}\.jpg", os.path.basename(image_path)):
+        return image_path
+    expires = int(now_ts or time.time()) + 72 * 60 * 60
+    os.makedirs(ATTACHMENTS_DIR, exist_ok=True)
+    target = os.path.join(ATTACHMENTS_DIR, f"failed_{int(user_id)}_{request_id}_{expires}.jpg")
+    try:
+        if os.path.abspath(image_path) != os.path.abspath(target):
+            os.replace(image_path, target)
+        _set_job_image_path(request_id, target)
+        return target
+    except OSError as exc:
+        logger.warning("保留失败睡眠图片失败: request_id=%s error=%s", request_id, exc)
+        return image_path
+
+
+def _cleanup_expired_failed_sleep_images(now_ts=None):
+    if not os.path.isdir(ATTACHMENTS_DIR):
+        return 0
+    now_value, removed = int(now_ts or time.time()), 0
+    for name in os.listdir(ATTACHMENTS_DIR):
+        match = re.fullmatch(r"failed_\d+_[0-9a-f]+_(\d+)\.jpg", name, re.I)
+        if not match or int(match.group(1)) > now_value:
+            continue
+        try:
+            os.remove(os.path.join(ATTACHMENTS_DIR, name))
+            removed += 1
+        except FileNotFoundError:
+            pass
+    return removed
 
 
 def _cleanup_stale_temp_upload_images(max_age_seconds=3600):
@@ -1799,6 +1844,7 @@ def _run_upload_validation(request_id, image_path, user_id):
         sleep_data["sleep_date"] = result_date
         sleep_data["source"] = SleepDataSource.SCREENSHOT_OCR.value
         sleep_data["sync_status"] = sleep_data.get("sync_status") or "success"
+        sleep_data["image_uploaded_at"] = store.record_valid_sleep_upload(user_id, result_date, job.get("created_at") or _now_str())
         image_path = _archive_sleep_image(image_path, result_date, request_id, user_id)
         _mark_upload_validated(request_id, result_date, sleep_data, image_path)
         logger.info(
@@ -1812,6 +1858,7 @@ def _run_upload_validation(request_id, image_path, user_id):
     except Exception as exc:
         logger.error("上传截图日期校验失败: request_id=%s error=%s", request_id, exc, exc_info=True)
         logger.error("[sleep-report] upload validation error request_id=%s user_id=%s date=%s error=%s", request_id, user_id, date_str if 'date_str' in locals() else None, exc, exc_info=True)
+        image_path = _retain_failed_sleep_image(image_path, request_id, user_id)
         store.mark_error(request_id, str(exc))
         _push_progress(request_id, {"status": "error", "msg": str(exc)})
     finally:
@@ -1925,6 +1972,9 @@ def _run_analysis(request_id, image_path, user_id, full=True, force_refresh=Fals
         if result.status == "done":
             progress("OCR 与睡眠指标校验完成，正在整理报告数据...")
             sleep_data = result.sleep_data or {}
+            is_valid, validation_reason = sleep_analyzer_module.SleepAnalyzer.validate_data(sleep_data)
+            if not is_valid:
+                raise ValueError(f"完整报告保存前严格校验失败：{validation_reason}")
             result_date = (
                 _normalize_sleep_date(result.date)
                 or _normalize_sleep_date(sleep_data.get("date"))
@@ -1942,6 +1992,8 @@ def _run_analysis(request_id, image_path, user_id, full=True, force_refresh=Fals
                 sleep_data["source"] = SleepDataSource.SCREENSHOT_OCR.value
             if not sleep_data.get("sync_status"):
                 sleep_data["sync_status"] = "success"
+            if job and image_path:
+                sleep_data["image_uploaded_at"] = store.record_valid_sleep_upload(user_id, result_date, job.get("created_at") or _now_str())
             # 双重回填保护，防止 Null 值覆写
             if morning_diary and not sleep_data.get("morning_diary"):
                 sleep_data["morning_diary"] = morning_diary
@@ -2013,6 +2065,7 @@ def _run_analysis(request_id, image_path, user_id, full=True, force_refresh=Fals
         else:
             if isinstance(result.error, str) and "aTimeLogger 授权已失效" in result.error:
                 _mark_atimelogger_auth_required(user_id)
+            image_path = _retain_failed_sleep_image(image_path, request_id, user_id)
             store.mark_error(request_id, result.error)
             logger.error("[sleep-report] analysis mark error request_id=%s user_id=%s date=%s error=%s", request_id, user_id, date_str, result.error)
             _push_progress(request_id, {"status": "error", "msg": result.error})
@@ -2024,6 +2077,7 @@ def _run_analysis(request_id, image_path, user_id, full=True, force_refresh=Fals
         logger.exception(f"_run_analysis 未预期异常: request_id={request_id}, error={exc}")
         logger.exception("[sleep-report] analysis unexpected error request_id=%s user_id=%s error=%s", request_id, user_id, exc)
         try:
+            image_path = _retain_failed_sleep_image(image_path, request_id, user_id)
             store.mark_error(request_id, f"内部错误: {exc}")
             _push_progress(request_id, {"status": "error", "msg": f"内部错误: {exc}"})
         except Exception:
@@ -2122,10 +2176,25 @@ async def _run_reward_rebuild(user_id: int, job_id: str, start_date: str):
     pull = None
     job = reward_rebuild_service.get_job(user_id, job_id)
     trace_id = job["trace_id"]
-    stage = "ticktick_reset"
+    stage = "provider_preflight"
     try:
         log_event(logger, trace_id=trace_id, job_id=job_id, user_id=user_id,
                   stage="job_finish", event="start", outcome="running")
+        log_event(logger, trace_id=trace_id, job_id=job_id, user_id=user_id,
+                  stage=stage, event="start", outcome="running")
+        preflight = await sync_hub.force_pull_ticktick(
+            user_id, request_id=trace_id, job_id=job_id, manual=True, validate_only=True,
+        )
+        if not preflight.get("ok") or not preflight.get("complete"):
+            raise RuntimeError("provider_snapshot_incomplete")
+        staged_tasks = preflight.get("tasks") or {}
+        staged_at = datetime.fromisoformat(str(staged_tasks.get("staged_at") or ""))
+        if not staged_tasks.get("snapshot_digest") or (datetime.now(timezone(timedelta(hours=8))) - staged_at).total_seconds() > TICKTICK_STAGING_MAX_AGE_SECONDS:
+            raise RuntimeError("provider_snapshot_stale")
+        log_event(logger, trace_id=trace_id, job_id=job_id, user_id=user_id,
+                  stage=stage, event="finish", outcome="success",
+                  details={"request_id": preflight.get("request_id"), "complete": True})
+        stage = "ticktick_reset"
         log_event(logger, trace_id=trace_id, job_id=job_id, user_id=user_id,
                   stage=stage, event="start", outcome="running")
         reset_preview = preview_ticktick_reset(store.db_path, user_id, start_date)
@@ -2138,7 +2207,11 @@ async def _run_reward_rebuild(user_id: int, job_id: str, start_date: str):
         stage = "provider_pull"
         log_event(logger, trace_id=trace_id, job_id=job_id, user_id=user_id,
                   stage=stage, event="start", outcome="running")
-        pull = await sync_hub.force_pull_ticktick(user_id, request_id=trace_id, job_id=job_id)
+        pull = await sync_hub.force_pull_ticktick(user_id, request_id=trace_id, job_id=job_id, manual=True)
+        if not pull.get("ok") or not pull.get("complete"):
+            raise RuntimeError("provider_snapshot_incomplete")
+        if (pull.get("tasks") or {}).get("snapshot_digest") != staged_tasks.get("snapshot_digest"):
+            raise RuntimeError("provider_snapshot_changed")
         log_event(logger, trace_id=trace_id, job_id=job_id, user_id=user_id,
                   stage=stage, event="finish", outcome="success" if pull.get("ok") else "failure",
                   details={"merged_count": pull.get("merged_count"), "errors": pull.get("errors")})
@@ -2154,7 +2227,7 @@ async def _run_reward_rebuild(user_id: int, job_id: str, start_date: str):
                   stage="job_finish", event="finish", outcome="success",
                   details={"epoch": report.get("epoch"), "ledger_rows": report.get("ledger_rows"), "balance": report.get("balance")})
     except Exception as exc:
-        failed_stage = stage if stage in {"ticktick_reset", "provider_pull"} else None
+        failed_stage = stage if stage in {"provider_preflight", "ticktick_reset", "provider_pull"} else None
         report = await asyncio.to_thread(
             reward_rebuild_service.fail_and_restore, user_id, job_id, exc, pull, failed_stage,
         )
@@ -4864,7 +4937,7 @@ async def update_reward(reward_id: str, request: Request, user: dict = Depends(g
         unlock_fields["unlock_source_type"] = body["unlock_source_type"]
     if "unlock_source_id" in body:
         unlock_fields["unlock_source_id"] = body["unlock_source_id"]
-    for field in ("inventory_mode", "inventory_limit", "unlock_required_count", "fulfillment_mode", "fragment_target_count"):
+    for field in ("inventory_mode", "inventory_limit", "unlock_required_count", "fulfillment_mode", "fragment_target_count", "convert_fragment_to_count"):
         if field in body:
             unlock_fields[field] = body[field]
     if "redemption_mode" in body:
@@ -4882,7 +4955,8 @@ async def update_reward(reward_id: str, request: Request, user: dict = Depends(g
     if not success:
         raise HTTPException(status_code=404, detail="Reward item not found")
     sync_hub._notify_clients(["rewards"], user["id"])
-    return {"status": "ok"}
+    reward = next((item for item in store.list_rewards(user["id"]) if str(item["id"]) == str(reward_id)), None)
+    return {"status": "ok", "reward": reward}
 
 @app.delete("/api/rewards/{reward_id}")
 def delete_reward(reward_id: str, user: dict = Depends(get_current_user_optional)):
@@ -4929,9 +5003,18 @@ async def claim_rewards(request: Request, user: dict = Depends(get_current_user_
 def get_backpack(user: dict = Depends(get_current_user_optional)):
     with store._transact() as conn:
         store.reward_settlement_service.reconcile_period_inventory_in_txn(conn, user["id"])
+        version_row = conn.execute(
+            "SELECT COALESCE(MAX(server_version),0) AS version FROM server_change_log WHERE user_id=?",
+            (user["id"],),
+        ).fetchone()
     backpack = store.list_backpack(user["id"])
     fragments = store.reward_wallet_service.list_backpack_fragments(user["id"])
-    return {"status": "ok", "backpack": backpack, "fragments": fragments}
+    expired = store.reward_wallet_service.list_expired_backpack_fragments(user["id"])
+    return {
+        "status": "ok", "userId": user["id"], "dataVersion": int(version_row["version"] or 0),
+        "generatedAt": _beijing_now().isoformat(timespec="seconds"), "serverBuild": BUILD_REVISION,
+        "backpack": backpack, "fragments": fragments, "expired_fragments": expired,
+    }
 
 @app.get("/api/rewards/backpack/events")
 def get_backpack_events(limit: int = 50, offset: int = 0, user: dict = Depends(get_current_user_optional)):
@@ -5310,20 +5393,21 @@ async def read_timer_state(request: Request, user: dict = Depends(get_current_us
 @app.post("/api/timer/current/{operation}")
 async def update_timer_state(operation: str, request: Request, user: dict = Depends(get_current_user_optional)):
     _require_timer_state_capability(request)
-    if operation not in {"start", "switch", "note", "pause", "resume", "stop"}:
+    if operation not in {"start", "switch", "handoff", "note", "pause", "resume", "stop",
+                       "request_summary", "resolve_summary", "skip_summary", "takeover_summary"}:
         raise HTTPException(status_code=404, detail="未知计时操作")
     body = await request.json()
     required = ("device_id", "observed_revision", "idempotency_key", "user_intent_id")
     if any(key not in body or (key != "observed_revision" and not str(body.get(key, "")).strip()) for key in required):
         raise HTTPException(status_code=400, detail="缺少当前计时字段")
-    if operation in {"start", "switch"} and not str(body.get("category_name", "")).strip():
+    if operation in {"start", "switch", "handoff"} and not str(body.get("category_name", "")).strip():
         raise HTTPException(status_code=400, detail="缺少计时分类")
     if operation == "note" and "current_note" not in body:
         raise HTTPException(status_code=400, detail="缺少当前计时备注")
     payload = {key: body.get(key) for key in (
         "session_id", "device_id", "observed_revision", "idempotency_key", "user_intent_id",
         "command_seq", "category_id", "category_name", "timer_mode", "duration_ms",
-        "session_summary", "current_note",
+        "session_summary", "summary_revision", "current_note",
     )}
     result = _live_timer_service().command(int(user["id"]), operation, payload)
     if result.get("status") == "accepted":

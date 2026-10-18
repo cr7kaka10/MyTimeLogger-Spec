@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -11,11 +12,18 @@ from .session_business_date import session_business_date
 
 
 BEIJING_TZ = timezone(timedelta(hours=8))
+FOCUS_GROUPS = (
+    frozenset(("输入", "输出")),
+    frozenset(("副业生产", "副业研发", "副业营销")),
+    frozenset(("工作",)),
+)
+SUMMARY_TAKEOVER_SECONDS = 90
 STATE_FIELDS = (
     "user_id", "session_id", "owner_device_id", "category_id", "category_name", "current_note",
     "state", "started_at", "segment_started_at", "active_elapsed_ms",
     "timer_mode", "duration_ms", "pause_count", "revision", "last_command_seq",
     "last_idempotency_key", "last_user_intent_id", "last_heartbeat_at", "updated_at",
+    "summary_state", "summary_owner_device_id", "summary_revision", "completed_session_id", "summary_updated_at",
 )
 
 
@@ -39,7 +47,15 @@ def decide_current_state(current: dict | None, operation: str, observed_revision
         return "invalid_timer_state"
     if operation == "resume" and current.get("state") != "paused":
         return "invalid_timer_state"
+    if operation == "handoff":
+        if current.get("state") != "running":
+            return "invalid_timer_state"
     return "accepted"
+
+
+def same_focus_group(left: str, right: str) -> bool:
+    groups = FOCUS_GROUPS if os.getenv("MTL_EXTENDED_FOCUS_GROUPS", "1") != "0" else FOCUS_GROUPS[:1]
+    return left != right and any(left in group and right in group for group in groups)
 
 
 def safe_current_state(row, now: datetime | None = None) -> dict | None:
@@ -72,7 +88,8 @@ def _result(status: str, state=None, error_code: str | None = None) -> dict:
 
 
 class LiveTimerStateService:
-    OPERATIONS = {"start", "switch", "note", "pause", "resume", "stop"}
+    OPERATIONS = {"start", "switch", "handoff", "note", "pause", "resume", "stop",
+                  "request_summary", "resolve_summary", "skip_summary", "takeover_summary"}
 
     def __init__(self, connect, now=None):
         self._connect = connect
@@ -119,6 +136,10 @@ class LiveTimerStateService:
     @staticmethod
     def _finalize_segment(conn, user_id: int, row, now_value: datetime, now_text: str, end_revision: int) -> int:
         elapsed = LiveTimerStateService._elapsed(row, now_value)
+        closed = conn.execute(
+            "SELECT COALESCE(SUM(active_elapsed_ms),0) AS total FROM live_timer_segments "
+            "WHERE user_id=? AND session_id=? AND ended_at IS NOT NULL", (user_id, row["session_id"]),
+        ).fetchone()["total"]
         open_segment = conn.execute(
             "SELECT segment_id FROM live_timer_segments "
             "WHERE user_id=? AND session_id=? AND ended_at IS NULL ORDER BY created_at DESC LIMIT 1",
@@ -127,7 +148,7 @@ class LiveTimerStateService:
         if open_segment:
             conn.execute(
                 "UPDATE live_timer_segments SET ended_at=?,active_elapsed_ms=?,end_revision=? WHERE segment_id=?",
-                (now_text, elapsed, end_revision, open_segment["segment_id"]),
+                (now_text, max(0, elapsed - int(closed or 0)), end_revision, open_segment["segment_id"]),
             )
         return elapsed
 
@@ -234,12 +255,26 @@ class LiveTimerStateService:
             if decision != "accepted":
                 conn.rollback()
                 return _result("conflict", current, decision)
-            if operation in {"start", "switch"}:
+            summary_revision = int(payload.get("summary_revision") if payload.get("summary_revision") is not None else (current or {}).get("summary_revision") or 0)
+            if operation == "request_summary" and current.get("summary_state") == "pending":
+                conn.rollback()
+                return _result("conflict", current, "summary_already_pending")
+            if operation in {"resolve_summary", "skip_summary", "takeover_summary"}:
+                if current.get("summary_state") != "pending" or summary_revision != int(current.get("summary_revision") or 0):
+                    conn.rollback()
+                    return _result("conflict", current, "stale_summary_revision")
+                if operation != "takeover_summary" and str(current.get("summary_owner_device_id") or "") != str(payload["device_id"]):
+                    conn.rollback()
+                    return _result("conflict", current, "summary_not_owner")
+            if operation in {"start", "switch", "handoff"}:
                 category_id = self._canonical_category_id(conn, user_id, str(payload["category_name"]))
                 if category_id is None:
                     conn.rollback()
                     return _result("conflict", current, "invalid_timer_category")
                 payload = {**payload, "category_id": category_id}
+                if operation == "handoff" and not same_focus_group(str(current.get("category_name") or ""), str(payload["category_name"]).strip()):
+                    conn.rollback()
+                    return _result("conflict", current, "focus_group_mismatch")
 
             now_value, now_text = self._now()
             next_revision = (int(row["revision"]) if row else 0) + 1
@@ -269,7 +304,8 @@ class LiveTimerStateService:
                         "UPDATE live_timer_lease SET session_id=?,owner_device_id=?,category_id=?,category_name=?,current_note=?,"
                         "state=?,started_at=?,segment_started_at=?,active_elapsed_ms=?,timer_mode=?,duration_ms=?,"
                         "pause_count=?,revision=?,last_command_seq=?,last_idempotency_key=?,last_user_intent_id=?,"
-                        "last_heartbeat_at=?,updated_at=? WHERE user_id=?",
+                        "last_heartbeat_at=?,updated_at=?,summary_state='none',summary_owner_device_id=NULL,"
+                        "summary_revision=0,completed_session_id=NULL,summary_updated_at=NULL WHERE user_id=?",
                         values,
                     )
                 else:
@@ -283,6 +319,17 @@ class LiveTimerStateService:
                     )
                 self._start_segment(conn, user_id, session_id, payload, now_text)
 
+            elif operation == "handoff":
+                elapsed = self._finalize_segment(conn, user_id, row, now_value, now_text, next_revision)
+                conn.execute(
+                    "UPDATE live_timer_lease SET owner_device_id=?,category_id=?,category_name=?,current_note=?,"
+                    "segment_started_at=?,active_elapsed_ms=?,revision=?,last_idempotency_key=?,last_user_intent_id=?,"
+                    "last_heartbeat_at=?,updated_at=? WHERE user_id=?",
+                    (device_id, payload.get("category_id"), payload["category_name"], str(payload.get("current_note") or ""),
+                     now_text, elapsed, next_revision, payload["idempotency_key"], payload["user_intent_id"], now_text, now_text, user_id),
+                )
+                self._start_segment(conn, user_id, row["session_id"], payload, now_text)
+
             elif operation == "switch":
                 self._finalize_segment(conn, user_id, row, now_value, now_text, next_revision)
                 completed_session_id = self._publish_completed_session(
@@ -295,7 +342,8 @@ class LiveTimerStateService:
                     "UPDATE live_timer_lease SET session_id=?,owner_device_id=?,category_id=?,category_name=?,"
                     "current_note=?,state='running',started_at=?,segment_started_at=?,active_elapsed_ms=0,"
                     "timer_mode=?,duration_ms=?,pause_count=0,revision=?,"
-                    "last_idempotency_key=?,last_user_intent_id=?,last_heartbeat_at=?,updated_at=? WHERE user_id=?",
+                    "last_idempotency_key=?,last_user_intent_id=?,last_heartbeat_at=?,updated_at=?,"
+                    "summary_state='none',summary_owner_device_id=NULL,summary_revision=0,completed_session_id=NULL,summary_updated_at=NULL WHERE user_id=?",
                     (
                         next_session_id, device_id, payload.get("category_id"),
                         payload["category_name"], str(payload.get("current_note") or ""),
@@ -306,6 +354,27 @@ class LiveTimerStateService:
                     ),
                 )
                 self._start_segment(conn, user_id, next_session_id, payload, now_text)
+
+            elif operation == "request_summary":
+                elapsed = self._elapsed(row, now_value)
+                conn.execute(
+                    "UPDATE live_timer_lease SET owner_device_id=?,state='paused',segment_started_at=NULL,active_elapsed_ms=?,"
+                    "summary_state='pending',summary_owner_device_id=?,summary_revision=summary_revision+1,summary_updated_at=?,"
+                    "revision=?,last_idempotency_key=?,last_user_intent_id=?,last_heartbeat_at=?,updated_at=? WHERE user_id=?",
+                    (device_id, elapsed, device_id, now_text, next_revision, payload["idempotency_key"],
+                     payload["user_intent_id"], now_text, now_text, user_id),
+                )
+
+            elif operation == "takeover_summary":
+                changed_at = _parse_time(current.get("summary_updated_at")) or now_value
+                if (now_value - changed_at).total_seconds() < SUMMARY_TAKEOVER_SECONDS:
+                    conn.rollback()
+                    return _result("conflict", current, "summary_owner_still_active")
+                conn.execute(
+                    "UPDATE live_timer_lease SET owner_device_id=?,summary_owner_device_id=?,summary_revision=summary_revision+1,"
+                    "summary_updated_at=?,revision=?,last_idempotency_key=?,last_user_intent_id=?,last_heartbeat_at=?,updated_at=? WHERE user_id=?",
+                    (device_id, device_id, now_text, next_revision, payload["idempotency_key"], payload["user_intent_id"], now_text, now_text, user_id),
+                )
 
             elif operation == "note":
                 conn.execute(
@@ -333,24 +402,40 @@ class LiveTimerStateService:
                 conn.execute(
                     "UPDATE live_timer_lease SET owner_device_id=?,state='running',segment_started_at=?,"
                     "revision=?,last_idempotency_key=?,last_user_intent_id=?,last_heartbeat_at=?,updated_at=? "
-                    "WHERE user_id=?",
+                    ",summary_state='none',summary_owner_device_id=NULL,summary_revision=summary_revision+1,summary_updated_at=? WHERE user_id=?",
                     (
                         device_id, now_text, next_revision, payload["idempotency_key"],
-                        payload["user_intent_id"], now_text, now_text, user_id,
+                        payload["user_intent_id"], now_text, now_text, now_text, user_id,
+                    ),
+                )
+
+            elif operation in {"resolve_summary", "skip_summary"}:
+                elapsed = self._finalize_segment(conn, user_id, row, now_value, now_text, next_revision)
+                final_payload = {**payload, "session_summary": payload.get("session_summary") if operation == "resolve_summary" else ""}
+                completed_session_id = self._publish_completed_session(conn, user_id, row, final_payload, now_text)
+                conn.execute(
+                    "UPDATE live_timer_lease SET owner_device_id=?,state='stopped',segment_started_at=NULL,"
+                    "active_elapsed_ms=?,revision=?,last_idempotency_key=?,last_user_intent_id=?,"
+                    "last_heartbeat_at=?,updated_at=?,summary_state=?,summary_revision=summary_revision+1,"
+                    "completed_session_id=?,summary_updated_at=? WHERE user_id=?",
+                    (
+                        device_id, elapsed, next_revision, payload["idempotency_key"],
+                        payload["user_intent_id"], now_text, now_text,
+                        "resolved" if operation == "resolve_summary" else "skipped", completed_session_id, now_text, user_id,
                     ),
                 )
 
             else:
                 elapsed = self._finalize_segment(conn, user_id, row, now_value, now_text, next_revision)
                 completed_session_id = self._publish_completed_session(conn, user_id, row, payload, now_text)
+                summary_state = "resolved" if str(payload.get("session_summary") or "").strip() else "skipped"
                 conn.execute(
                     "UPDATE live_timer_lease SET owner_device_id=?,state='stopped',segment_started_at=NULL,"
                     "active_elapsed_ms=?,revision=?,last_idempotency_key=?,last_user_intent_id=?,"
-                    "last_heartbeat_at=?,updated_at=? WHERE user_id=?",
-                    (
-                        device_id, elapsed, next_revision, payload["idempotency_key"],
-                        payload["user_intent_id"], now_text, now_text, user_id,
-                    ),
+                    "last_heartbeat_at=?,updated_at=?,summary_state=?,summary_owner_device_id=?,"
+                    "summary_revision=summary_revision+1,completed_session_id=?,summary_updated_at=? WHERE user_id=?",
+                    (device_id, elapsed, next_revision, payload["idempotency_key"], payload["user_intent_id"],
+                     now_text, now_text, summary_state, device_id, completed_session_id, now_text, user_id),
                 )
 
             updated = conn.execute("SELECT * FROM live_timer_lease WHERE user_id=?", (user_id,)).fetchone()

@@ -226,25 +226,34 @@ class ChangedHabitsClient:
         return [{"habitId": habit_id, "checkins": [{"stamp": stamp, "status": 2, "opTime": f"op-{habit_id}"}]} for habit_id in habit_ids]
 
 
-def test_changed_habits_do_not_block_four_ticktick_checkins(monkeypatch, tmp_path):
+def test_force_pull_syncs_tasks_without_calling_habit_provider(monkeypatch, tmp_path):
     db_path, db = _db(tmp_path)
     hub = SyncHub(db)
-    async def pull_tasks_ok(*_): return {"task_changes": 0, "complete": True}
+    calls = {"tasks": 0, "habits": 0}
+    async def pull_tasks_ok(*_):
+        calls["tasks"] += 1
+        return {"task_changes": 1, "complete": True}
+    async def forbidden_habit_pull(*_):
+        calls["habits"] += 1
+        raise AssertionError("provider habit API must remain disabled")
     monkeypatch.setattr(sync_hub_module, "_get_ticktick_client_class", lambda: ChangedHabitsClient)
     monkeypatch.setattr(hub, "_pull_tasks", pull_tasks_ok)
+    monkeypatch.setattr(hub, "_pull_habits", forbidden_habit_pull)
     monkeypatch.setattr(hub, "_get_ticktick_settings", lambda _: SimpleNamespace(enabled=True, access_token="token", host="dida365.com", verify_tls=False, timeout_seconds=1))
 
     diagnostics = asyncio.run(hub.force_pull_ticktick(1))
-    delta = asyncio.run(hub.handle_pull_by_version(0, user_id=1, limit=50))
     conn = sqlite3.connect(db_path)
     habits = conn.execute("SELECT COUNT(*) FROM server_habits WHERE user_id=1").fetchone()[0]
-    checkins = conn.execute("SELECT COUNT(*) FROM server_habit_checkins WHERE user_id=1 AND status=2").fetchone()[0]
     watermark = conn.execute("SELECT last_status FROM server_sync_state WHERE user_id=1 AND system='ticktick' AND direction='ticktick_to_server'").fetchone()[0]
     conn.close()
 
-    assert diagnostics["ok"] is True and diagnostics["habits"]["checkin_changes"] == 4
-    assert habits == checkins == 4 and watermark == "success"
-    assert len(delta["tables"]["habits"]) == len(delta["tables"]["habit_checkins"]) == 4
+    assert diagnostics["ok"] is True
+    assert diagnostics["habits"]["status"] == "disabled"
+    assert diagnostics["habits"]["reason"] == "provider_habit_sync_disabled"
+    assert diagnostics["habits"]["retired"] == 0
+    assert diagnostics["merged_count"] == 1
+    assert calls == {"tasks": 1, "habits": 0}
+    assert habits == 0 and watermark == "success"
 
 
 def test_provider_habit_cancellation_reverses_used_unlocks(monkeypatch, tmp_path):
@@ -349,7 +358,18 @@ def test_ticktick_request_budget_exhaustion_never_deletes(monkeypatch, tmp_path)
     db.upsert_task(1, {"id": "keep-budget", "title": "保留", "status": 0, "priority": 0, "tags": []})
     monkeypatch.setattr(sync_hub_module, "TICKTICK_PULL_REQUEST_BUDGET", 1)
 
-    stats = asyncio.run(hub._pull_tasks(EmptyTaskSnapshotClient(), 1))
+    class ExpensiveClient(EmptyTaskSnapshotClient):
+        def __init__(self):
+            super().__init__()
+            self.get_request_attempts = 0
+        async def get_projects(self):
+            self.get_request_attempts += 1
+            return await super().get_projects()
+        async def get_project_data(self, project_id):
+            self.get_request_attempts += 100
+            return await super().get_project_data(project_id)
+
+    stats = asyncio.run(hub._pull_tasks(ExpensiveClient(), 1))
 
     conn = sqlite3.connect(db_path)
     deleted_at = conn.execute("SELECT deleted_at FROM server_tasks WHERE id='keep-budget'").fetchone()[0]

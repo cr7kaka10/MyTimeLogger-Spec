@@ -57,6 +57,15 @@ def _seed_ai_config(db_path, user_id=1):
         conn.close()
 
 
+def _valid_sleep_data(date_str, score=80):
+    return {
+        "date": date_str, "sleep_score": score, "total_sleep_min": 420,
+        "deep_sleep_min": 80, "light_sleep_min": 260, "rem_sleep_min": 80,
+        "deep_sleep_ratio": 19, "sleep_start": "23:00", "sleep_end": "06:00",
+        "official_advice": "睡眠结构正常，建议保持规律作息。",
+    }
+
+
 def test_stale_sleep_upload_images_are_cleaned_without_removing_archives(tmp_path, monkeypatch):
     attachments_dir = tmp_path / "attachments"
     attachments_dir.mkdir()
@@ -93,7 +102,7 @@ def test_sleep_upload_temp_images_can_be_cleaned_immediately(tmp_path, monkeypat
 def test_full_sleep_report_uses_fixed_part2_numbering_and_unified_tone(tmp_path, monkeypatch):
     report_module = _load_full_report_module()
     report_path = tmp_path / "report.md"
-    monkeypatch.setattr(report_module, "generate_report_filename", lambda date_str: str(report_path))
+    monkeypatch.setattr(report_module, "generate_report_filename", lambda date_str, user_id=None: str(report_path))
 
     data = {
         "date": "2026-07-01",
@@ -134,7 +143,7 @@ def test_full_sleep_report_uses_fixed_part2_numbering_and_unified_tone(tmp_path,
 def test_full_sleep_report_uses_fixed_section_template_and_improvement_points(tmp_path, monkeypatch):
     report_module = _load_full_report_module()
     report_path = tmp_path / "report.md"
-    monkeypatch.setattr(report_module, "generate_report_filename", lambda date_str: str(report_path))
+    monkeypatch.setattr(report_module, "generate_report_filename", lambda date_str, user_id=None: str(report_path))
 
     data = {
         "date": "2026-07-01",
@@ -179,7 +188,7 @@ def test_full_sleep_report_uses_fixed_section_template_and_improvement_points(tm
 def test_sleep_trend_merges_current_target_date_and_highlights_changes(tmp_path, monkeypatch):
     report_module = _load_full_report_module()
     report_path = tmp_path / "trend_report.md"
-    monkeypatch.setattr(report_module, "generate_report_filename", lambda date_str: str(report_path))
+    monkeypatch.setattr(report_module, "generate_report_filename", lambda date_str, user_id=None: str(report_path))
 
     history = [
         {"date": "2026-06-25", "sleep_score": 81, "total_sleep_min": 418, "sleep_cycles": 4.66},
@@ -241,7 +250,7 @@ def test_sleep_trend_merges_current_target_date_and_highlights_changes(tmp_path,
 def test_sleep_report_requires_official_huawei_advice(tmp_path, monkeypatch):
     report_module = _load_full_report_module()
     report_path = tmp_path / "missing_advice.md"
-    monkeypatch.setattr(report_module, "generate_report_filename", lambda date_str: str(report_path))
+    monkeypatch.setattr(report_module, "generate_report_filename", lambda date_str, user_id=None: str(report_path))
 
     data = {
         "date": "2026-07-04",
@@ -265,7 +274,7 @@ def test_sleep_report_requires_official_huawei_advice(tmp_path, monkeypatch):
 def test_sleep_report_renders_multiline_official_huawei_advice(tmp_path, monkeypatch):
     report_module = _load_full_report_module()
     report_path = tmp_path / "official_advice.md"
-    monkeypatch.setattr(report_module, "generate_report_filename", lambda date_str: str(report_path))
+    monkeypatch.setattr(report_module, "generate_report_filename", lambda date_str, user_id=None: str(report_path))
 
     data = {
         "date": "2026-07-04",
@@ -284,7 +293,7 @@ def test_sleep_report_renders_multiline_official_huawei_advice(tmp_path, monkeyp
     report_module.generate_full_report_file(data, {"insights": [], "recommendations": []}, "2026-07-04", include_time_analysis=False)
     content = report_path.read_text(encoding="utf-8")
 
-    assert "### 1.4 华为健康建议" in content
+    assert "### 1.5 华为健康建议" in content
     assert "> 睡眠质量待改善。睡眠时长严重不足，为 4 小时 19 分钟。长期睡眠不足可能使免疫力下降，导致容易感冒或肠胃问题。" in content
     assert "> 建议睡前洗热水澡，可促进血液循环、舒缓心情，改善睡眠质量。" in content
 
@@ -485,6 +494,38 @@ def test_auth_second_registration_and_incomplete_seed_recovery(client_with_db):
     assert marker is not None
 
 
+def test_backpack_response_carries_authoritative_identity_and_version(client_with_db):
+    client, _ = client_with_db
+    headers = _login_headers(client, "backpack_owner")
+    response = client.get("/api/rewards/backpack", headers=headers)
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["userId"] == 1 and isinstance(payload["dataVersion"], int)
+    assert payload["generatedAt"].endswith("+08:00") and payload["serverBuild"]
+
+
+def test_backpack_api_composes_one_item_from_cross_version_fragments(client_with_db):
+    client, store = client_with_db
+    headers = _login_headers(client, "fragment_pool_owner")
+    reward_id = store.create_reward(
+        1, "跨版本解锁卡", price=0, redemption_mode="task", fulfillment_mode="fragment",
+        fragment_target_count=2, inventory_mode="monthly", inventory_limit=10,
+    )
+    with store._transact() as conn:
+        for index, version in enumerate((4, 5)):
+            conn.execute("""INSERT INTO server_reward_fragments
+                (id,user_id,reward_id,source_type,source_id,completion_event_key,rule_version,
+                 fragment_measure_mode,progress_units,consumed_units,issued_at,expires_at,status,created_at,updated_at)
+                VALUES(?,1,?,'habit',?,?,?,'count',1,0,'2026-10-05','2026-11-01','active','2026-10-05','2026-10-05')""",
+                (f'api-fragment-{index}', reward_id, f'h{index}', f'event:{index}', version))
+    first = client.get("/api/rewards/backpack", headers=headers)
+    second = client.get("/api/rewards/backpack", headers=headers)
+    assert first.status_code == second.status_code == 200
+    assert not [item for item in first.json()["fragments"] if item["reward_id"] == reward_id]
+    assert len([item for item in first.json()["backpack"] if item["reward_id"] == reward_id]) == 1
+    assert len([item for item in second.json()["backpack"] if item["reward_id"] == reward_id]) == 1
+
+
 def test_auth_and_categories_sessions(client_with_db, monkeypatch):
     client, test_store = client_with_db
 
@@ -610,7 +651,11 @@ def test_auth_and_categories_sessions(client_with_db, monkeypatch):
     # Check backpack
     resp = client.get("/api/rewards/backpack", headers=headers)
     assert resp.status_code == 200
-    backpack = resp.json()["backpack"]
+    backpack_payload = resp.json()
+    assert backpack_payload["userId"] == 1
+    assert isinstance(backpack_payload["dataVersion"], int)
+    assert backpack_payload["generatedAt"].endswith("+08:00") and backpack_payload["serverBuild"]
+    backpack = backpack_payload["backpack"]
     assert len(backpack) == 1
     assert backpack[0]["title"] == "看电影"
 
@@ -2127,7 +2172,7 @@ def test_run_analysis_reuses_existing_done_job_after_sleep_date(monkeypatch, tmp
     class FakeResult:
         status = "done"
         date = "2026-06-25"
-        sleep_data = {"date": "2026-06-25", "sleep_score": 77}
+        sleep_data = _valid_sleep_data("2026-06-25", 77)
         analysis_report = "new report should not be used"
         report_path = None
         error = None
@@ -2141,7 +2186,7 @@ def test_run_analysis_reuses_existing_done_job_after_sleep_date(monkeypatch, tmp
 
         def analyze(self):
             FakeAnalyzer.calls += 1
-            cached = self.pre_report_callback("2026-06-25", {"date": "2026-06-25", "sleep_score": 77})
+            cached = self.pre_report_callback("2026-06-25", _valid_sleep_data("2026-06-25", 77))
             if cached:
                 return type("CachedResult", (), {
                     "status": "done",
@@ -2161,7 +2206,7 @@ def test_run_analysis_reuses_existing_done_job_after_sleep_date(monkeypatch, tmp
     try:
         monkeypatch.setattr(server_module, "SleepAnalyzer", FakeAnalyzer)
         store.create_job("existing-date-job", "old.jpg", user_id=1, date="2026-06-25")
-        store.mark_done("existing-date-job", "2026-06-25", {"date": "2026-06-25", "sleep_score": 81}, "old report")
+        store.mark_done("existing-date-job", "2026-06-25", _valid_sleep_data("2026-06-25", 81), "old report")
         store.create_job("current-upload-job", "new.jpg", user_id=1, image_hash="different-hash")
 
         server_module._run_analysis("current-upload-job", "new.jpg", user_id=1, full=False, force_refresh=False)
@@ -2196,7 +2241,7 @@ def test_run_analysis_archives_by_recognized_sleep_date(monkeypatch, tmp_db_path
     class FakeResult:
         status = "done"
         date = "2026-05-12"
-        sleep_data = {"date": "2026-05-12", "sleep_score": 71}
+        sleep_data = _valid_sleep_data("2026-05-12", 71)
         analysis_report = ""
         report_path = None
         error = None
@@ -2692,7 +2737,7 @@ def test_db_wrapper_huawei_sleep_save_writes_version_log(client_with_db):
     wrapper = ServerDBWrapper()
     wrapper.log_path = store.db_path
 
-    assert wrapper.save_huawei_sleep_data("2026-07-06", {"sleep_score": 90}) is True
+    assert wrapper.save_huawei_sleep_data(1, "2026-07-06", {"sleep_score": 90}) is True
 
     conn = store._connect()
     try:

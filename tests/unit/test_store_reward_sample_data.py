@@ -34,13 +34,15 @@ def test_store_reward_defaults_are_once_per_account_and_synced(tmp_db_path):
     with sqlite3.connect(tmp_db_path) as conn:
         rewards = conn.execute("SELECT title,unlock_source_type,unlock_required_count,inventory_mode,inventory_limit FROM server_rewards WHERE user_id=? AND is_active=1 ORDER BY id", (first,)).fetchall()
         phone_bindings = conn.execute("SELECT h.name,b.drop_mode,b.drop_min_units,b.drop_max_units FROM server_reward_source_bindings b JOIN server_habits h ON h.id=b.source_id AND h.user_id=b.user_id WHERE b.user_id=? AND b.reward_id=? ORDER BY h.name", (first, f"{first}:seed:reward:phone")).fetchall()
+        phone_rule = conn.execute("SELECT fragment_measure_mode,fragment_target_count,inventory_mode,inventory_limit FROM server_rewards WHERE user_id=? AND id=?", (first, f"{first}:seed:reward:phone")).fetchone()
         archived_phones = conn.execute("SELECT COUNT(*) FROM server_rewards WHERE user_id=? AND id IN (?,?) AND is_active=0", (first, f"{first}:seed:reward:phone-brush", f"{first}:seed:reward:phone-face")).fetchone()[0]
         goals = conn.execute("SELECT title, metric, target_value, period, reward_coins, penalty_coins FROM server_goals WHERE user_id=? ORDER BY id", (first,)).fetchall()
         bindings = conn.execute("SELECT COUNT(*) FROM server_goal_category_bindings WHERE user_id=?", (first,)).fetchone()[0]
         changes = conn.execute("SELECT COUNT(*) FROM server_change_log WHERE user_id=? AND table_name IN ('server_goals', 'server_goal_category_bindings', 'server_rewards')", (first,)).fetchone()[0]
         second_rewards = conn.execute("SELECT COUNT(*) FROM server_rewards WHERE user_id=?", (second,)).fetchone()[0]
     assert rewards == [("出去玩一天", "goal", 1, "unlimited", None), ("来一发", "goal", 1, "unlimited", None), ("解锁手机", None, 1, "monthly", 10)]
-    assert [tuple(row) for row in phone_bindings] == [("刷牙", "random", 10, 20), ("洗脸", "random", 10, 20)]
+    assert [tuple(row) for row in phone_bindings] == [("刷牙", "fixed", None, None), ("洗脸", "fixed", None, None)]
+    assert tuple(phone_rule) == ("count", 7, "monthly", 10)
     assert archived_phones == 2
     assert [tuple(goal) for goal in goals] == [
         ("【天】输入+输出 ≥ 4.5h", "duration", 270.0, "daily", 20.0, 1.0),

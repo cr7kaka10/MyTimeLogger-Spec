@@ -348,6 +348,55 @@ def ensure_server_schema(conn: sqlite3.Connection):
         "CREATE INDEX IF NOT EXISTS idx_server_reward_fragments_active "
         "ON server_reward_fragments(user_id, reward_id, rule_version, status, expires_at)"
     )
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_server_reward_fragments_user_id "
+        "ON server_reward_fragments(user_id, id)"
+    )
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS server_reward_fragment_batches (
+            id TEXT PRIMARY KEY, user_id INTEGER NOT NULL, batch_id TEXT NOT NULL,
+            reward_id TEXT NOT NULL, rule_version INTEGER NOT NULL,
+            measure_mode TEXT NOT NULL, required_units INTEGER NOT NULL CHECK(required_units > 0),
+            output_quantity INTEGER NOT NULL CHECK(output_quantity > 0), output_ledger_id TEXT NOT NULL,
+            occurred_at TEXT NOT NULL, provenance_kind TEXT NOT NULL
+                CHECK(provenance_kind IN ('exact','legacy_attested')),
+            created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+            UNIQUE(user_id, batch_id), UNIQUE(user_id, output_ledger_id),
+            FOREIGN KEY(user_id) REFERENCES users(id),
+            FOREIGN KEY(reward_id) REFERENCES server_rewards(id))"""
+    )
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS server_reward_fragment_contributions (
+            id TEXT PRIMARY KEY, user_id INTEGER NOT NULL, batch_id TEXT NOT NULL,
+            fragment_id TEXT NOT NULL, units INTEGER NOT NULL CHECK(units > 0),
+            before_units INTEGER NOT NULL CHECK(before_units >= 0),
+            after_units INTEGER NOT NULL CHECK(after_units = before_units + units),
+            created_at TEXT NOT NULL, UNIQUE(user_id, batch_id, fragment_id, before_units),
+            FOREIGN KEY(user_id, batch_id) REFERENCES server_reward_fragment_batches(user_id, batch_id),
+            FOREIGN KEY(user_id, fragment_id) REFERENCES server_reward_fragments(user_id, id))"""
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_server_reward_fragment_contributions_batch "
+        "ON server_reward_fragment_contributions(user_id, batch_id)"
+    )
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS server_reward_fragment_debts (
+            id TEXT PRIMARY KEY,                    -- 幂等债务标识
+            user_id INTEGER NOT NULL,               -- 所属用户
+            reward_id TEXT NOT NULL,                -- 所属碎片商品
+            source_fragment_id TEXT NOT NULL,       -- 被撤销且已使用的原碎片
+            units INTEGER NOT NULL CHECK(units > 0),-- 原始抵扣单位
+            remaining_units INTEGER NOT NULL CHECK(remaining_units >= 0), -- 待抵扣单位
+            created_at TEXT NOT NULL,               -- 创建时间（北京时间）
+            updated_at TEXT NOT NULL,               -- 最后抵扣时间（北京时间）
+            UNIQUE(user_id, source_fragment_id),
+            FOREIGN KEY(user_id) REFERENCES users(id),
+            FOREIGN KEY(reward_id) REFERENCES server_rewards(id))"""
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_server_reward_fragment_debts_open "
+        "ON server_reward_fragment_debts(user_id, reward_id, remaining_units)"
+    )
 
     # 9.2 完成奖励商品与完成来源的独立多对多绑定（服务端权威、仅下拉）。
     conn.execute(
@@ -535,6 +584,7 @@ def ensure_server_schema(conn: sqlite3.Connection):
             synced_at TEXT,                       -- 外部来源同步时间
             sync_status TEXT DEFAULT 'success',   -- 外部同步状态
             sync_error TEXT,                      -- 外部同步错误信息
+            image_uploaded_at TEXT,               -- 首次有效睡眠图片接收时间（北京时间）
             updated_at TEXT NOT NULL,             -- 最后更新时间
             pushed_at TEXT DEFAULT NULL,          -- 最后推送时间（NULL=待推送）
             UNIQUE(user_id, date),
@@ -559,7 +609,23 @@ def ensure_server_schema(conn: sqlite3.Connection):
             "tracked_duration_seconds": "INTEGER",
             "atm_sleep_start": "TEXT",
             "atm_sleep_end": "TEXT",
+            "image_uploaded_at": "TEXT",
         },
+    )
+    conn.execute(
+        """UPDATE server_huawei_sleep_data
+           SET image_uploaded_at=(
+             SELECT MIN(j.created_at) FROM server_sleep_jobs j
+             WHERE j.user_id=server_huawei_sleep_data.user_id
+               AND j.date=server_huawei_sleep_data.date
+               AND j.result_json IS NOT NULL
+           )
+           WHERE image_uploaded_at IS NULL AND EXISTS (
+             SELECT 1 FROM server_sleep_jobs j
+             WHERE j.user_id=server_huawei_sleep_data.user_id
+               AND j.date=server_huawei_sleep_data.date
+               AND j.result_json IS NOT NULL
+           )"""
     )
 
     # 15. 云端钱包快照表
@@ -1361,6 +1427,11 @@ def ensure_server_schema(conn: sqlite3.Connection):
             last_idempotency_key TEXT NOT NULL,      -- 最近成功命令幂等键
             last_user_intent_id TEXT,                -- 最近前台用户意图
             last_heartbeat_at TEXT NOT NULL,         -- 最近心跳时间
+            summary_state TEXT NOT NULL DEFAULT 'none', -- 总结状态（none/pending/resolved/skipped）
+            summary_owner_device_id TEXT,            -- 负责填写总结的设备ID
+            summary_revision INTEGER NOT NULL DEFAULT 0, -- 总结状态单调版本
+            completed_session_id TEXT,               -- 已发布的历史会话ID
+            summary_updated_at TEXT,                 -- 总结状态北京时间
             updated_at TEXT NOT NULL,                -- 服务端最后更新时间
             FOREIGN KEY(user_id) REFERENCES users(id)
         )
@@ -1441,6 +1512,11 @@ def ensure_server_schema(conn: sqlite3.Connection):
         "ALTER TABLE live_timer_lease ADD COLUMN pause_count INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE live_timer_lease ADD COLUMN last_user_intent_id TEXT",
         "ALTER TABLE live_timer_lease ADD COLUMN current_note TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE live_timer_lease ADD COLUMN summary_state TEXT NOT NULL DEFAULT 'none'",
+        "ALTER TABLE live_timer_lease ADD COLUMN summary_owner_device_id TEXT",
+        "ALTER TABLE live_timer_lease ADD COLUMN summary_revision INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE live_timer_lease ADD COLUMN completed_session_id TEXT",
+        "ALTER TABLE live_timer_lease ADD COLUMN summary_updated_at TEXT",
         "ALTER TABLE live_timer_commands ADD COLUMN user_intent_id TEXT",
     ]:
         try:

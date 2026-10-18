@@ -46,6 +46,11 @@ export interface CurrentTimerState {
   last_heartbeat_at: string
   updated_at: string
   server_time: string
+  summary_state?: 'none' | 'pending' | 'resolved' | 'skipped'
+  summary_owner_device_id?: string | null
+  summary_revision?: number
+  completed_session_id?: string | null
+  summary_updated_at?: string | null
 }
 export interface CurrentTimerOutcome {
   code: CurrentTimerOutcomeCode
@@ -58,7 +63,8 @@ export interface CurrentTimerOutcome {
   operation?: CurrentTimerOperation
   completedSessionId?: string
 }
-export type CurrentTimerOperation = 'start' | 'switch' | 'note' | 'pause' | 'resume' | 'stop'
+export type CurrentTimerOperation = 'start' | 'switch' | 'handoff' | 'note' | 'pause' | 'resume' | 'stop'
+  | 'request_summary' | 'resolve_summary' | 'skip_summary' | 'takeover_summary'
 export interface CurrentTimerCommandRequest {
   session_id?: string
   device_id: string
@@ -71,6 +77,7 @@ export interface CurrentTimerCommandRequest {
   timer_mode?: 'countup' | 'countdown'
   duration_ms?: number
   session_summary?: string
+  summary_revision?: number
 }
 export type TickTickTaskOperation = 'create' | 'update' | 'delete' | 'reconcile'
 export interface TickTickTaskCommand {
@@ -291,6 +298,7 @@ export class ApiClient {
       timer_mode: request.timer_mode,
       duration_ms: request.duration_ms,
       session_summary: request.session_summary,
+      summary_revision: request.summary_revision,
     }
     return this.mapCurrentTimerResponse(
       await this.currentTimerRequest('POST', `/api/timer/current/${operation}`, body, timeout),

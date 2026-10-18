@@ -9,7 +9,9 @@ export interface LogicSnapshot {
   isPaused: boolean
   category: { id: number | null; name: string; task: string }
   pause: { count: number; reasons: string[]; startedAtEpochMs: number | null }
-  segments: Array<{ key: string; startEpochMs: number; endEpochMs: number | null; note: string }>
+  revision?: number
+  focusCycleId?: string
+  segments: Array<{ key: string; startEpochMs: number; endEpochMs: number | null; note: string; categoryId?: number | null; categoryName?: string; focusCycleId?: string }>
   session: { startedAtEpochMs: number | null; largeStartedAtEpochMs: number | null; durationSeconds: number; totalStudySeconds: number; currentCycleStudySeconds: number; netDurationSeconds: number }
   timing: { mode: TimerMode; elapsedMs: number; deadlineEpochMs: number | null }
 }

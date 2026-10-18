@@ -72,10 +72,49 @@ def test_habit_fragments_compose_after_target_count(tmp_db_path):
         assert conn.execute("SELECT COUNT(*) FROM server_reward_ledger WHERE user_id=1 AND source_type='reward_buy'").fetchone()[0] == 1
 
 
-def test_monthly_limit_is_checked_before_consuming_100_progress_units(tmp_db_path):
+def test_period_reconcile_composes_cross_version_pool_once(tmp_db_path):
+    store = _store(tmp_db_path)
+    reward_id = store.create_reward(
+        1, '解锁手机', price=0, redemption_mode='task', fulfillment_mode='fragment',
+        fragment_target_count=10, inventory_mode='monthly', inventory_limit=1,
+    )
+    with store._transact() as conn:
+        for index in range(10):
+            version = 4 if index < 2 else 5
+            conn.execute("""INSERT INTO server_reward_fragments
+                (id,user_id,reward_id,source_type,source_id,completion_event_key,rule_version,
+                 fragment_measure_mode,progress_units,consumed_units,issued_at,expires_at,status,created_at,updated_at)
+                VALUES(?,1,?,'habit',?, ?,?,'count',1,0,?,'2026-11-01 00:00:00','active',?,?)""",
+                (f'f{index}', reward_id, f'h{index}', f'event:{index}', version,
+                 f'2026-10-0{4 if version == 4 else 5} 00:00:00', '2026-10-05 00:00:00', '2026-10-05 00:00:00'))
+        store.reward_settlement_service._fragments._now = lambda: '2026-10-16 12:00:00'
+        first = store.reward_settlement_service.reconcile_period_inventory_in_txn(conn, 1)
+        second = store.reward_settlement_service.reconcile_period_inventory_in_txn(conn, 1)
+        assert (len(first['composed_items']), len(second['composed_items'])) == (1, 0)
+        assert conn.execute("SELECT COUNT(*) FROM server_reward_ledger WHERE source_type='reward_buy'").fetchone()[0] == 1
+        assert conn.execute("SELECT SUM(units) FROM server_reward_fragment_contributions").fetchone()[0] == 10
+
+
+def test_backpack_projects_one_count_progress_per_reward_across_versions(tmp_db_path):
+    store = _store(tmp_db_path)
+    reward_id = store.create_reward(1, '解锁手机', price=0, redemption_mode='task', fulfillment_mode='fragment', fragment_target_count=10)
+    with store._transact() as conn:
+        for index in range(8):
+            conn.execute("""INSERT INTO server_reward_fragments
+                (id,user_id,reward_id,source_type,source_id,completion_event_key,rule_version,
+                 fragment_measure_mode,progress_units,consumed_units,issued_at,expires_at,status,created_at,updated_at)
+                VALUES(?,1,?,'habit','h',?,?, 'count',1,0,'2026-10-05','2026-11-01','active','2026-10-05','2026-10-05')""",
+                (f'f{index}', reward_id, f'event:{index}', 4 if index < 2 else 5))
+    store.reward_wallet_service._now = lambda: '2026-10-16 12:00:00'
+    progress = store.reward_wallet_service.list_backpack_fragments(1)
+    assert len(progress) == 1
+    assert (progress[0]['id'], progress[0]['current_count'], progress[0]['target_count']) == (f'fragment:{reward_id}', 8, 10)
+
+
+def test_monthly_limit_is_checked_before_consuming_piece_units(tmp_db_path):
     store = _store(tmp_db_path)
     reward_id = store.create_reward(1, '解锁手机', price=0, redemption_mode='task', fulfillment_mode='fragment',
-                                    fragment_target_count=40, inventory_mode='monthly', inventory_limit=1)
+                                    fragment_target_count=2, inventory_mode='monthly', inventory_limit=1)
     store.bind_reward_source(1, reward_id, 'habit', 'habit-1', 'fixed', 50, 50)
     service = store.reward_settlement_service
     with store._transact() as conn:
@@ -83,7 +122,7 @@ def test_monthly_limit_is_checked_before_consuming_100_progress_units(tmp_db_pat
             service.grant_task_unlocks_in_txn(conn, 1, 'habit', 'habit-1', f'sep:{index}', '刷牙', '2026-09-05')
         held = conn.execute("SELECT SUM(progress_units-consumed_units) FROM server_reward_fragments WHERE reward_id=? AND status='active'", (reward_id,)).fetchone()[0]
         purchases = conn.execute("SELECT COUNT(*) FROM server_reward_ledger WHERE source_type='reward_buy'").fetchone()[0]
-        assert (held, purchases) == (100, 1)
+        assert (held, purchases) == (2, 1)
         service.grant_task_unlocks_in_txn(conn, 1, 'habit', 'habit-1', 'oct:1', '刷牙', '2026-10-01')
         service.grant_task_unlocks_in_txn(conn, 1, 'habit', 'habit-1', 'oct:2', '刷牙', '2026-10-01')
         held_next = conn.execute("SELECT COALESCE(SUM(progress_units-consumed_units),0) FROM server_reward_fragments WHERE reward_id=? AND status='active'", (reward_id,)).fetchone()[0]
@@ -185,8 +224,12 @@ def test_fragment_expiry_and_consumed_fragment_cancellation(tmp_db_path):
 
         fragments._now = lambda: '2026-09-08 13:00:00'
         service.grant_task_unlocks_in_txn(conn, 1, 'habit', 'habit-1', 'habit:habit-1:2026-09-08:second', '刷牙', '2026-09-08')
-        with pytest.raises(ValueError, match='碎片已合成'):
-            service.revoke_fragments_for_event_in_txn(conn, 1, 'habit', 'habit-1', 'habit:habit-1:2026-09-08')
+        service.revoke_fragments_for_event_in_txn(conn, 1, 'habit', 'habit-1', 'habit:habit-1:2026-09-08')
+        states = [row['status'] for row in conn.execute(
+            "SELECT status FROM server_reward_fragments WHERE reward_id=? ORDER BY issued_at", (reward_id,),
+        ).fetchall()]
+        assert states == ['expired', 'revoked', 'active']
+        assert conn.execute("SELECT COUNT(*) FROM server_reward_ledger WHERE source_type='reward_buy'").fetchone()[0] == 0
 
 
 def test_update_cannot_introduce_a_new_exercise_unlock_source(tmp_db_path):

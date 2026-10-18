@@ -1,4 +1,4 @@
-import { createCapacitorAppLifecycleService, createCapacitorNetworkLifecycleService, createLifecycleService, installAndroidSyncLifecycle, installAndroidTimerWidgetLifecycle, type LifecycleSources } from './lifecycle'
+import { createCapacitorAppLifecycleService, createCapacitorNetworkLifecycleService, createLifecycleService, installAndroidSyncLifecycle, installAndroidTimerWidgetLifecycle, installSleepAutomationStatusLifecycle, type LifecycleSources } from './lifecycle'
 
 const assert = (value: unknown, message: string) => { if (!value) throw new Error(message) }
 const app: Array<(active: boolean) => void> = []
@@ -73,6 +73,21 @@ assert(coalescedReasons.join(',') === 'android-startup', 'concurrent lifecycle t
 releaseSync(); await Promise.resolve(); await Promise.resolve(); await Promise.resolve()
 assert(coalescedReasons.join(',') === 'android-startup,android-network-online', 'concurrent triggers must retain at most one trailing sync')
 removeCoalesced()
+
+let statusApp = (_active: boolean) => {}; let visibilityListener = () => {}; let focusListener = () => {}
+let statusRefreshes = 0; const scheduled: Array<() => void> = []
+const visibility = { hidden: false, addEventListener: (_name: string, listener: () => void) => { visibilityListener = listener }, removeEventListener: () => { visibilityListener = () => {} } }
+const focus = { addEventListener: (_name: string, listener: () => void) => { focusListener = listener }, removeEventListener: () => { focusListener = () => {} } }
+const removeStatus = installSleepAutomationStatusLifecycle(
+  createLifecycleService({ onAppState: listener => { statusApp = listener; return () => { statusApp = () => {} } } }),
+  () => { statusRefreshes++ }, visibility as any, focus as any, callback => { scheduled.push(callback) },
+)
+statusApp(true); visibilityListener(); focusListener()
+assert(scheduled.length === 1, 'mount and simultaneous foreground events must coalesce')
+scheduled.shift()?.(); assert(statusRefreshes === 1, 'coalesced status refresh must run once')
+focusListener(); scheduled.shift()?.(); assert(statusRefreshes === 2, 'later focus must refresh current native status')
+removeStatus(); statusApp(true); visibilityListener(); focusListener()
+assert(scheduled.length === 0 && statusRefreshes === 2, 'cleanup must remove every status refresh listener')
 const fs = (globalThis as any).process.getBuiltinModule('node:fs')
 const bootstrap = fs.readFileSync(new URL('../bootstrap.ts', import.meta.url), 'utf8') as string
 assert(bootstrap.indexOf('installAndroidTimerWidgetLifecycle(') < bootstrap.indexOf('await loadSecureCredentialView('), 'widget recovery must install before credentials can fail')

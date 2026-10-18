@@ -24,6 +24,7 @@ try:
     from .domain.reward_settlement_service import RewardSettlementService
     from .domain.reward_wallet_service import RewardWalletService
     from .domain.reward_period import period_end
+    from .domain.reward_fragment_provenance import RewardFragmentProvenance
     from .domain.sleep_reward_service import SleepRewardService
     from .statistics_start_date import get_user_statistics_start_date, is_statistics_date_eligible
 except (ImportError, ValueError):
@@ -38,6 +39,7 @@ except (ImportError, ValueError):
     from domain.reward_settlement_service import RewardSettlementService
     from domain.reward_wallet_service import RewardWalletService
     from domain.reward_period import period_end
+    from domain.reward_fragment_provenance import RewardFragmentProvenance
     from domain.sleep_reward_service import SleepRewardService
     from statistics_start_date import get_user_statistics_start_date, is_statistics_date_eligible
 
@@ -97,6 +99,7 @@ class ServerSleepStore:
         self.db_path = resolve_server_db_path(db_path)
         self._initialize()
         self._migrate_reward_fragment_measure_modes()
+        self._migrate_reward_fragment_provenance()
         # 调用链路：server.py 路由/SyncHub -> ServerSleepStore 旧门面 -> domain service -> SQLite。
         # 这些 service 先承接金币、钱包、习惯取消等高风险业务，剩余 CRUD 后续再逐步迁移。
         self.reward_wallet_service = RewardWalletService(
@@ -118,7 +121,7 @@ class ServerSleepStore:
         )
 
     def _migrate_reward_fragment_measure_modes(self):
-        """按显式掉落单位区分历史 percent 商品，其余切为精确枚数。"""
+        """把 active 碎片商品配置收敛为 count；历史碎片事实留给重放审计。"""
         with self._connect() as conn:
             user_ids = [row[0] for row in conn.execute("SELECT id FROM users")]
         for user_id in user_ids:
@@ -128,25 +131,30 @@ class ServerSleepStore:
                        WHERE r.user_id=? AND r.fulfillment_mode='fragment'""", (user_id,),
                 ).fetchall()
                 for row in rows:
-                    explicit = conn.execute(
-                        """SELECT 1 FROM server_reward_source_bindings
+                    bindings = conn.execute(
+                        """SELECT id FROM server_reward_source_bindings
                            WHERE user_id=? AND reward_id=?
-                             AND (drop_min_units IS NOT NULL OR drop_max_units IS NOT NULL) LIMIT 1""",
+                             AND (drop_mode<>'fixed' OR drop_min_units IS NOT NULL OR drop_max_units IS NOT NULL)""",
                         (user_id, row["id"]),
-                    ).fetchone()
-                    wanted = "percent" if explicit else "count"
-                    if row["fragment_measure_mode"] == wanted:
+                    ).fetchall()
+                    if row["fragment_measure_mode"] == "count" and not bindings:
                         continue
                     stamp = now_str()
                     conn.execute(
-                        """UPDATE server_rewards SET fragment_measure_mode=?,
+                        """UPDATE server_rewards SET fragment_measure_mode='count',
                            fragment_rule_version=fragment_rule_version+1,updated_at=? WHERE id=? AND user_id=?""",
-                        (wanted, stamp, row["id"], user_id),
+                        (stamp, row["id"], user_id),
                     )
-                    conn.execute(
-                        "UPDATE server_reward_fragments SET fragment_measure_mode=?,updated_at=? WHERE reward_id=? AND user_id=?",
-                        (wanted, stamp, row["id"], user_id),
-                    )
+                    conn.execute("""UPDATE server_reward_source_bindings
+                        SET drop_mode='fixed',drop_min_units=NULL,drop_max_units=NULL,updated_at=?
+                        WHERE user_id=? AND reward_id=?""", (stamp, user_id, row["id"]))
+
+    def _migrate_reward_fragment_provenance(self):
+        with self._connect() as conn:
+            user_ids = [row[0] for row in conn.execute("SELECT id FROM users")]
+        for user_id in user_ids:
+            with self._transact() as conn:
+                RewardFragmentProvenance.migrate_user(conn, user_id, now_str())
 
     def _migrate_reward_period_expiry(self):
         """为历史周期碎片和完整商品补齐不可变自然周期边界。"""
@@ -927,7 +935,7 @@ class ServerSleepStore:
             # 获取该用户当前最大的 sort_order
             row = conn.execute("SELECT MAX(sort_order) FROM server_categories WHERE user_id = ?", (user_id,)).fetchone()
             next_order = (row[0] or 0) + 1
-            
+
             cursor = conn.execute(
                 "INSERT INTO server_categories (user_id, name, group_name, icon, color, sort_order) VALUES (?, ?, ?, ?, ?, ?)",
                 (user_id, name, group_name, icon, color, next_order)
@@ -1565,7 +1573,9 @@ class ServerSleepStore:
         self._ensure_custom_spend_templates(user_id)
         conn = self._connect()
         try:
-            rows = conn.execute("SELECT * FROM server_rewards WHERE user_id=? AND is_active=1 ORDER BY id ASC", (user_id,)).fetchall()
+            rows = conn.execute("""SELECT r.*,(SELECT COUNT(*) FROM server_reward_source_bindings b
+                WHERE b.user_id=r.user_id AND b.reward_id=r.id AND (b.drop_min_units IS NOT NULL OR b.drop_max_units IS NOT NULL)) legacy_percent_binding_count
+                FROM server_rewards r WHERE r.user_id=? AND r.is_active=1 ORDER BY r.id ASC""", (user_id,)).fetchall()
             return [dict(r) for r in rows]
         finally:
             conn.close()
@@ -1618,7 +1628,7 @@ class ServerSleepStore:
             ).fetchone()
         elif source_type == "habit":
             row = conn.execute(
-                "SELECT name AS title FROM server_habits WHERE id=? AND user_id=? AND is_active=0",
+                "SELECT name AS title FROM server_habits WHERE id=? AND user_id=? AND is_active=0 AND source='local'",
                 (source, user_id),
             ).fetchone()
         elif source_type == "learning_task":
@@ -1688,13 +1698,8 @@ class ServerSleepStore:
                 raise ValueError("只有完成奖励型商品可以绑定到任务、习惯或学习目标")
             if str(reward["fulfillment_mode"] or "immediate") != "fragment":
                 raise ValueError("完成奖励型商品必须使用碎片合成")
-            if drop_mode not in {"fixed", "random"}:
-                raise ValueError("掉落规则无效")
-            if drop_min_units is not None:
-                drop_min_units = int(drop_min_units)
-                drop_max_units = int(drop_max_units if drop_max_units is not None else drop_min_units)
-                if drop_min_units < 1 or drop_max_units < drop_min_units or drop_max_units > 100:
-                    raise ValueError("掉落进度必须在 1–100 之间")
+            # 兼容旧客户端参数，但服务端权威规则始终是一事件一枚。
+            drop_mode, drop_min_units, drop_max_units = "fixed", None, None
             binding_id = f"reward-source:{reward_id}:{source['type']}:{source['id']}"
             stamp = now_str()
             conn.execute(
@@ -1704,9 +1709,9 @@ class ServerSleepStore:
                    drop_mode=excluded.drop_mode,drop_min_units=excluded.drop_min_units,drop_max_units=excluded.drop_max_units,updated_at=excluded.updated_at""",
                 (binding_id, user_id, reward_id, source["type"], source["id"], drop_mode, drop_min_units, drop_max_units, stamp, stamp),
             )
-            if drop_min_units is not None and reward["fragment_measure_mode"] != "percent":
+            if reward["fragment_measure_mode"] != "count":
                 conn.execute(
-                    """UPDATE server_rewards SET fragment_measure_mode='percent',
+                    """UPDATE server_rewards SET fragment_measure_mode='count',
                        fragment_rule_version=fragment_rule_version+1,updated_at=? WHERE id=? AND user_id=?""",
                     (stamp, reward_id, user_id),
                 )
@@ -1793,7 +1798,7 @@ class ServerSleepStore:
             self._record_server_change(conn, user_id, "server_rewards", reward_id, "upsert", {"id": reward_id})
             return reward_id
 
-    def update_reward(self, user_id, reward_id, title=None, icon=None, price=None, description=None, is_active=None, unlock_task_id=UNSET, unlock_task_title=UNSET, unlock_source_type=UNSET, unlock_source_id=UNSET, inventory_mode=UNSET, inventory_limit=UNSET, unlock_required_count=UNSET, redemption_mode=UNSET, fulfillment_mode=UNSET, fragment_target_count=UNSET):
+    def update_reward(self, user_id, reward_id, title=None, icon=None, price=None, description=None, is_active=None, unlock_task_id=UNSET, unlock_task_title=UNSET, unlock_source_type=UNSET, unlock_source_id=UNSET, inventory_mode=UNSET, inventory_limit=UNSET, unlock_required_count=UNSET, redemption_mode=UNSET, fulfillment_mode=UNSET, fragment_target_count=UNSET, convert_fragment_to_count=UNSET):
         with self._transact() as conn:
             row = conn.execute("SELECT * FROM server_rewards WHERE id=? AND user_id=?", (reward_id, user_id)).fetchone()
             if not row:
@@ -1858,13 +1863,29 @@ class ServerSleepStore:
             requested_fulfillment, requested_target = self._validate_fragment_rules(
                 effective_type, requested_fulfillment, requested_target,
             )
+            convert_to_count = (
+                requested_fulfillment == "fragment"
+                and convert_fragment_to_count is not UNSET
+                and bool(convert_fragment_to_count)
+            )
+            legacy_bindings = conn.execute("SELECT id FROM server_reward_source_bindings WHERE user_id=? AND reward_id=? AND (drop_mode<>'fixed' OR drop_min_units IS NOT NULL OR drop_max_units IS NOT NULL)", (user_id, reward_id)).fetchall()
+            target_changed = int(requested_target) != int(row["fragment_target_count"] or 1)
+            if requested_fulfillment == "fragment" and legacy_bindings and target_changed and not convert_to_count:
+                raise ValueError("历史百分比碎片修改目标数前必须显式转换为按枚计数")
+            if convert_to_count:
+                stamp = now_str()
+                conn.execute("UPDATE server_reward_source_bindings SET drop_mode='fixed',drop_min_units=NULL,drop_max_units=NULL,updated_at=? WHERE user_id=? AND reward_id=?", (stamp, user_id, reward_id))
+                for binding in legacy_bindings:
+                    self._record_server_change(conn, user_id, "server_reward_source_bindings", binding["id"], "upsert", {"id": binding["id"]})
+                if row["fragment_measure_mode"] != "count":
+                    fields.append("fragment_measure_mode=?");params.append("count")
             if inventory_mode is not UNSET or inventory_limit is not UNSET:
                 fields.extend(["inventory_mode=?", "inventory_limit=?"])
                 params.extend([mode, limit])
             if unlock_required_count is not UNSET or (source_changed and effective_type != row["unlock_source_type"]):
                 fields.extend(["unlock_required_count=?", "unlock_threshold_started_at=?"])
                 params.extend([required, now_str() if effective_type == "habit" else None])
-            rule_changed = requested_fulfillment != row["fulfillment_mode"] or int(requested_target) != int(row["fragment_target_count"] or 1) or source_changed
+            rule_changed = requested_fulfillment != row["fulfillment_mode"] or target_changed or source_changed or (convert_to_count and (row["fragment_measure_mode"] != "count" or legacy_bindings))
             if fulfillment_mode is not UNSET or fragment_target_count is not UNSET or source_changed:
                 fields.extend(["fulfillment_mode=?", "fragment_target_count=?"])
                 params.extend([requested_fulfillment, requested_target])
@@ -2354,6 +2375,31 @@ class ServerSleepStore:
         finally:
             conn.close()
 
+    def record_valid_sleep_upload(self, user_id, date_str, uploaded_at):
+        """投影首次严格校验通过的图片接收时间；重试和缓存复用不得推迟它。"""
+        conn = self._connect()
+        try:
+            now = now_str()
+            row = conn.execute(
+                "SELECT id,image_uploaded_at FROM server_huawei_sleep_data WHERE user_id=? AND date=?",
+                (user_id, date_str),
+            ).fetchone()
+            earliest = min(filter(None, [row["image_uploaded_at"] if row else None, uploaded_at]), default=uploaded_at)
+            if row:
+                conn.execute("UPDATE server_huawei_sleep_data SET image_uploaded_at=?,updated_at=? WHERE id=?", (earliest, now, row["id"]))
+                record_id = row["id"]
+            else:
+                cursor = conn.execute(
+                    "INSERT INTO server_huawei_sleep_data (user_id,date,image_uploaded_at,source,sync_status,updated_at) VALUES (?,?,?,?,?,?)",
+                    (user_id, date_str, earliest, "screenshot_ocr", "success", now),
+                )
+                record_id = cursor.lastrowid
+            self._record_server_change(conn, user_id, "huawei_sleep_data", record_id, "upsert", {"date": date_str})
+            conn.commit()
+            return earliest
+        finally:
+            conn.close()
+
     def _allocate_server_version(self, conn, user_id):
         now = now_str()
         conn.execute(
@@ -2423,7 +2469,7 @@ class ServerSleepStore:
                   'morning_diary', 'evening_diary',
                   'morning_diary_written_at', 'evening_diary_written_at',
                   'report_status', 'full_report_state', 'tracked_duration_seconds',
-                  'source', 'synced_at', 'sync_status', 'sync_error'
+                  'source', 'synced_at', 'sync_status', 'sync_error', 'image_uploaded_at'
               ]
 
             now = now_str()
@@ -2441,6 +2487,9 @@ class ServerSleepStore:
                 (user_id, date_str),
             ).fetchone()
             if existing:
+                previous = conn.execute("SELECT image_uploaded_at FROM server_huawei_sleep_data WHERE id=?", (existing["id"],)).fetchone()
+                if values_by_field.get("image_uploaded_at") and previous and previous["image_uploaded_at"]:
+                    values_by_field["image_uploaded_at"] = min(previous["image_uploaded_at"], values_by_field["image_uploaded_at"])
                 update_fields = [field for field in fields if values_by_field[field] is not None]
                 assignments = [f"{field}=?" for field in update_fields] + ["updated_at=?"]
                 values = [values_by_field[field] for field in update_fields] + [now, user_id, date_str]

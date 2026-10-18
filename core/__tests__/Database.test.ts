@@ -260,6 +260,16 @@ describe('Database', () => {
     expect(isolated.getDiaryForDate('2026-06-26')?.morning_diary_written_at).toBeUndefined()
   })
 
+  it('日记投影独立返回图片与完整报告事实', () => {
+    const isolated = createIsolatedDb()
+    isolated.saveSleepData('2026-10-03', { source: 'screenshot_ocr', sync_status: 'success', report_status: 2, full_report_state: 'generated' } as any)
+    ;(isolated as any)._run(`INSERT INTO sleep_score_settlements
+      (id,sleep_date,metrics_snapshot,score_breakdown,score_total,reward_amount,cycle_penalty,net_amount,settlement_status,missing_fields,rule_version,occurred_at,created_at,updated_at,report_completed_at)
+      VALUES ('summary','2026-10-03','{}','{}',0,0,0,0,'scored','[]','sleep-score-v2','2026-10-03 08:59:00','2026-10-03 08:59:00','2026-10-03 08:59:00','2026-10-03 08:59:00')`)
+
+    expect(isolated.getDiaryForDate('2026-10-03')).toMatchObject({ source: 'screenshot_ocr', sync_status: 'success', report_status: 2, full_report_state: 'generated', report_completed_at: '2026-10-03 08:59:00' })
+  })
+
   it('日记专用保存只入队本次字段并返回可确认 change_id', () => {
     const isolated = createIsolatedDb()
     isolated.saveSleepData('2026-09-08', { evening_diary: '原晚记' })
@@ -1042,5 +1052,20 @@ describe('Database', () => {
     expect(row.sleep_date).toBeUndefined()
     expect(row.analysis_html).toBe('<h1>extra</h1>')
     expect(row.extracted_by).toBeUndefined()
+  })
+
+  it('睡眠摘要投影包含首次有效图片上传时间', () => {
+    const isolated = createIsolatedDb()
+    isolated.saveSleepData('2026-10-03', { image_uploaded_at: '2026-10-03 16:29:10', report_status: 1 } as any)
+    expect(isolated.getDiaryForDate('2026-10-03')?.image_uploaded_at).toBe('2026-10-03 16:29:10')
+  })
+
+  it('每日摘要流水只包含当天权威来源并兼容目标业务日期', () => {
+    const isolated = createIsolatedDb()
+    isolated.addLedgerEntry(-50, 'body_metric_deadline_penalty', 'body:2026-10-03', '身体指标', '2026-10-03')
+    isolated.addLedgerEntry(-15, 'goal_penalty', 'goal_g1_20261003', '每日目标', '2026-10-04')
+    isolated.addLedgerEntry(-99, 'reward_buy', 'shop', '无关购物', '2026-10-03')
+    const rows = isolated.getDailySummaryLedger('2026-10-03')
+    expect(rows.map(row => row.source_type).sort()).toEqual(['body_metric_deadline_penalty', 'goal_penalty'])
   })
 })

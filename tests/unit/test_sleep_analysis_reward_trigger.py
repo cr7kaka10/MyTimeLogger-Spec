@@ -14,7 +14,9 @@ from server.sync_hub import SyncHub
 def _sleep_data():
     return {
         "date": "2026-08-28", "sleep_start": "23:00", "sleep_end": "07:00",
-        "sleep_score": 90, "deep_sleep_min": 95, "sleep_cycles": 5.5,
+        "sleep_score": 90, "total_sleep_min": 420, "deep_sleep_min": 95,
+        "light_sleep_min": 250, "rem_sleep_min": 75, "deep_sleep_ratio": 23,
+        "official_advice": "睡眠时长良好，建议继续保持规律作息并关注长期睡眠质量。", "sleep_cycles": 5.5,
         "awake_min": 10, "awake_count": 1, "fall_asleep_min": 20, "wake_up_min": 10,
     }
 
@@ -41,6 +43,18 @@ def _run_with_result(monkeypatch, tmp_db_path, tmp_path, result, completed_at="2
     monkeypatch.setattr(server_module, "_beijing_now", lambda: __import__("datetime").datetime.strptime(completed_at, "%Y-%m-%d %H:%M:%S"))
     server_module._run_analysis("sleep-reward-job", str(image_path), user_id=1, full=full)
     return store
+
+
+def test_invalid_ocr_result_never_commits_report(monkeypatch, tmp_db_path, tmp_path):
+    invalid = _sleep_data() | {"total_sleep_min": 330, "deep_sleep_min": 60,
+                               "light_sleep_min": 193, "rem_sleep_min": 60}
+    store = _run_with_result(monkeypatch, tmp_db_path, tmp_path, SimpleNamespace(
+        status="done", date="2026-08-28", sleep_data=invalid,
+        analysis_report="# 不应保存", report_path="", error=None,
+    ))
+
+    assert store.get_job("sleep-reward-job", user_id=1)["status"] == "error"
+    assert store.get_huawei_sleep_data(1, "2026-08-28") is None
 
 
 def test_done_analysis_creates_one_server_sleep_settlement(monkeypatch, tmp_db_path, tmp_path):

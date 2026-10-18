@@ -15,7 +15,8 @@ export function planHabitLifecycle(query: HabitQuery, row: any, upsert: HabitSql
   if (version < Number(tomb?.server_version || 0)) return null
   if (deleted && tomb?.server_version === version && !local) return null
   if (!deleted && version === Number(local?.lifecycle_version || 0)) return null
-  const operations = deleted || Number(row.is_active) === 1 ? terminateHabitOutbox(query, id, version, now) : []
+  const reason = row.archive_reason === 'provider_habit_sync_disabled' ? row.archive_reason : 'provider_lifecycle'
+  const operations = deleted || Number(row.is_active) === 1 ? terminateHabitOutbox(query, id, version, now, reason) : []
   if (!deleted) {
     if (!upsert) throw new Error('invalid_habit_upsert')
     if (tomb && restore) operations.push({ sql: 'DELETE FROM habit_tombstones WHERE habit_id=?', params: [id], internal: true })

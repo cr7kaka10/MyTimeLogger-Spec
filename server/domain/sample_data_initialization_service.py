@@ -113,9 +113,11 @@ class SampleDataInitializationService:
         conn.execute("""INSERT INTO server_rewards
             (id,user_id,title,icon,price,redemption_mode,description,inventory_mode,inventory_limit,unlock_required_count,
              fulfillment_mode,fragment_target_count,fragment_rule_version,is_active,created_at,updated_at)
-            VALUES (?,?,'解锁手机','📱',0,'task','多个习惯共享 100% 进度，完整卡每月最多 10 张','monthly',10,1,'fragment',100,1,1,?,?)
+            VALUES (?,?,'解锁手机','📱',0,'task','每次完成获得 1 枚碎片，7 枚合成 1 张卡；每月最多 10 张','monthly',10,1,'fragment',7,1,1,?,?)
             ON CONFLICT(id) DO UPDATE SET title=excluded.title,icon=excluded.icon,price=0,redemption_mode='task',
-            inventory_mode='monthly',inventory_limit=10,fulfillment_mode='fragment',fragment_target_count=100,is_active=1,updated_at=excluded.updated_at""",
+            description=excluded.description,inventory_mode='monthly',inventory_limit=10,
+            fulfillment_mode='fragment',fragment_target_count=7,fragment_measure_mode='count',
+            is_active=1,updated_at=excluded.updated_at""",
             (canonical_id, user_id, now, now))
         sources = {(str(row["id"]), str(row["name"])) for row in habits}
         for row in conn.execute("SELECT source_id FROM server_reward_source_bindings WHERE user_id=? AND reward_id IN (?,?) AND source_type='habit'", (user_id, *legacy_ids)).fetchall():
@@ -125,8 +127,8 @@ class SampleDataInitializationService:
             binding_id = f"reward-source:{canonical_id}:habit:{source_id}"
             conn.execute("""INSERT INTO server_reward_source_bindings
                 (id,user_id,reward_id,source_type,source_id,drop_mode,drop_min_units,drop_max_units,created_at,updated_at)
-                VALUES (?,?,?,'habit',?,'random',10,20,?,?) ON CONFLICT(user_id,reward_id,source_type,source_id)
-                DO UPDATE SET drop_mode='random',drop_min_units=10,drop_max_units=20,updated_at=excluded.updated_at""",
+                VALUES (?,?,?,'habit',?,'fixed',NULL,NULL,?,?) ON CONFLICT(user_id,reward_id,source_type,source_id)
+                DO UPDATE SET drop_mode='fixed',drop_min_units=NULL,drop_max_units=NULL,updated_at=excluded.updated_at""",
                 (binding_id, user_id, canonical_id, source_id, now, now))
             self._write_seed_change(conn, user_id, "server_reward_source_bindings", "reward_source_binding", binding_id, namespace="phone-v1")
         old_bindings = conn.execute("SELECT id FROM server_reward_source_bindings WHERE user_id=? AND reward_id IN (?,?)", (user_id, *legacy_ids)).fetchall()

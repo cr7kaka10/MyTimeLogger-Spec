@@ -36,4 +36,13 @@ foreach ($token in @(
     if (-not $androidScript.Contains($token)) { throw "android startup contract missing: $token" }
 }
 
+foreach ($scenario in @('transport_reconnected','transport_cold_recovered','transport_identity_unknown')) {
+    $output = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root 'scripts\start-android-dev.ps1') -DryRun -TestScenario $scenario 2>&1
+    if ($scenario -ne 'transport_identity_unknown' -and $LASTEXITCODE -ne 0) { throw "$scenario dry-run failed: $output" }
+    if ($scenario -eq 'transport_identity_unknown' -and $LASTEXITCODE -eq 0) { throw 'unknown target identity must fail without stopping a process' }
+}
+foreach ($token in @('Stop-Process -Id $confirmedPid','transportRecoveryCount -ge 1','target_avd_identity_unconfirmed')) {
+    if (-not $androidScript.Contains($token)) { throw "target transport recovery contract missing: $token" }
+}
+
 Write-Output 'start-all contracts passed'

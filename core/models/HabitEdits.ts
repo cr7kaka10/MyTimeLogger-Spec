@@ -1,10 +1,10 @@
 export type HabitEdits = {
   name?: string; title?: string; icon?: string; color?: string
-  category_id?: number | null; sort_order?: number; difficulty?: string; repeat_rule?: string | null
+  category_id?: number | null; sort_order?: number; repeat_rule?: string | null
 }
 
 export function normalizeHabitEdits(fields: HabitEdits): Record<string, unknown> {
-  const allowed = new Set(['name', 'title', 'icon', 'color', 'category_id', 'sort_order', 'difficulty', 'repeat_rule'])
+  const allowed = new Set(['name', 'title', 'icon', 'color', 'category_id', 'sort_order', 'repeat_rule'])
   const result: Record<string, unknown> = {}
   for (const [key, value] of Object.entries(fields)) {
     if (!allowed.has(key)) throw new Error('不可修改习惯的来源或系统字段')
@@ -15,9 +15,6 @@ export function normalizeHabitEdits(fields: HabitEdits): Record<string, unknown>
       result.name = value.trim()
     } else if (key === 'sort_order' || key === 'category_id') {
       if (!(key === 'category_id' && value === null) && !Number.isSafeInteger(value)) throw new Error('分类和排序必须是整数')
-      result[key] = value
-    } else if (key === 'difficulty') {
-      if (!['trivial', 'easy', 'medium', 'hard'].includes(String(value))) throw new Error('习惯难度无效')
       result[key] = value
     } else {
       if (!(key === 'repeat_rule' && value === null) && typeof value !== 'string') throw new Error('习惯字段格式无效')

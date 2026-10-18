@@ -1,7 +1,7 @@
 param(
     [switch]$PreflightOnly,
     [switch]$DryRun,
-    [ValidateSet('stale_runtime', 'complete_snapshot', 'active_lock', 'unknown_lock', 'avd_missing', 'boot_timeout', 'transport_unavailable', 'transport_ready', 'window_service_pending', 'bootanim_running', 'systemui_unstable', 'build_failure', 'active_start', 'surface_delayed', 'activity_recovered', 'activity_not_foreground', 'activity_window_not_visible', 'input_ready', 'input_no_window', 'input_recovered', 'input_reboot_recovered', 'input_recovery_failed')]
+    [ValidateSet('stale_runtime', 'complete_snapshot', 'active_lock', 'unknown_lock', 'avd_missing', 'boot_timeout', 'transport_unavailable', 'transport_ready', 'transport_reconnected', 'transport_cold_recovered', 'transport_identity_unknown', 'target_identity_child', 'target_identity_other', 'snapshot_self_recovered', 'snapshot_cold_recovered', 'snapshot_cold_exhausted', 'emulator_output_redirected', 'window_service_pending', 'bootanim_running', 'systemui_unstable', 'build_failure', 'active_start', 'surface_delayed', 'activity_recovered', 'activity_not_foreground', 'activity_window_not_visible', 'input_ready', 'input_no_window', 'input_recovered', 'input_reboot_recovered', 'input_recovery_failed')]
     [string]$TestScenario
 )
 
@@ -24,6 +24,14 @@ $script:errorReason = ''
 $script:recoveryActions = @()
 $script:adbPath = ''
 $script:transportPorts = @()
+$script:transportRecoveryCount = 0
+$script:recoveredEmulatorPid = 0
+$script:launcherEmulatorPid = 0
+$script:runtimeEmulatorPid = 0
+$script:snapshotDiagnostic = 'none'
+$script:emulatorStartAttempts = 0
+$script:emulatorStdoutPaths = @()
+$script:emulatorStderrPaths = @()
 $script:inputReady = $false
 $script:inputDiagnostics = 'not_checked'
 $script:bootCompleted = ''
@@ -83,6 +91,10 @@ function Write-StartupSummary([int]$ExitCode) {
         avd = $avdName; serial = $script:serial; exit_code = $ExitCode
         archive_paths = @($script:archivePaths); log_path = $script:logPath
         adb_path = $script:adbPath; transport_ports = @($script:transportPorts)
+        transport_recovery_count = [int]$script:transportRecoveryCount; recovered_emulator_pid = [int]$script:recoveredEmulatorPid
+        launcher_emulator_pid = [int]$script:launcherEmulatorPid; runtime_emulator_pid = [int]$script:runtimeEmulatorPid
+        snapshot_diagnostic = $script:snapshotDiagnostic; emulator_start_attempts = [int]$script:emulatorStartAttempts
+        emulator_stdout_paths = @($script:emulatorStdoutPaths); emulator_stderr_paths = @($script:emulatorStderrPaths)
         input_ready = [bool]$script:inputReady; input_diagnostics = $script:inputDiagnostics
         boot_completed = $script:bootCompleted; boot_animation = $script:bootAnimation
         system_window_ready = [bool]$script:systemWindowReady
@@ -139,6 +151,15 @@ function Invoke-ControlledDryRun([string]$Scenario) {
         boot_timeout = @{ stage = 'boot_wait'; ok = $false; error = 'boot_timeout'; reason = 'boot_timeout' }
         transport_unavailable = @{ stage = 'transport_wait'; ok = $false; error = 'adb_transport_unavailable'; reason = 'adb_transport_unavailable: 5554=missing,5555=missing' }
         transport_ready = @{ stage = 'boot_wait'; ok = $true; action = 'adb_transport_ready'; serial = $targetSerial }
+        transport_reconnected = @{ stage = 'boot_wait'; ok = $true; action = 'reconnect_target_transport'; serial = $targetSerial; transport_recovery_count = 1 }
+        transport_cold_recovered = @{ stage = 'boot_wait'; ok = $true; actions = @('reconnect_target_transport','cold_restart_target_avd'); serial = $targetSerial; transport_recovery_count = 1; recovered_pid = 4321 }
+        transport_identity_unknown = @{ stage = 'transport_wait'; ok = $false; error = 'adb_transport_unavailable'; reason = 'target_avd_identity_unconfirmed'; transport_recovery_count = 1 }
+        target_identity_child = @{ stage = 'transport_wait'; ok = $true; action = 'target_avd_identity_confirmed'; launcher_pid = 25608; runtime_pid = 13560 }
+        target_identity_other = @{ stage = 'transport_wait'; ok = $false; error = 'adb_transport_unavailable'; reason = 'target_avd_identity_unconfirmed'; launcher_pid = 25608; runtime_pid = 22222 }
+        snapshot_self_recovered = @{ stage = 'boot_wait'; ok = $true; action = 'snapshot_warning_self_recovered'; snapshot = 'default_boot_load_failed'; attempts = 1 }
+        snapshot_cold_recovered = @{ stage = 'boot_wait'; ok = $true; actions = @('snapshot_load_failed','cold_restart_target_avd'); snapshot = 'default_boot_load_failed'; attempts = 2 }
+        snapshot_cold_exhausted = @{ stage = 'transport_wait'; ok = $false; error = 'adb_transport_unavailable'; reason = 'snapshot_cold_recovery_exhausted'; actions = @('snapshot_load_failed','cold_restart_target_avd'); snapshot = 'default_boot_load_failed'; attempts = 2 }
+        emulator_output_redirected = @{ stage = 'avd_acquisition'; ok = $true; stdout = "$script:logPath.emulator-1.stdout.log"; stderr = "$script:logPath.emulator-1.stderr.log"; attempts = 1 }
         window_service_pending = @{ stage = 'boot_wait'; ok = $true; serial = $targetSerial; system_diagnostic = 'window_service_pending: Can''t find service: window' }
         bootanim_running = @{ stage = 'boot_wait'; ok = $false; error = 'system_window_unstable'; reason = 'system_window_unstable: boot animation running'; boot = '1'; bootanim = 'running'; stable = 0 }
         systemui_unstable = @{ stage = 'boot_wait'; ok = $false; error = 'system_window_unstable'; reason = 'system_window_unstable: system window not drawn; app_crashed=False'; boot = '1'; bootanim = 'stopped'; stable = 0; crashed = $false }
@@ -160,6 +181,13 @@ function Invoke-ControlledDryRun([string]$Scenario) {
     if ($outcome.actions) { $script:recoveryActions = @($outcome.actions) }
     elseif ($outcome.action) { $script:recoveryActions = @($outcome.action) }
     if ($outcome.serial) { $script:serial = $outcome.serial }
+    if ($outcome.transport_recovery_count) { $script:transportRecoveryCount = $outcome.transport_recovery_count }
+    if ($outcome.recovered_pid) { $script:recoveredEmulatorPid = $outcome.recovered_pid }
+    if ($outcome.launcher_pid) { $script:launcherEmulatorPid = $outcome.launcher_pid }
+    if ($outcome.runtime_pid) { $script:runtimeEmulatorPid = $outcome.runtime_pid }
+    if ($outcome.snapshot) { $script:snapshotDiagnostic = $outcome.snapshot }
+    if ($outcome.attempts) { $script:emulatorStartAttempts = $outcome.attempts }
+    if ($outcome.stdout) { $script:emulatorStdoutPaths = @($outcome.stdout); $script:emulatorStderrPaths = @($outcome.stderr) }
     if ($null -ne $outcome.input_ready) { $script:inputReady = [bool]$outcome.input_ready }
     if ($outcome.diagnostic) { $script:inputDiagnostics = $outcome.diagnostic; $script:activityDiagnostics = $outcome.diagnostic }
     if ($outcome.system_diagnostic) { $script:systemDiagnostics = $outcome.system_diagnostic }
@@ -270,26 +298,56 @@ function Start-TargetAvd([bool]$ColdStart = $false) {
     $serial = Get-TargetAvdSerial
     if ($serial) {
         Write-Stage "Reusing target AVD: $serial"
-        return Get-TargetEmulatorPid
+        $identity = Get-TargetEmulatorIdentity
+        $script:launcherEmulatorPid = $identity.LauncherPid; $script:runtimeEmulatorPid = $identity.RuntimePid
+        return $identity.RuntimePid
     }
-    $existingPid = Get-TargetEmulatorPid
-    if ($existingPid) {
-        Write-Stage "Target AVD process already exists (PID $existingPid); waiting for $targetSerial transport."
-        return $existingPid
+    $identity = Get-TargetEmulatorIdentity
+    if ($identity) {
+        $script:launcherEmulatorPid = $identity.LauncherPid; $script:runtimeEmulatorPid = $identity.RuntimePid
+        Write-Stage "Target AVD process already exists (runtime PID $($identity.RuntimePid)); waiting for $targetSerial transport."
+        return $identity.RuntimePid
     }
     $arguments = @('-avd', $avdName, '-port', '5554')
     if ($ColdStart) { $arguments += @('-no-snapshot-load', '-no-snapshot-save') }
-    $process = Start-Process -FilePath $script:emulator -ArgumentList $arguments -PassThru
-    Write-Stage "Started target AVD $avdName (emulator PID $($process.Id))."
-    return $process.Id
+    $script:emulatorStartAttempts++
+    $attempt = $script:emulatorStartAttempts
+    $stdoutPath = Join-Path $logDirectory "android-$runStamp.emulator-$attempt.stdout.log"
+    $stderrPath = Join-Path $logDirectory "android-$runStamp.emulator-$attempt.stderr.log"
+    $script:emulatorStdoutPaths += $stdoutPath; $script:emulatorStderrPaths += $stderrPath
+    $process = Start-Process -FilePath $script:emulator -ArgumentList $arguments -PassThru -NoNewWindow `
+        -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
+    $script:launcherEmulatorPid = $process.Id
+    Write-Stage "Emulator attempt $attempt diagnostics: stdout=$stdoutPath; stderr=$stderrPath"
+    $identityDeadline = (Get-Date).AddSeconds(15)
+    do {
+        $identity = Get-TargetEmulatorIdentity $process.Id
+        if ($identity) { break }
+        if (-not (Get-Process -Id $process.Id -ErrorAction SilentlyContinue)) { throw 'emulator_exited_before_runtime_identity' }
+        Start-Sleep -Milliseconds 250
+    } while ((Get-Date) -lt $identityDeadline)
+    if (-not $identity) { throw 'adb_transport_unavailable: target_avd_identity_unconfirmed' }
+    $script:runtimeEmulatorPid = $identity.RuntimePid
+    Write-Stage "Started target AVD $avdName (launcher PID $($process.Id), runtime PID $($identity.RuntimePid))."
+    return $identity.RuntimePid
+}
+
+function Get-TargetEmulatorIdentity([int]$LauncherPid = 0) {
+    $avdPattern = '(?i)(?:^|\s)-avd\s+(?:"?' + [regex]::Escape($avdName) + '"?)(?=\s|$)'
+    $portPattern = '(?i)(?:^|\s)-port\s+5554(?=\s|$)'
+    $runtime = Get-CimInstance Win32_Process -Filter "Name = 'qemu-system-x86_64.exe'" |
+        Where-Object { $_.CommandLine -match $avdPattern -and $_.CommandLine -match $portPattern } |
+        Select-Object -First 1
+    if (-not $runtime) { return $null }
+    if ($LauncherPid -gt 0 -and $runtime.ParentProcessId -ne $LauncherPid -and $runtime.ProcessId -ne $LauncherPid) { return $null }
+    $resolvedLauncher = if ($LauncherPid -gt 0) { $LauncherPid } else { [int]$runtime.ParentProcessId }
+    return [pscustomobject]@{ LauncherPid = $resolvedLauncher; RuntimePid = [int]$runtime.ProcessId }
 }
 
 function Get-TargetEmulatorPid {
-    $pattern = '(?i)(?:^|\s)-avd\s+(?:"?' + [regex]::Escape($avdName) + '"?)(?=\s|$)'
-    $process = Get-CimInstance Win32_Process -Filter "Name = 'qemu-system-x86_64.exe'" |
-        Where-Object { $_.CommandLine -match $pattern } |
-        Select-Object -First 1
-    return $process.ProcessId
+    $identity = Get-TargetEmulatorIdentity
+    if ($identity) { return $identity.RuntimePid }
+    return $null
 }
 
 function Request-TargetEmulatorForeground([int]$EmulatorPid) {
@@ -354,6 +412,49 @@ function Get-AndroidSystemReadiness([string]$Serial) {
     return [pscustomobject]@{ Ready = $ready; Summary = $reason }
 }
 
+function Test-SnapshotLoadFailure {
+    $pattern = "Error -1 from the snapshot callback|Failed to load Snapshot 'default_boot'"
+    foreach ($path in @($script:emulatorStdoutPaths) + @($script:emulatorStderrPaths)) {
+        if ((Test-Path -LiteralPath $path) -and (Select-String -LiteralPath $path -Pattern $pattern -Quiet)) { return $true }
+    }
+    return $false
+}
+
+function Repair-TargetAvdTransport([int]$EmulatorPid) {
+    $snapshotFailed = Test-SnapshotLoadFailure
+    if ($snapshotFailed) {
+        $script:snapshotDiagnostic = 'default_boot_load_failed'
+        if ($script:recoveryActions -notcontains 'snapshot_load_failed') { $script:recoveryActions += 'snapshot_load_failed' }
+    }
+    if ($script:transportRecoveryCount -ge 1) {
+        if ($snapshotFailed) { throw 'adb_transport_unavailable: snapshot_cold_recovery_exhausted' }
+        throw 'adb_transport_unavailable: target transport recovery exhausted'
+    }
+    $script:transportRecoveryCount++
+    $script:recoveryActions += 'reconnect_target_transport'
+    & $script:adb -s $targetSerial reconnect 2>$null | Out-Null
+    Start-Sleep -Seconds 3
+    if (Get-TargetAvdSerial) { Write-Stage "Target transport reconnected without restarting PID $EmulatorPid."; return $EmulatorPid }
+    $confirmedPid = Get-TargetEmulatorPid
+    if (-not $confirmedPid -or $confirmedPid -ne $EmulatorPid) { throw 'adb_transport_unavailable: target_avd_identity_unconfirmed' }
+    $reason = if ($snapshotFailed) { 'failed default_boot snapshot' } else { 'transport failure' }
+    Write-Stage "Restarting only confirmed target AVD PID $confirmedPid after $reason."
+    Stop-Process -Id $confirmedPid -ErrorAction Stop
+    $stopDeadline = (Get-Date).AddSeconds(15)
+    while ((Get-Process -Id $confirmedPid -ErrorAction SilentlyContinue) -and (Get-Date) -lt $stopDeadline) {
+        Start-Sleep -Milliseconds 250
+    }
+    if (Get-Process -Id $confirmedPid -ErrorAction SilentlyContinue) {
+        throw 'adb_transport_unavailable: confirmed_target_avd_did_not_stop'
+    }
+    $script:recoveryActions += 'cold_restart_target_avd'
+    $script:recoveredEmulatorPid = $confirmedPid
+    $recoveryActions = @($script:recoveryActions)
+    [void](Repair-TargetAvdRuntimeState)
+    $script:recoveryActions = $recoveryActions
+    return Start-TargetAvd $true
+}
+
 function Wait-ForTargetAvd([int]$EmulatorPid, [int]$TimeoutSeconds = 180) {
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
     $transportDeadline = (Get-Date).AddSeconds(45)
@@ -365,11 +466,20 @@ function Wait-ForTargetAvd([int]$EmulatorPid, [int]$TimeoutSeconds = 180) {
             $state = Get-AndroidSystemReadiness $serial
             $script:systemStableSamples = if ($state.Ready) { $script:systemStableSamples + 1 } else { 0 }
             Write-Stage "System readiness sample $script:systemStableSamples/2: $($state.Summary)"
-            if ($script:systemStableSamples -ge 2) { Write-Stage "Target AVD system is stable: $serial"; return $serial }
+            if ($script:systemStableSamples -ge 2) {
+                if ($script:transportRecoveryCount -eq 0 -and (Test-SnapshotLoadFailure)) {
+                    $script:snapshotDiagnostic = 'default_boot_load_failed'
+                    $script:recoveryActions += 'snapshot_warning_self_recovered'
+                    Write-Stage 'Snapshot load warning was detected, but the target AVD recovered without a restart.'
+                }
+                Write-Stage "Target AVD system is stable: $serial"; return $serial
+            }
         }
         if ((Get-Date) -ge $transportDeadline -and (-not $portsReady -or -not $serial)) {
             Set-Stage 'transport_wait'
-            throw "adb_transport_unavailable: $($script:transportPorts -join ','); target=$targetSerial"
+            $EmulatorPid = Repair-TargetAvdTransport $EmulatorPid
+            $transportDeadline = (Get-Date).AddSeconds(45)
+            Set-Stage 'boot_wait'
         }
         Start-Sleep -Seconds 2
     } while ((Get-Date) -lt $deadline)

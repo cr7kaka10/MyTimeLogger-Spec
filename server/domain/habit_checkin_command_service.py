@@ -2,15 +2,12 @@ from __future__ import annotations
 
 import asyncio
 
-import httpx
-
-
 class HabitUnavailable(ValueError):
     pass
 
 
 class HabitCheckinCommandService:
-    """TickTick 外部优先的习惯目标状态命令。"""
+    """MyTimeLogger 本地习惯的幂等目标状态命令。"""
 
     def __init__(self, transact, habit_domain_service, command_store):
         self._transact = transact
@@ -39,20 +36,6 @@ class HabitCheckinCommandService:
             if not applicable:
                 return self._commands.mark(user_id, idempotency_key, "retryable_failed", error_code="cancel_not_allowed")
             self._commands.begin_attempt(user_id, idempotency_key)
-            if self._requires_provider(habit_id):
-                if client is None:
-                    return self._commands.mark(user_id, idempotency_key, "retryable_failed", error_code="provider_not_configured")
-                try:
-                    await client.checkin_habit(
-                        self._provider_habit_id(user_id, habit_id),
-                        str(checkin_date).replace("-", ""),
-                        int(desired_status),
-                        1.0 if int(desired_status) == 2 else 0.0,
-                    )
-                except httpx.TimeoutException:
-                    return self._commands.mark(user_id, idempotency_key, "retryable_failed", error_code="provider_timeout")
-                except Exception:
-                    return self._commands.mark(user_id, idempotency_key, "retryable_failed", error_code="provider_request_failed")
             self._commands.mark(user_id, idempotency_key, "provider_confirmed")
             return self._finalize(user_id, idempotency_key, habit_id, checkin_date, desired_status)
 
@@ -98,9 +81,11 @@ class HabitCheckinCommandService:
 
     @staticmethod
     def _require_active(conn, user_id, habit_id):
-        habit = conn.execute("SELECT is_active FROM server_habits WHERE user_id=? AND id=?", (user_id, habit_id)).fetchone()
+        habit = conn.execute("SELECT is_active,source FROM server_habits WHERE user_id=? AND id=?", (user_id, habit_id)).fetchone()
         if not habit:
             raise HabitUnavailable("habit_not_found")
+        if habit["source"] != "local":
+            raise HabitUnavailable("provider_habit_sync_disabled")
         if habit["is_active"] != 0:
             raise HabitUnavailable("habit_archived")
 
@@ -111,13 +96,3 @@ class HabitCheckinCommandService:
             and str(command.get("checkin_date")) == str(checkin_date)
             and int(command.get("desired_status") or 0) == int(desired_status)
         )
-
-    @staticmethod
-    def _requires_provider(habit_id: str) -> bool:
-        return not str(habit_id).startswith("local_")
-
-    @staticmethod
-    def _provider_habit_id(user_id: int, habit_id: str) -> str:
-        prefix = f"ticktick:{user_id}:"
-        value = str(habit_id)
-        return value[len(prefix):] if value.startswith(prefix) else value

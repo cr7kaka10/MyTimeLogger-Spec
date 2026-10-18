@@ -54,7 +54,8 @@ class SourceRewardService:
                 (user_id, coin_type, source_id),
             ).fetchone()
             rewards = conn.execute(
-                """SELECT r.* FROM server_reward_source_bindings b
+                """SELECT r.*,(SELECT COUNT(*) FROM server_reward_source_bindings legacy
+                   WHERE legacy.user_id=r.user_id AND legacy.reward_id=r.id AND (legacy.drop_min_units IS NOT NULL OR legacy.drop_max_units IS NOT NULL)) legacy_percent_binding_count FROM server_reward_source_bindings b
                    JOIN server_rewards r ON r.id=b.reward_id
                    WHERE b.user_id=? AND b.source_type=? AND b.source_id=? AND r.is_active=1
                    ORDER BY r.updated_at DESC,r.id""",

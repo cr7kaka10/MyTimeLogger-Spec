@@ -240,7 +240,8 @@ class RewardSettlementService:
         """按固定顺序协调周期库存，确保过期事实不再可用。"""
         fragments = self._fragments.expire_for_user_in_txn(conn, user_id)
         items = self._reward_wallet.expire_backpack_items_in_txn(conn, user_id)
-        return {"expired_fragments": fragments, "expired_items": items}
+        composed = self._fragments.compose_for_user_in_txn(conn, user_id)
+        return {"expired_fragments": fragments, "expired_items": items, "composed_items": composed}
 
     def inventory_available_in_txn(self, conn, user_id, reward, target_date: str) -> bool:
         """按服务端北京时间目标窗口判断商品是否还能入包。"""

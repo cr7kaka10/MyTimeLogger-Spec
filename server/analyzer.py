@@ -7,6 +7,7 @@ desktop worker and the server FastAPI service.
 """
 
 import base64
+import hashlib
 import json
 import logging
 import os
@@ -40,6 +41,46 @@ def clean_url(url):
     if url.endswith("/chat/completions"):
         url = url[:-len("/chat/completions")].rstrip("/")
     return url
+
+
+def build_vision_candidates(cfg):
+    """Return complete vision slots in configured fallback order."""
+    candidates = []
+    for index, prefix in enumerate(("vision", "vision_backup_1", "vision_backup_2")):
+        resolved = prefix
+        values = [cfg.get(f"{prefix}_{key}") for key in ("base_url", "api_key", "model")]
+        if index == 1 and not all(values):
+            resolved = "backup"
+            values = [cfg.get(f"{resolved}_{key}") for key in ("base_url", "api_key", "model")]
+        if all(values):
+            candidates.append(("主模型" if index == 0 else f"备用模型 {index}", resolved))
+    return candidates
+
+
+def provider_fingerprint(base_url, api_key):
+    raw = f"{clean_url(base_url)}\0{api_key or ''}".encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()[:16]
+
+
+def classify_provider_error(exc):
+    """Return a redacted, actionable classification for OpenAI-compatible failures."""
+    status = getattr(exc, "status_code", None) or getattr(getattr(exc, "response", None), "status_code", None)
+    body = getattr(exc, "body", None)
+    nested = body.get("error") if isinstance(body, dict) and isinstance(body.get("error"), dict) else {}
+    code = (body.get("code") if isinstance(body, dict) else None) or nested.get("code")
+    signal = f"{code or ''} {type(exc).__name__} {str(exc)}".lower()
+    if status == 402 or str(code) == "30001" or "insufficient" in signal and "balance" in signal:
+        category, message = "insufficient_balance", "视觉模型账户余额不足，请充值或更换独立服务商"
+    elif status in (401, 403):
+        category, message = "authentication", "视觉模型凭证无效或无权限，请更新 API Key"
+    elif status == 429:
+        category, message = "rate_limited", "视觉模型请求限流，请稍后重试或更换服务商"
+    elif status == 404 or "model_not_found" in signal or "model not found" in signal:
+        category, message = "model_unavailable", "视觉模型不可用，请检查模型名称或更换模型"
+    else:
+        category, message = "provider_error", "视觉模型服务调用失败"
+    return {"http_status": status, "provider_code": code, "category": category, "message": message,
+            "shared_failure": category in {"insufficient_balance", "authentication"}}
 
 
 def to_min(val):
@@ -241,6 +282,8 @@ class SleepAnalyzer:
         required = [
             "sleep_score",
             "deep_sleep_min",
+            "light_sleep_min",
+            "rem_sleep_min",
             "deep_sleep_ratio",
             "sleep_start",
             "sleep_end",
@@ -286,7 +329,9 @@ class SleepAnalyzer:
                 return False, msg
             logger.debug(f"[校验通过] 数学逻辑自洽: {total} == {sum_stages}")
         except Exception as exc:
-            logger.debug(f"[校验跳过] 数学检查异常: {exc}")
+            msg = f"睡眠数据数学校验失败：字段不可解析({type(exc).__name__})。"
+            logger.warning(f"[校验失败] {msg}")
+            return False, msg
 
         return True, ""
 
@@ -445,78 +490,67 @@ class SleepAnalyzer:
         # 按照老板要求：图片不要再压缩了，保证数据必须完整提取，不用担心 token
         return self.image_path, None
 
+    def _request_vision_json(self, prefix, prompt, img_b64, http_client):
+        model = self.ai_cfg[f"{prefix}_model"]
+        client = OpenAI(api_key=self.ai_cfg[f"{prefix}_api_key"],
+                        base_url=clean_url(self.ai_cfg[f"{prefix}_base_url"]), http_client=http_client)
+        response = client.chat.completions.create(
+            model=model, temperature=0.1, messages=[{"role": "user", "content": [
+                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}},
+                {"type": "text", "text": prompt},
+            ]}])
+        content = response.choices[0].message.content
+        data = self.extract_json((content or "").strip())
+        if not data:
+            raise ValueError("invalid_json")
+        return self.normalize_data(data)
+
+    def _record_ocr_audit(self, slot, model, round_name, started, outcome, level, reason="", provider=None):
+        entry = {"slot": slot, "model": model, "round": round_name,
+                 "elapsed_ms": round((time.perf_counter() - started) * 1000),
+                 "outcome": outcome, "validation_level": level,
+                 "reason": str(reason).replace("\n", " ")[:300]}
+        if provider:
+            entry.update({key: provider.get(key) for key in ("http_status", "provider_code", "category", "provider_fingerprint") if provider.get(key) is not None})
+        self.ocr_audit.append(entry)
+        logger.info("[sleep-ocr-audit] %s", json.dumps(entry, ensure_ascii=False))
+
     def _extract_sleep_data(self):
-        candidates = [("主", "vision")]
-        for number in (1, 2):
-            prefix = f"vision_backup_{number}"
-            if number == 1 and not all(self.ai_cfg.get(f"{prefix}_{key}") for key in ("base_url", "api_key", "model")):
-                prefix = "backup"
-            if all(self.ai_cfg.get(f"{prefix}_{key}") for key in ("base_url", "api_key", "model")):
-                candidates.append((f"备用 {number}", prefix))
-        total_attempts = len(candidates)
-        # 在循环外创建 http_client，避免每次重试都重建连接（修复连接资源泄漏）
+        candidates = build_vision_candidates(self.ai_cfg)
+        self.ocr_audit = []
+        if not candidates:
+            raise RuntimeError("未配置完整的视觉模型候选。")
+        final_img_path, temp_img_path = self._prepare_image()
+        try:
+            with open(final_img_path, "rb") as file:
+                img_b64 = base64.b64encode(file.read()).decode()
+        finally:
+            if temp_img_path and os.path.exists(temp_img_path):
+                os.remove(temp_img_path)
+        hint_year = str(datetime.now().year)
+        match = re.search(r"(20[2-3]\d)", os.path.basename(self.image_path or ""))
+        if match:
+            hint_year = match.group(1)
+        base_prompt = self._load_prompt() + f"\n\n当前上下文年份为 {hint_year}，请组合完整 sleep_date。"
+        reread_prompt = ("只重新读取原图中的四个时长字段并返回纯 JSON：total_sleep_min、"
+                         "deep_sleep_min、light_sleep_min、rem_sleep_min。不要返回或推算其他字段。")
         with httpx.Client(
             verify=False,
             timeout=httpx.Timeout(60.0, connect=10.0),
             limits=httpx.Limits(max_keepalive_connections=5, max_connections=10),
         ) as http_client:
-            for attempt, (model_type, prefix) in enumerate(candidates, start=1):
+            failed_domains = {}
+            for attempt, (slot, prefix) in enumerate(candidates, start=1):
+                model = str(self.ai_cfg[f"{prefix}_model"])
+                started = time.perf_counter()
+                fingerprint = provider_fingerprint(self.ai_cfg.get(f"{prefix}_base_url"), self.ai_cfg.get(f"{prefix}_api_key"))
+                if fingerprint in failed_domains:
+                    detail = dict(failed_domains[fingerprint], provider_fingerprint=fingerprint)
+                    self._record_ocr_audit(slot, model, "full", started, "skipped_shared_failure", "request", detail["message"], detail)
+                    continue
                 try:
-                    v_url = clean_url(self.ai_cfg.get(f"{prefix}_base_url", ""))
-                    v_key = self.ai_cfg.get(f"{prefix}_api_key", "")
-                    v_model = self.ai_cfg.get(f"{prefix}_model", "glm-4v-flash")
-
-                    if not v_key:
-                        raise ValueError("视觉模型 API Key 为空")
-
-                    self.progress(f"{model_type}模型解析中 ({attempt}/{total_attempts})...")
-
-                    client_v = OpenAI(api_key=v_key, base_url=v_url, http_client=http_client)
-
-                    hint_year = str(datetime.now().year)
-                    try:
-                        basename = os.path.basename(self.image_path)
-                        match = re.search(r"(20[2-3]\d)", basename)
-                        if match:
-                            hint_year = match.group(1)
-                            logger.debug(f"文件名识别到年份建议: {hint_year}")
-                    except Exception:
-                        pass
-
-                    final_img_path, temp_img_path = self._prepare_image()
-                    try:
-                        with open(final_img_path, "rb") as file:
-                            img_b64 = base64.b64encode(file.read()).decode()
-                    finally:
-                        if temp_img_path and os.path.exists(temp_img_path):
-                            os.remove(temp_img_path)
-
-                    prompt = self._load_prompt()
-                    if hint_year:
-                        prompt += f"\n\n注意：当前上下文年份为 {hint_year}。请将此年份与截图中识别到的月、日组合成完整的 sleep_date。"
-
-                    vision_resp = client_v.chat.completions.create(
-                        model=v_model,
-                        messages=[
-                            {
-                                "role": "user",
-                                "content": [
-                                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}},
-                                    {"type": "text", "text": prompt},
-                                ],
-                            }
-                        ],
-                        temperature=0.1,
-                    )
-                    content = vision_resp.choices[0].message.content
-                    if not content:
-                        raise ValueError("模型返回内容为空")
-
-                    sleep_data = self.extract_json(content.strip())
-                    if not sleep_data:
-                        raise ValueError(f"模型输出不符合 JSON 格式，请检查模型稳定性。输出内容: {content[:50]}...")
-
-                    sleep_data = self.normalize_data(sleep_data)
+                    self.progress(f"{slot}解析中 ({attempt}/{len(candidates)})...")
+                    sleep_data = self._request_vision_json(prefix, base_prompt, img_b64, http_client)
                     extracted_date = sleep_data.get("sleep_date")
                     if extracted_date and self.date_str:
                         try:
@@ -529,32 +563,36 @@ class SleepAnalyzer:
                                 raise
 
                     is_valid, reason = self.validate_data(sleep_data)
+                    self._record_ocr_audit(slot, model, "full", started,
+                                           "valid" if is_valid else "validation_failed", "full", reason)
+                    if not is_valid and reason.startswith("睡眠数据数学校验失败：夜间睡眠时长"):
+                        reread_started = time.perf_counter()
+                        reread = self._request_vision_json(prefix, reread_prompt, img_b64, http_client)
+                        fields = ("total_sleep_min", "deep_sleep_min", "light_sleep_min", "rem_sleep_min")
+                        if all(field in reread for field in fields):
+                            sleep_data.update({field: reread[field] for field in fields})
+                        is_valid, reason = self.validate_data(sleep_data)
+                        self._record_ocr_audit(slot, model, "duration_reread", reread_started,
+                                               "valid" if is_valid else "validation_failed", "durations", reason)
                     if is_valid:
                         if self.is_no_main_sleep(sleep_data):
                             sleep_data = self.normalize_no_main_sleep(sleep_data)
                             self.progress("识别到无有效主睡眠，跳过后续指标提取。")
-                        sleep_data["extracted_by"] = v_model
+                        sleep_data["extracted_by"] = model
+                        sleep_data["ocr_audit"] = list(self.ocr_audit)
                         return sleep_data
-
-                    self.progress(f"{v_model} 识别异常: {reason}")
-                    if attempt < total_attempts:
-                        self.progress(f"提取不完整，正在进行第 {attempt} 次重试...")
-                        time.sleep(2)
-                    else:
-                        self.progress("已达到最大重试次数，将使用现有提取结果。")
-                        sleep_data["extracted_by"] = v_model
-                        return sleep_data
+                    self.progress(f"{model} 识别异常: {reason}")
                 except Exception as exc:
-                    if "日期不匹配" in str(exc):
-                        raise
-                    if attempt >= total_attempts:
-                        raise
-                    err_msg = str(exc)
-                    if "Connection error" in err_msg:
-                        err_msg = "网络连接失败，请检查 API 地址或网络环境"
-                    self.progress(f"分析出错，正在重试({attempt})... {err_msg}")
-                    time.sleep(3)
-        raise RuntimeError("未获取到睡眠数据，分析中止。")
+                    detail = classify_provider_error(exc)
+                    detail["provider_fingerprint"] = fingerprint
+                    outcome = "invalid_json" if str(exc) == "invalid_json" else detail["category"]
+                    self._record_ocr_audit(slot, model, "full", started, outcome, "request", detail["message"], detail)
+                    if detail["shared_failure"]:
+                        failed_domains[fingerprint] = detail
+                    self.progress(f"{slot}失败，自动切换下一视觉模型。")
+        primary = next((row for row in self.ocr_audit if row.get("category") not in (None, "provider_error")), None)
+        prefix = f"{primary['reason']}。" if primary else ""
+        raise RuntimeError("睡眠OCR全部候选失败：" + prefix + json.dumps(self.ocr_audit, ensure_ascii=False))
 
     def analyze(self):
         try:

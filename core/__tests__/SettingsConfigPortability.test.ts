@@ -7,6 +7,7 @@ describe('SettingsConfigPortability', () => {
     expect(isDeviceLocalSetting('atimelogger_password')).toBe(true)
     expect(isDeviceLocalSetting('ai_text_api_key')).toBe(true)
     expect(isDeviceLocalSetting('env_production_auth_token')).toBe(true)
+    expect(isDeviceLocalSetting('sleep_automation_consent')).toBe(true)
     expect(isDeviceLocalSetting('theme')).toBe(false)
   })
   it('导出版本化配置且排除业务流水字段', () => {
@@ -23,6 +24,7 @@ describe('SettingsConfigPortability', () => {
       atimelogger_type_map: '{"娱乐":"remote-id"}',
       env_development_server_url: 'http://127.0.0.1:8000',
       env_development_auth_token: 'secret-session-token',
+      sleep_automation_consent: 'true',
       reward_ledger: 'should-not-export',
       study_sessions: 'should-not-export',
     })
@@ -39,6 +41,7 @@ describe('SettingsConfigPortability', () => {
     expect(payload.settings.atimelogger_enabled).toBeUndefined()
     expect(payload.settings.atimelogger_type_map).toBeUndefined()
     expect(payload.settings.env_development_auth_token).toBeUndefined()
+    expect(payload.settings.sleep_automation_consent).toBeUndefined()
     expect(payload.settings.reward_ledger).toBeUndefined()
     expect(payload.settings.study_sessions).toBeUndefined()
     expect(payload.environmentProfiles.development.serverUrl).toBe('http://127.0.0.1:8000')

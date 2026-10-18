@@ -4,6 +4,19 @@ from datetime import datetime, timedelta, timezone
 
 SENSITIVE = re.compile(r"token|password|secret|cookie|authorization|content|text|note|body|bearer\s+", re.I)
 FIELDS = ("event_id", "occurred_at", "device_id", "runtime", "page", "event_type", "action", "target_type", "target_id", "result", "error_code", "trace_id")
+ACTION_FIELDS = {
+    "navigation.tab_opened": {"tab"}, "navigation.back": {"tab", "surface"},
+    "control.activated": {"surface", "control", "tab"}, "input.changed": {"surface", "control", "tab"},
+    "auth.signed_in": set(), "auth.signed_out": set(),
+    "api.request_result": {"method", "path", "status", "result", "error_code"},
+    "checklist.sync.completed": {"scope", "task_stage", "habit_sync", "task_count", "duration_ms", "result", "error_code"},
+    "habit.provider_retirement.completed": {"boundary_version", "candidate_count", "retired_count", "skipped_count", "result", "error_code"},
+    "local_habit.mutation.completed": {"operation", "has_reward_config", "result", "error_code"},
+    "timer.focus_handoff.completed": {"from_group", "to_group", "same_group", "state", "revision", "result", "error_code"},
+    "notification.schedule": {"notification_type", "permission_state", "reason", "result", "error_code"},
+    "notification.cancel": {"notification_type", "reason", "result"}, "notification.open": {"notification_type", "result"},
+    "audit.outbox_trimmed": {"removed_count"},
+}
 PAGE_LABELS = {"timer": "计时", "timebook": "时间记录", "checklist": "任务与习惯", "learning": "学习", "goals": "目标", "rewards": "奖励", "backpack": "背包", "sleep": "睡眠", "settings": "设置", "management_plan": "管理方案"}
 RESULT_LABELS = {"accepted": "已受理", "succeeded": "成功", "failed": "失败", "rejected": "未通过"}
 
@@ -38,8 +51,9 @@ class UserBehaviorAuditService:
         for event in events:
             metadata = event.get("metadata") or {}
             row = [str(event.get(field) or "") for field in FIELDS]
+            allowed = ACTION_FIELDS.get(str(event.get("action") or ""))
             encoded = json.dumps(metadata, ensure_ascii=False, separators=(",", ":"))
-            invalid_meta = not isinstance(metadata, dict) or any(SENSITIVE.search(str(key)) or SENSITIVE.search(str(value)) for key, value in metadata.items())
+            invalid_meta = not isinstance(metadata, dict) or allowed is None or any(key not in allowed or SENSITIVE.search(str(key)) or SENSITIVE.search(str(value)) for key, value in metadata.items())
             if invalid_meta or len(metadata) > 20 or any(len(value) > 256 for value in row) or len(encoded) > 4096 or not all(row[i] for i in (0,1,2,3,4,5,6,9)): raise ValueError("invalid_behavior_event")
             values.append((*row, encoded, user_id, datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m-%d %H:%M:%S")))
         with self.connect() as conn: conn.executemany("INSERT OR IGNORE INTO server_user_behavior_events (event_id,occurred_at,device_id,runtime,page,event_type,action,target_type,target_id,result,error_code,trace_id,metadata_json,user_id,received_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", values)

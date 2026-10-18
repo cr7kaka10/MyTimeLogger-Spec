@@ -157,6 +157,7 @@ export const TimerPage = memo((props: TimerPageProps) => {
           categories={categories}
           currentCategory={currentCategory}
           timerState={state}
+          isPaused={isPaused}
           commandsEnabled={commandsEnabled}
           onStart={start}
           onSwitch={switchCategory}

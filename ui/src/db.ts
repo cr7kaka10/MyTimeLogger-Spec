@@ -550,9 +550,9 @@ async function runSyncNow(options: SyncNowOptions, scope: 'core' | 'checklist', 
     })
     if (scope === 'checklist' && refresh && accountKey === (activeAccountStorageKey || '')) {
       const provider = normalized.diagnostics?.provider_refresh || normalized.diagnostics || {}
-      if (!normalized.ok || provider.habits?.complete === false || provider.tasks?.complete === false) {
+      if (!normalized.ok || provider.complete === false || provider.tasks?.complete === false) {
         checklistSyncErrors.set(accountKey, '清单大同步未完成，请查看清单同步详情')
-      } else if (provider.habits?.complete === true && provider.tasks?.complete === true) {
+      } else if (provider.complete === true || provider.tasks?.complete === true) {
         checklistSyncErrors.delete(accountKey)
       }
     }

@@ -23,11 +23,15 @@ describe('provider lifecycle transaction plan', () => {
     expect(planHabitLifecycle(query, row, null, 'now')).toBeNull()
     expect(planHabitLifecycle(query, { ...row, _sync_operation: 'upsert', lifecycle_version: 3 }, null, 'now')).toBeNull()
   })
-  it('active facts do not terminate pending checkins', () => {
-    const db = new Database(createBetterSqliteAdapter()); const id = db.addHabit('活动')
+  it('provider retirement terminates habit outbox with its reason', () => {
+    const db = new Database(createBetterSqliteAdapter()); const id = db.addHabit('退役')
     db.runRaw("UPDATE habits SET source='ticktick' WHERE id=?", [id])
-    const upsert = { sql: 'SELECT 1', params: [] }
-    const result = planHabitLifecycle((sql, args) => db.allRaw(sql, args), { id, source: 'ticktick', lifecycle_version: 1, is_active: 0 }, upsert, 'now')
-    expect(result).toEqual([upsert])
+    const row = { id, source: 'ticktick', lifecycle_version: 3, is_active: 1, archive_reason: 'provider_habit_sync_disabled' }
+    const upsert = { sql: 'UPDATE habits SET is_active=1,lifecycle_version=3 WHERE id=?', params: [id] }
+    const plan = planHabitLifecycle((sql, args) => db.allRaw(sql, args), row, upsert, 'now')!
+    db.runInTransaction(() => plan.forEach(op => db.runRaw(op.sql, op.params)))
+    const audit = db.allRaw('SELECT * FROM habit_lifecycle_outbox_audit WHERE habit_id=?', [id])
+    expect(audit.length).toBeGreaterThan(0)
+    expect(audit.every(row => row.reason === 'provider_habit_sync_disabled')).toBe(true)
   })
 })

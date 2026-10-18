@@ -33,6 +33,7 @@ try:
     from .habit_lifecycle_pull import full_snapshot, tombstone_payload, habit_event_payload
     from .domain.habit_lifecycle_service import observe_habit
     from .domain.habit_lifecycle_events import publish as publish_habit_event
+    from .domain.provider_habit_retirement import retire_provider_habits
     from .ticktick_config import begin_habit_round, habit_round_is_current
     from .provider_delta_filter import MissingProviderFingerprintError, classify_provider_records
     from .sync_constants import PULL_LIMIT_DEFAULT, PULL_LIMIT_MAX, TICKTICK_POLL_INTERVAL_SEC
@@ -61,6 +62,7 @@ except (ImportError, ValueError):
     from habit_lifecycle_pull import full_snapshot, tombstone_payload, habit_event_payload
     from domain.habit_lifecycle_service import observe_habit
     from domain.habit_lifecycle_events import publish as publish_habit_event
+    from domain.provider_habit_retirement import retire_provider_habits
     from ticktick_config import begin_habit_round, habit_round_is_current
     from provider_delta_filter import MissingProviderFingerprintError, classify_provider_records
     from sync_constants import PULL_LIMIT_DEFAULT, PULL_LIMIT_MAX, TICKTICK_POLL_INTERVAL_SEC
@@ -114,6 +116,8 @@ TICKTICK_TABLES = {"tasks", "habits", "habit_checkins"}
 # 保留名称以兼容旧诊断/测试导入；当前任务同步不再静默跳过官方项目。
 SKIPPED_TICKTICK_PROJECT_IDS = frozenset()
 TICKTICK_PULL_REQUEST_BUDGET = 20
+TICKTICK_COMPLETED_PAGE_LIMIT = 10
+TICKTICK_STAGING_MAX_AGE_SECONDS = 60
 TICKTICK_DEGRADED_COOLDOWN_SECONDS = 5 * 60
 SYNC_DIRECTION_CONTRACTS = (
     ("client", "client_to_server"),
@@ -239,6 +243,8 @@ class SyncHub:
             conn.close()
         completed = 0
         for user_id in user_ids:
+            with self._transact() as conn:
+                retire_provider_habits(conn, self.db, user_id, _now())
             with self._transact() as conn:
                 done = conn.execute("SELECT 1 FROM server_sync_migrations WHERE user_id=? AND migration_key='core-version-backfill-v1'", (user_id,)).fetchone()
             if done:
@@ -752,7 +758,7 @@ class SyncHub:
         filtered["user_id"] = user_id
         if "created_at" in columns and not filtered.get("created_at"):
             filtered["created_at"] = _now()
-        if "updated_at" in columns:
+        if "updated_at" in columns and not (table == "habits" and filtered.get("updated_at")):
             filtered["updated_at"] = _now()
         return filtered, []
 
@@ -1577,7 +1583,7 @@ class SyncHub:
             change_id = op.get("change_id") or op.get("op_id")
             device_id = op.get("device_id")
             operation = op.get("operation", "upsert")
-            
+
             # 只接受 payload 格式，不兼容 records 数组
             single_record = op.get("record") or op.get("payload")
             if not single_record or not isinstance(single_record, dict):
@@ -1610,7 +1616,7 @@ class SyncHub:
                     "reason": "account_scoped_config",
                 })
                 continue
-            
+
             management_owned = {"management_plans", "management_plan_revisions",
                                 "management_plan_bindings", "management_plan_change_log"}
             if table in {"goals", "rewards", "reward_fragments", "reward_source_bindings", "external_rewards", "user_wallets", "wallet", "wallets", "flash_task_recommendations"} | management_owned:
@@ -1981,7 +1987,7 @@ class SyncHub:
             if table == "tasks":
                 tid = str(rec.get("id", ""))
                 raw_project_id = rec.get("project_id") or rec.get("projectId")
-                
+
                 # 1. 优先从 rec.raw_json 恢复
                 if not raw_project_id and rec.get("raw_json"):
                     try:
@@ -1990,7 +1996,7 @@ class SyncHub:
                         raw_project_id = raw_data.get("projectId") or raw_data.get("project_id")
                     except Exception:
                         pass
-                
+
                 # 2. 如果还没有，从数据库查询恢复
                 if not raw_project_id:
                     with self._conn() as conn:
@@ -2011,7 +2017,7 @@ class SyncHub:
                         user_id, tid, sorted(rec.keys()),
                     )
                     return {"table": table, "record_id": tid, "ok": False, "error": "missing_project_id"}
-                
+
                 project_id = str(raw_project_id)
                 if not tid:
                     logger.warning(
@@ -2152,7 +2158,7 @@ class SyncHub:
             import sys
             sys.path.append(os.path.dirname(__file__))
             from store import ServerSleepStore
-            
+
         temp_store = ServerSleepStore()
         balance = temp_store.get_user_wallet_balance(user_id)
 
@@ -2551,7 +2557,7 @@ class SyncHub:
             "elapsed_ms": None,
             "merged_count": 0,
             "tasks": {},
-            "habits": {},
+            "habits": {"status": "disabled", "reason": "provider_habit_sync_disabled"},
             "errors": [],
             "provider_observed_at": None,
             "last_success_at": self._ticktick_last_success_at(user_id),
@@ -2559,6 +2565,11 @@ class SyncHub:
             "transport_mode": "direct",
             "failure_stage": None,
         }
+        try:
+            with self._transact() as conn:
+                diagnostics["habits"] = retire_provider_habits(conn, self.db, user_id, _now())
+        except Exception as exc:
+            diagnostics["habits"] = {"status": "degraded", "reason": type(exc).__name__}
         logger.info("[ProviderReconcile] start request_id=%s user_id=%s", request_id, user_id)
         if request_id:
             log_event(logger, trace_id=request_id, job_id=job_id, user_id=user_id,
@@ -2618,28 +2629,11 @@ class SyncHub:
                 diagnostics["errors"].append(error)
                 diagnostics["failure_stage"] = diagnostics["tasks"].get("failure_stage") if isinstance(diagnostics["tasks"], dict) else "task_pull"
                 logger.warning("[ProviderReconcile] tasks failed request_id=%s user_id=%s error=%s", request_id, user_id, error)
-            try:
-                logger.info("[ProviderReconcile] habits start request_id=%s user_id=%s", request_id, user_id)
-                diagnostics["habits"] = await self._pull_habits(client, user_id)
-                if not diagnostics["habits"].get("complete"):
-                    diagnostics["ok"] = False
-                    diagnostics["status"] = "error"
-                    diagnostics["errors"].append("habits:incomplete_snapshot")
-                changed = True
-                logger.info("[ProviderReconcile] habits finish request_id=%s user_id=%s stats=%s", request_id, user_id, diagnostics["habits"])
-            except Exception as e:
-                error = f"habits:{getattr(e, 'pull_code', type(e).__name__)}"
-                diagnostics["habits"] = getattr(e, "diagnostics", diagnostics["habits"])
-                diagnostics["ok"] = False
-                diagnostics["status"] = "error"
-                diagnostics["errors"].append(error)
-                logger.warning("[ProviderReconcile] habits failed request_id=%s user_id=%s error=%s", request_id, user_id, error)
-
         changed = bool((diagnostics.get("tasks") or {}).get("published_upserts") or (diagnostics.get("tasks") or {}).get("deleted_tasks"))
         if changed:
-            self._notify_clients(["tasks", "habits", "habit_checkins", "reward_ledger"])
+            self._notify_clients(["tasks"], user_id)
         merged_count = 0
-        for key in ("tasks", "habits"):
+        for key in ("tasks",):
             value = diagnostics.get(key) or {}
             if isinstance(value, dict):
                 merged_count += sum(
@@ -2724,7 +2718,7 @@ class SyncHub:
     async def _pull_tasks_impl(self, client: "TickTickClient", user_id: int, stats: dict, publish: bool = True):
         start_date = self._get_checklist_sync_start_date(user_id)
         async def provider_get(read):
-            remaining = TICKTICK_PULL_REQUEST_BUDGET - stats["provider_requests"]
+            remaining = stats["request_budget"] - stats["provider_requests"]
             if remaining <= 0:
                 stats["request_budget_exceeded"] = True
                 raise ValueError("provider_request_budget_exhausted")
@@ -2769,6 +2763,11 @@ class SyncHub:
             active_projects.append({"id": "inbox", "name": "收集箱", "_inbox": True})
         if inbox_enabled:
             active_projects.sort(key=lambda project: str(project.get("id", "")).lower() != "inbox")
+        # 每个 GET 最多重试一次；在读取项目列表后按真实项目数预留完整快照预算。
+        stats["request_budget"] = max(
+            TICKTICK_PULL_REQUEST_BUDGET,
+            2 * (1 + len(active_projects) + TICKTICK_COMPLETED_PAGE_LIMIT),
+        )
 
         # 1. 查询本地数据库中当前属于该用户的未完成（status=0）任务的 id
         db_active_tids = set()
@@ -2866,6 +2865,10 @@ class SyncHub:
                         "modifiedTime": t.get("modifiedTime", ""),
                         **{k: v for k, v in normalized_task.items() if k not in {"id", "title", "priority", "status", "tags"}},
                     }
+                    snapshot_fingerprints[tid] = {
+                        "id": tid, "status": 0, "etag": task_payload.get("etag", ""),
+                        "modified": task_payload.get("modifiedTime", ""),
+                    }
                     try:
                         delta = classify_provider_records([task_payload], task_fingerprints, "task")
                     except MissingProviderFingerprintError as e:
@@ -2900,7 +2903,7 @@ class SyncHub:
                 )
 
         for index, project in enumerate(active_projects):
-            if stats["provider_requests"] >= TICKTICK_PULL_REQUEST_BUDGET:
+            if stats["provider_requests"] >= stats["request_budget"]:
                 stats["request_budget_exceeded"] = True
                 stats["project_budget_truncated"].extend(
                     str(item.get("id", ""))
@@ -2927,14 +2930,17 @@ class SyncHub:
 
         completed_today_tids = set()
         try:
-            if not stats["failure_stage"]:
-                stats["failure_stage"] = "completed_tasks"
             utc_start = start_date.utc_start_for_ticktick_completed
             completed = []
             continuation = None
             seen_continuations = set()
             seen_records = set()
+            completed_pages = 0
+            if not stats["failure_stage"]:
+                stats["failure_stage"] = "completed_tasks"
             while True:
+                if completed_pages >= TICKTICK_COMPLETED_PAGE_LIMIT:
+                    raise ValueError("completed_page_limit_exceeded")
                 if continuation is None:
                     page = await provider_get(lambda: client.get_completed_tasks(utc_start))
                 else:
@@ -2956,6 +2962,7 @@ class SyncHub:
                     raise ValueError("completed_page_no_progress")
                 seen_records.update(page_keys)
                 completed.extend(page_records)
+                completed_pages += 1
                 if next_page is None:
                     break
                 continuation = next_page
@@ -2999,6 +3006,10 @@ class SyncHub:
                         "modifiedTime": t.get("modifiedTime", local_snapshot.get("source_modified_time", "")),
                         **{k: v for k, v in normalized_task.items() if k not in {"id", "title", "priority", "status", "tags"}},
                     }
+                    snapshot_fingerprints[tid] = {
+                        "id": tid, "status": 2, "etag": task_payload.get("etag", ""),
+                        "modified": task_payload.get("modifiedTime", ""),
+                    }
                     try:
                         delta = classify_provider_records([task_payload], task_fingerprints, "task")
                     except MissingProviderFingerprintError as e:
@@ -3033,6 +3044,12 @@ class SyncHub:
             and not stats["active_item_errors"]
             and not stats["completed_item_errors"]
         )
+        if snapshot_complete:
+            digest_input = [snapshot_fingerprints[key] for key in sorted(snapshot_fingerprints)]
+            stats["snapshot_digest"] = hashlib.sha256(
+                json.dumps(digest_input, ensure_ascii=False, sort_keys=True).encode("utf-8")
+            ).hexdigest()
+            stats["staged_at"] = datetime.now(CST).isoformat(timespec="seconds")
         if snapshot_complete and publish:
             # 完成态会触发奖励副作用，只能在完整快照闸门后发布。
             for tid, task_payload in staged_completed_tasks.items():

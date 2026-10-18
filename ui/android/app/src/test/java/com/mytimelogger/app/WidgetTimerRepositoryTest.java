@@ -32,7 +32,7 @@ public class WidgetTimerRepositoryTest {
         assertEquals("my_time_logger.db", WidgetTimerRepository.DATABASE_NAME);
         assertTrue(sql[0].contains("WHERE is_active = 1"));
         assertTrue(sql[0].contains("ORDER BY sort_order"));
-        assertTrue(sql[0].contains("LIMIT 15"));
+        assertFalse(sql[0].contains("LIMIT"));
         assertEquals(1, categories.size());
         assertEquals(7L, categories.get(0).id);
         assertEquals("副业研发", categories.get(0).name);

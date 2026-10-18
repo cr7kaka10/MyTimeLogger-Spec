@@ -6,13 +6,14 @@ import { normalizeHabitEdits } from '../models/HabitEdits'
 describe('local habit edits', () => {
   it('normalizes names and rejects untrusted keys and invalid values', () => {
     expect(normalizeHabitEdits({ title: '  读书  ' })).toEqual({ name: '读书' })
-    for (const fields of [{ source: 'local' }, { is_active: 0 }, { name: '  ' }, { sort_order: NaN }, { name: 'a', title: 'b' }]) {
+    for (const fields of [{ source: 'local' }, { is_active: 0 }, { difficulty: 'hard' }, { name: '  ' }, { sort_order: NaN }, { name: 'a', title: 'b' }]) {
       expect(() => normalizeHabitEdits(fields as any)).toThrow()
     }
   })
   it('edits and soft deletes with stable identity, preserving history and queue', () => {
     const db = new Database(createBetterSqliteAdapter())
     const id = db.addHabit('读书')
+    expect(db.getRecordById('habits', id)).toMatchObject({ difficulty: 'easy', repeat_rule: 'FREQ=DAILY', category_id: null })
     db.toggleCheckin(id, '2026-09-22')
     db.updateHabit(id, { name: '阅读', repeat_rule: 'FREQ=DAILY' })
     expect(db.getRecordById('habits', id)).toMatchObject({ name: '阅读', source: 'local' })

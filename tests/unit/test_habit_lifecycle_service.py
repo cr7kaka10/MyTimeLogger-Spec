@@ -5,6 +5,7 @@ from server.ticktick_config import begin_habit_round, TickTickSettings
 from server.domain.habit_lifecycle_service import observe_habit
 from server.domain.habit_lifecycle_delete import delete_habit
 from server.domain.habit_lifecycle_restore import restore_habit
+from server.domain.provider_habit_retirement import retire_provider_habits
 from server.habit_lifecycle_pull import full_snapshot
 from tests.unit.test_habit_local_reward_management import store
 from tests.unit.test_habit_lifecycle_snapshot import CONTRACT
@@ -37,3 +38,20 @@ def test_archive_delete_full_snapshot_and_versioned_restore(store):
         assert restored > deleted
         assert conn.execute('SELECT COUNT(*) FROM server_habit_tombstones').fetchone()[0] == 0
         assert conn.execute("SELECT restored_version FROM server_habits WHERE id='p'").fetchone()[0] == restored
+
+
+def test_provider_habit_retirement_is_idempotent_and_preserves_history(store):
+    db = ServerDBWrapper(); db.log_path = store.db_path
+    with store._transact() as conn:
+        conn.execute("UPDATE server_habits SET source='ticktick' WHERE id='local_h'")
+        conn.execute("INSERT INTO server_habit_checkins(id,user_id,habit_id,status,updated_at) VALUES('c',1,'local_h',2,'now')")
+        before_checkins = conn.execute("SELECT COUNT(*) FROM server_habit_checkins").fetchone()[0]
+        first = retire_provider_habits(conn, db, 1, '2026-09-23 23:30:00')
+        row = conn.execute("SELECT is_active,archive_reason,lifecycle_version FROM server_habits WHERE id='local_h'").fetchone()
+        assert first['retired'] == 1 and first['remaining'] == 0
+        assert tuple(row[:2]) == (1, 'provider_habit_sync_disabled')
+        assert row[2] == first['boundary_version'] > 0
+        assert conn.execute("SELECT COUNT(*) FROM server_habit_checkins").fetchone()[0] == before_checkins
+    with store._transact() as conn:
+        second = retire_provider_habits(conn, db, 1, '2026-09-23 23:31:00')
+        assert second['retired'] == 0 and second['boundary_version'] == 0

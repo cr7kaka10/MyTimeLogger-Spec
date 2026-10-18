@@ -35,3 +35,26 @@ def test_rest_local_edit_archive_and_provider_protection(store):
         conn.execute("UPDATE server_habits SET source='ticktick' WHERE id='local_h'")
     with pytest.raises(ValueError, match='provider_habit_readonly'):
         store.update_habit(1, 'local_h', name='修改镜像')
+
+
+def test_local_habit_schedule_category_sync_is_last_write_wins(store):
+    db = ServerDBWrapper(); db.log_path = store.db_path
+    hub = SyncHub(db)
+    latest = dict(id='local_h', name='工作日阅读', source='local', category_id=7,
+                  repeat_rule='FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR', updated_at='2026-09-24 12:00:00')
+    result = asyncio.run(hub.handle_push([
+        dict(table='habits', change_id='latest', record=latest)
+    ], 1, 'core'))
+    assert result['accepted'] == 1
+    stale = {**latest, 'name': '旧设备覆盖', 'category_id': None,
+             'repeat_rule': 'FREQ=DAILY', 'updated_at': '2026-09-23 12:00:00'}
+    result = asyncio.run(hub.handle_push([
+        dict(table='habits', change_id='stale', record=stale)
+    ], 1, 'core'))
+    assert result['accepted'] == 0
+    assert result['operation_results'][0]['reason'] == 'stale_habit_version'
+    with store._connect() as conn:
+        row = conn.execute(
+            "SELECT name,category_id,repeat_rule,source,updated_at FROM server_habits WHERE user_id=1 AND id='local_h'"
+        ).fetchone()
+    assert tuple(row) == ('工作日阅读', 7, 'FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR', 'local', '2026-09-24 12:00:00')

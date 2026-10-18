@@ -11,6 +11,7 @@ import com.getcapacitor.BridgeActivity;
 public class MainActivity extends BridgeActivity {
     private SqliteBridge sqliteBridge;
     private WidgetTimerBridge widgetTimerBridge;
+    private SleepAutomationBridge sleepAutomationBridge;
 
     @Override protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -25,6 +26,8 @@ public class MainActivity extends BridgeActivity {
             new WidgetTimerRuntimeStore(getApplicationContext()));
         WidgetTimerBridge.attach(widgetTimerBridge);
         bridge.getWebView().addJavascriptInterface(widgetTimerBridge, WidgetTimerBridge.JAVASCRIPT_NAME);
+        sleepAutomationBridge = new SleepAutomationBridge(this);
+        bridge.getWebView().addJavascriptInterface(sleepAutomationBridge, SleepAutomationBridge.JAVASCRIPT_NAME);
         dispatchWidgetRoute(getIntent());
     }
 
@@ -45,6 +48,7 @@ public class MainActivity extends BridgeActivity {
     @Override public void onDestroy() {
         if (bridge != null) bridge.getWebView().removeJavascriptInterface(SqliteBridge.JAVASCRIPT_NAME);
         if (bridge != null) bridge.getWebView().removeJavascriptInterface(WidgetTimerBridge.JAVASCRIPT_NAME);
+        if (bridge != null) bridge.getWebView().removeJavascriptInterface(SleepAutomationBridge.JAVASCRIPT_NAME);
         if (widgetTimerBridge != null) widgetTimerBridge.close();
         if (sqliteBridge != null) sqliteBridge.close();
         super.onDestroy();

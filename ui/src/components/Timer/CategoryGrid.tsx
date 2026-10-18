@@ -9,12 +9,13 @@ interface CategoryGridProps {
   categories: Category[]
   currentCategory: Category | null
   timerState: TimerState
+  isPaused?: boolean
   commandsEnabled?: boolean
   onStart: (id: number) => void
   onSwitch?: (id: number) => void
 }
 
-export const CategoryGrid = memo(({ categories, currentCategory, timerState, commandsEnabled = true, onStart, onSwitch }: CategoryGridProps) => {
+export const CategoryGrid = memo(({ categories, currentCategory, timerState, isPaused = false, commandsEnabled = true, onStart, onSwitch }: CategoryGridProps) => {
   const sortedCategories = useMemo(() => [...categories]
     .filter(category => (category as Category & { is_active?: number }).is_active !== 0)
     .sort((a, b) => a.sort_order - b.sort_order), [categories])
@@ -27,7 +28,8 @@ export const CategoryGrid = memo(({ categories, currentCategory, timerState, com
     (categoryId: number) => () => {
       // 休息状态下不响应点击
       if (!commandsEnabled || isBreaking) return
-      if (isTimerCategoryGridBlocked(currentCategory?.id, categoryId, currentCategory?.name, timerState)) return
+      const target = categories.find(category => category.id === categoryId)
+      if (isTimerCategoryGridBlocked(currentCategory?.id, categoryId, currentCategory?.name, timerState, target?.name, isPaused)) return
       
       // 如果点击的是当前分类，不触发任何操作
       if (categoryId === currentCategory?.id) return
@@ -40,7 +42,7 @@ export const CategoryGrid = memo(({ categories, currentCategory, timerState, com
         onStart(categoryId)
       }
     },
-    [commandsEnabled, isBreaking, currentCategory, timerState, onSwitch, onStart]
+    [commandsEnabled, isBreaking, currentCategory, timerState, isPaused, categories, onSwitch, onStart]
   )
   
   return (
@@ -51,7 +53,7 @@ export const CategoryGrid = memo(({ categories, currentCategory, timerState, com
         </div>
       ) : null}
       {sortedCategories.map((category) => {
-        const focusBlocked = isTimerCategoryGridBlocked(currentCategory?.id, category.id, currentCategory?.name, timerState)
+        const focusBlocked = isTimerCategoryGridBlocked(currentCategory?.id, category.id, currentCategory?.name, timerState, category.name, isPaused)
         const disabled = !commandsEnabled || isBreaking || focusBlocked
         return (
           <button

@@ -61,6 +61,7 @@ export interface UseSettingsReturn {
   loginEnvironment: (username: string, password: string, environment?: EnvironmentName) => Promise<{ success: boolean; error?: string }>
   clearActiveSession: () => Promise<void>
   logoutActiveSession: () => Promise<void>
+  markEnvironmentUnauthorized: (environment: EnvironmentName) => void
   activeEnvironment: EnvironmentName
   switchEnvironment: (environment: EnvironmentName) => Promise<{ success: boolean; error?: string }>
   selectedEnvironment: EnvironmentName
@@ -94,6 +95,7 @@ const defaultSettings: SystemSettings = {
   atimelogger_unmatched_categories: '[]',
   sleep_sync_enabled: true,
   sleep_sync_interval: 30,
+  sleep_automation_consent: false,
   ai_text_model: '',
   ai_text_api_key: '',
   ai_text_endpoint: '',
@@ -110,6 +112,9 @@ const defaultSettings: SystemSettings = {
   ledger_format_task_success: '√ 任务 {title}',
   ledger_format_task_fail: '× 任务 {title}',
 }
+
+export const normalizeSleepAutomationConsent = (value: unknown): boolean =>
+  value === true || value === 1 || String(value ?? '').trim().toLowerCase() === 'true' || String(value ?? '').trim() === '1'
 
 const configNumber = (cfg: Record<string, any>, key: string, fallback: number): number => {
   const value = cfg[key]
@@ -336,9 +341,14 @@ export const useSettings = (): UseSettingsReturn => {
     db.setConfig(environmentKey(activeEnvironment, 'username'), '')
     db.setConfig(environmentKey(activeEnvironment, 'verified_user_id'), '')
     await refreshSyncConfiguration(db)
+    window.dispatchEvent(new Event('mtl:auth-cleared'))
     if (selectedEnvironment === activeEnvironment) setSelectedEnvironmentProfile(previous => ({ ...previous, authToken: '', username: '', verifiedUserId: '' }))
     setConnectionStatuses(previous => ({ ...previous, [activeEnvironment]: 'unauthorized' }))
   }, [activeEnvironment, selectedEnvironment])
+
+  const markEnvironmentUnauthorized = useCallback((environment: EnvironmentName) => {
+    setConnectionStatuses(previous => ({ ...previous, [environment]: 'unauthorized' }))
+  }, [])
 
   const logoutActiveSession = useCallback(async () => {
     const db = await getDatabase()
@@ -425,6 +435,7 @@ export const useSettings = (): UseSettingsReturn => {
         atimelogger_unmatched_categories: '[]',
         sleep_sync_enabled: true,
         sleep_sync_interval: configNumber(cfg, 'sleep_sync_interval', 30),
+        sleep_automation_consent: normalizeSleepAutomationConsent(cfg['sleep_automation_consent']),
         ai_text_model: cfg['ai_text_model'] || '',
         ai_text_api_key: '',
         ai_text_endpoint: cfg['ai_text_endpoint'] || '',
@@ -475,7 +486,15 @@ export const useSettings = (): UseSettingsReturn => {
   }, [selectedEnvironment])
 
   const updateSetting = useCallback(async (key: string, value: string | number | boolean) => {
-    const db = await getDatabase()
+    const isSleepConsent = key === 'sleep_automation_consent'
+    if (isSleepConsent) setSettings(previous => ({ ...previous, sleep_automation_consent: normalizeSleepAutomationConsent(value) }))
+    let db
+    try { db = await getDatabase() }
+    catch {
+      if (isSleepConsent) setRefreshTrigger(previous => previous + 1)
+      return { ok: false, error: '设置保存失败，请重试' }
+    }
+    try {
       let finalVal = String(value)
       const timeKeys = ['study_time_min', 'study_time_max', 'short_break_duration', 'long_break_duration', 'long_break_threshold', 'input_output_countdown_min']
       if (timeKeys.includes(key)) {
@@ -488,6 +507,10 @@ export const useSettings = (): UseSettingsReturn => {
         syncAudioConfig(audioConfigFromSettings(next))
       }
       setRefreshTrigger(prev => prev + 1)
+    } catch {
+      if (isSleepConsent) setRefreshTrigger(previous => previous + 1)
+      return { ok: false, error: '设置保存失败，请重试' }
+    }
     if (!shouldReloadHotkeysForSetting(key)) return { ok: true }
     const result: any = await getElectronApi()?.reloadHotkeys?.()
     const registration = result?.[key === 'shortcut_toggle_timer' ? 'timer' : 'minimize']
@@ -595,6 +618,7 @@ export const useSettings = (): UseSettingsReturn => {
       loginEnvironment,
       clearActiveSession,
       logoutActiveSession,
+      markEnvironmentUnauthorized,
       activeEnvironment,
       switchEnvironment,
       selectedEnvironment,
@@ -602,6 +626,6 @@ export const useSettings = (): UseSettingsReturn => {
       selectEnvironment,
       updateEnvironmentSetting,
     }),
-    [settings, theme, updateSetting, toggleTheme, syncNow, exportConfig, importConfig, connectionStatus, profileReady, testConnection, verifyActiveSession, loginEnvironment, clearActiveSession, logoutActiveSession, activeEnvironment, switchEnvironment, selectedEnvironment, selectedEnvironmentProfile, selectEnvironment, updateEnvironmentSetting],
+    [settings, theme, updateSetting, toggleTheme, syncNow, exportConfig, importConfig, connectionStatus, profileReady, testConnection, verifyActiveSession, loginEnvironment, clearActiveSession, logoutActiveSession, markEnvironmentUnauthorized, activeEnvironment, switchEnvironment, selectedEnvironment, selectedEnvironmentProfile, selectEnvironment, updateEnvironmentSetting],
   )
 }

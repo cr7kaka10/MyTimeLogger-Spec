@@ -11,13 +11,16 @@ import { setTimerRemindersService } from './platform/timerReminders'
 import { setTimerDeviceRuntimeState } from './hooks/useTimer'
 import { createCapacitorAppLifecycleService, createCapacitorNetworkLifecycleService, installAndroidSyncLifecycle, installAndroidTimerWidgetLifecycle } from './platform/lifecycle'
 import { installNotificationRuntime } from './platform/notificationRuntime'
+import { createSleepAutomationConfigSync } from './platform/sleepAutomation'
 
 type BootstrapState = 'loading' | 'ready' | 'bootstrap_credentials_failed' | 'bootstrap_database_failed'
 let removeKeyboardListeners = () => {}
 let removeWidgetLifecycle = () => {}
 let removeSyncLifecycle = () => {}
+let removeSleepConfigSync = () => {}
 
 export async function bootstrapApplication(loadCredentials: () => Promise<void> = async () => {}): Promise<void> {
+  ;(globalThis as any).__MTL_EXTENDED_FOCUS_GROUPS__ = import.meta.env.VITE_EXTENDED_FOCUS_GROUPS !== 'false'
   const runtime = detectPlatformRuntime()
   removeKeyboardListeners(); removeKeyboardListeners = installCapacitorKeyboard(runtime)
   setNativeHttpTransport(createCapacitorNativeHttpService(runtime))
@@ -26,6 +29,7 @@ export async function bootstrapApplication(loadCredentials: () => Promise<void> 
   setTimerDeviceRuntimeState(runtimeState)
   removeWidgetLifecycle()
   removeSyncLifecycle(); removeSyncLifecycle = () => {}
+  removeSleepConfigSync(); removeSleepConfigSync = () => {}
   const appLifecycle = createCapacitorAppLifecycleService(runtime)
   removeWidgetLifecycle = installAndroidTimerWidgetLifecycle(
     appLifecycle,
@@ -48,6 +52,13 @@ export async function bootstrapApplication(loadCredentials: () => Promise<void> 
       reason => syncNow({ reason }),
     )
     await installNotificationRuntime(runtime, await getDatabase(), appLifecycle)
+    if (runtime === 'capacitor-android') {
+      const syncSleep = createSleepAutomationConfigSync()
+      const pull = () => { void getDatabase().then(db => { const cfg = db.getAllConfig(); const active = cfg.active_environment || 'development'; const prefix = `env_${active}_`; const url = cfg[`${prefix}server_url`] || ''; const token = cfg[`${prefix}auth_token`] || ''; syncSleep(url && token ? { url, token } : null) }) }
+      const timer = window.setInterval(pull, 1000)
+      window.addEventListener('mtl:auth-cleared', pull); pull()
+      removeSleepConfigSync = () => { window.clearInterval(timer); window.removeEventListener('mtl:auth-cleared', pull) }
+    }
   } catch {
     throw new Error('bootstrap_database_failed')
   }

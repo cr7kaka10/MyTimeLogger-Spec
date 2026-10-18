@@ -169,7 +169,7 @@ const SLEEP_DATA_COLUMNS = new Set([
   'analysis_report', 'analysis_html', 'official_advice',
   'morning_diary', 'evening_diary', 'morning_diary_written_at', 'evening_diary_written_at', 'report_status',
   'full_report_state', 'tracked_duration_seconds',
-  'source', 'synced_at', 'sync_status', 'sync_error', 'updated_at', 'pushed_at',
+  'source', 'synced_at', 'sync_status', 'sync_error', 'image_uploaded_at', 'updated_at', 'pushed_at',
 ])
 
 export type SqlDB = any  // Electron better-sqlite3 bridge 或 Android 原生 SQLite 适配器
@@ -1236,7 +1236,7 @@ export class Database {
 
   getHabits(): Habit[] {
     // is_active = 0 表示正常（与 TickTick 一致），is_active = 1 表示归档
-    return this._all('SELECT * FROM habits WHERE is_active = 0 ORDER BY sort_order') as Habit[]
+    return this._all("SELECT * FROM habits WHERE is_active=0 AND source='local' ORDER BY sort_order") as Habit[]
   }
 
   getArchivedLocalHabits(): Habit[] {
@@ -1246,12 +1246,12 @@ export class Database {
   getLocalHabitDetails(id: string | number): { habit: Habit; checkins: (HabitCheckin & { date: string })[]; category: string | null } | undefined {
     const habit = this._get("SELECT * FROM habits WHERE id=? AND source='local'", [id]) as Habit | undefined
     if (!habit) return undefined
-    const category = habit.category_id == null ? null : this._get('SELECT name FROM categories WHERE id=?', [habit.category_id])?.name
+    const category = habit.category_id == null ? null : this._get('SELECT name FROM categories WHERE id=? AND is_active=1', [habit.category_id])?.name
     const checkins = this._all('SELECT * FROM habit_checkins WHERE habit_id=? ORDER BY date DESC LIMIT 30', [id]) as (HabitCheckin & { date: string })[]
     return { habit, checkins, category: category ?? null }
   }
 
-  addHabit(name: string, icon = '✅', difficulty = 'easy'): string {
+  addHabit(name: string, icon = '✅', fields: Pick<HabitEdits, 'repeat_rule' | 'category_id'> = {}): string {
     const now = this._now()
     const normalizedName = name.trim()
     if (!normalizedName) throw new Error('习惯名称不能为空')
@@ -1259,9 +1259,9 @@ export class Database {
     const order = ((row as any)?.m ?? 0) + 1
     const localId = 'local_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8)
     this._run(
-      `INSERT INTO habits (id, name, icon, color, sort_order, is_active, difficulty, source, created_at, updated_at)
-       VALUES (?,?,?,'#A3BE8C',?,0,?, 'local', ?,?)`,  // is_active = 0 表示正常
-      [localId, normalizedName, icon, order, difficulty, now, now],
+      `INSERT INTO habits (id, name, icon, color, category_id, sort_order, is_active, difficulty, repeat_rule, source, created_at, updated_at)
+       VALUES (?,?,?,'#A3BE8C',?,?,0,?,?,'local',?,?)`,
+      [localId, normalizedName, icon, fields.category_id ?? null, order, 'easy', fields.repeat_rule || 'FREQ=DAILY', now, now],
     )
     this._afterWrite('habits', localId)
     return localId
@@ -1873,9 +1873,10 @@ export class Database {
     return total
   }
 
-  getDiaryForDate(date: string): { morning_diary?: string; evening_diary?: string; morning_diary_written_at?: string; evening_diary_written_at?: string; report_status: number; morning_diary_reward_status?: string; morning_diary_reward_amount?: number; morning_diary_reward_reason?: string; evening_diary_reward_status?: string; evening_diary_reward_amount?: number; evening_diary_reward_reason?: string } | null {
+  getDiaryForDate(date: string): { morning_diary?: string; evening_diary?: string; morning_diary_written_at?: string; evening_diary_written_at?: string; image_uploaded_at?: string; report_status: number; source?: string; sync_status?: string; full_report_state?: string; report_completed_at?: string; morning_diary_reward_status?: string; morning_diary_reward_amount?: number; morning_diary_reward_reason?: string; evening_diary_reward_status?: string; evening_diary_reward_amount?: number; evening_diary_reward_reason?: string } | null {
     const row = this._get(
       `SELECT h.morning_diary,h.evening_diary,h.morning_diary_written_at,h.evening_diary_written_at,h.report_status,
+              h.source,h.sync_status,h.full_report_state,h.image_uploaded_at,s.report_completed_at,
               s.morning_diary_reward_status,s.morning_diary_reward_amount,s.morning_diary_reward_reason,
               s.evening_diary_reward_status,s.evening_diary_reward_amount,s.evening_diary_reward_reason
        FROM huawei_sleep_data h LEFT JOIN sleep_score_settlements s ON s.sleep_date=h.date
@@ -1889,6 +1890,11 @@ export class Database {
       morning_diary_written_at: (row as any).morning_diary_written_at || undefined,
       evening_diary_written_at: (row as any).evening_diary_written_at || undefined,
       report_status: typeof (row as any).report_status === 'number' ? (row as any).report_status : 0,
+      source: (row as any).source || undefined,
+      sync_status: (row as any).sync_status || undefined,
+      full_report_state: (row as any).full_report_state || undefined,
+      image_uploaded_at: (row as any).image_uploaded_at || undefined,
+      report_completed_at: (row as any).report_completed_at || undefined,
       morning_diary_reward_status: (row as any).morning_diary_reward_status || undefined,
       morning_diary_reward_amount: Number((row as any).morning_diary_reward_amount || 0),
       morning_diary_reward_reason: (row as any).morning_diary_reward_reason || undefined,
@@ -2142,6 +2148,41 @@ export class Database {
     const percent = target > 0 ? Math.min(100, Math.round((current / target) * 100)) : 0
 
     return { current, target, percent }
+  }
+
+  getGoalProgressForDate(goal: Goal, date: string): { current: number; target: number; percent: number } {
+    const categoryIds = goal.category_ids?.length ? goal.category_ids : (goal.category_id == null ? [] : [goal.category_id])
+    if (categoryIds.length === 0) return { current: 0, target: goal.target_value, percent: 0 }
+    const placeholders = categoryIds.map(() => '?').join(', ')
+    const aggregate = goal.metric === 'duration' ? 'SUM(net_duration_minutes)' : 'COUNT(*)'
+    const row = this._get(`SELECT ${aggregate} AS val FROM study_sessions WHERE category_id IN (${placeholders}) AND date=?`, [...categoryIds, date]) as any
+    const current = Number(row?.val || 0), target = Number(goal.target_value || 0)
+    return { current, target, percent: target > 0 ? Math.min(100, Math.round((current / target) * 100)) : 0 }
+  }
+
+  getDailyGoalsForDate(date: string): Array<Goal & { current: number; target: number; percent: number }> {
+    const end = `${date} 23:59:59`
+    const goals = this._all(
+      `SELECT * FROM goals WHERE period='daily' AND COALESCE(created_at,'')<=? AND (is_active=1 OR COALESCE(updated_at,'')>?)`,
+      [end, end],
+    ) as Goal[]
+    const bindings = this._all('SELECT goal_id,category_id FROM goal_category_bindings') as Array<{ goal_id: string; category_id: number }>
+    return goals.map(goal => {
+      const category_ids = bindings.filter(binding => String(binding.goal_id) === String(goal.id)).map(binding => Number(binding.category_id))
+      const projected = { ...goal, category_ids: category_ids.length ? category_ids : (goal.category_id == null ? [] : [goal.category_id]) }
+      return { ...projected, ...this.getGoalProgressForDate(projected, date) }
+    })
+  }
+
+  getDailySummaryLedger(date: string): LedgerEntry[] {
+    const sources = ['body_metric_deadline_penalty', 'exercise_diet_penalty', 'goal_reward', 'goal_penalty', 'sleep_settlement_reward', 'sleep_cycle_penalty', 'sleep_deep_penalty', 'sleep_no_sleep_penalty', 'sleep_completion_reward', 'sleep_bedtime_adjustment', 'sleep_diary_completion_reward', 'sleep_morning_diary_reward', 'sleep_evening_diary_reward']
+    const placeholders = sources.map(() => '?').join(',')
+    const compact = date.replace(/-/g, '')
+    return this._all(
+      `SELECT id,amount,source_type,source_id,description,target_date,occurred_at,created_at,updated_at FROM reward_ledger
+       WHERE source_type IN (${placeholders}) AND (target_date=? OR (source_type IN ('goal_reward','goal_penalty') AND source_id LIKE ?)) ORDER BY created_at,id`,
+      [...sources, date, `%${compact}%`],
+    ) as LedgerEntry[]
   }
 
   getCategoryHistory(categoryId: number, metric: 'duration' | 'count', days = 30): Record<string, number> {

@@ -31,13 +31,17 @@ class RewardRebuildError(ValueError):
 class RewardRebuildService:
     FRAGMENT_EVENT_TYPES = frozenset({
         "fragment_acquired", "fragment_expired", "fragment_revoked", "fragment_composed",
+        "fragment_batch_reversed", "fragment_debt_created", "fragment_debt_settled",
     })
     SINGLE_FRAGMENT_EVENT_TYPES = frozenset({
         "fragment_acquired", "fragment_expired", "fragment_revoked",
     })
+    FRAGMENT_STATUSES = frozenset({"active", "consumed", "expired", "revoked"})
     SNAPSHOT_TABLES = (
         "server_reward_ledger", "server_external_rewards", "server_user_wallets",
-        "server_backpack_events", "server_reward_fragments", "server_tasks",
+        "server_backpack_events", "server_reward_fragments",
+        "server_reward_fragment_batches", "server_reward_fragment_contributions",
+        "server_reward_fragment_debts", "server_tasks",
         "server_habits", "server_habit_checkins",
     )
     PROJECTION_TABLES = RewardCandidateBuilder.PROJECTION_TABLES
@@ -82,7 +86,7 @@ class RewardRebuildService:
         self.recover_interrupted_jobs()
 
     @staticmethod
-    def _candidate_error(check, record_id, reference_id=None):
+    def _candidate_error(check, record_id, reference_id=None, **details):
         error = RewardRebuildError("candidate_reference_invalid")
         error.reward_rebuild_details = {
             "check": check,
@@ -90,6 +94,7 @@ class RewardRebuildService:
         }
         if reference_id:
             error.reward_rebuild_details["reference_id_suffix"] = str(reference_id)[-6:]
+        error.reward_rebuild_details.update({key: value for key, value in details.items() if value is not None})
         return error
 
     def _publish_restored_state_in_txn(self, conn, user_id, snapshot, replaced_ids):
@@ -216,7 +221,7 @@ class RewardRebuildService:
         started = time.perf_counter()
         log_event(logger, trace_id=trace_id, job_id=None, user_id=user_id,
                   stage="preview", event="start", outcome="running")
-        parsed = parse_statistics_start_date(start_date, reject_future=True).isoformat()
+        parsed = parse_statistics_start_date(start_date, reject_future=True, allowed_future_days=1).isoformat()
         with self.store._transact() as conn:
             self._backfill_actions(conn, user_id)
             preview = self._preview_in_txn(conn, user_id, parsed)
@@ -260,7 +265,7 @@ class RewardRebuildService:
 
     def start(self, user_id, start_date, preview_hash, trace_id=None):
         trace_id = normalize_trace_id(trace_id)
-        parsed = parse_statistics_start_date(start_date, reject_future=True).isoformat()
+        parsed = parse_statistics_start_date(start_date, reject_future=True, allowed_future_days=1).isoformat()
         now = self.store.reward_wallet_service._now()
         log_event(logger, trace_id=trace_id, job_id=None, user_id=user_id,
                   stage="job_create", event="start", outcome="running", details={"statistics_start_date": parsed})
@@ -329,13 +334,24 @@ class RewardRebuildService:
 
     @staticmethod
     def _replace_rows(conn, table, user_id, rows):
-        conn.execute(f"DELETE FROM {table} WHERE user_id=?", (user_id,))
         for row in rows:
             columns = list(row)
             conn.execute(
                 f"INSERT INTO {table} ({','.join(columns)}) VALUES ({','.join('?' for _ in columns)})",
                 [row[column] for column in columns],
             )
+
+    @classmethod
+    def _projection_fk_violations(cls, conn, user_id):
+        violations = []
+        for row in conn.execute("PRAGMA foreign_key_check").fetchall():
+            table, rowid, parent, fk_id = row
+            if table not in cls.PROJECTION_TABLES:
+                continue
+            owner = conn.execute(f"SELECT user_id FROM {table} WHERE rowid=?", (rowid,)).fetchone()
+            if owner and int(owner[0]) == int(user_id):
+                violations.append({"table": table, "parent": parent, "fk_id": fk_id})
+        return violations
 
     def _restore_snapshot_in_txn(self, conn, user_id, snapshot):
         tables = list(snapshot["tables"])
@@ -483,6 +499,9 @@ class RewardRebuildService:
                 log_event(logger, trace_id=trace_id, job_id=job_id, user_id=user_id,
                           stage="candidate_validate", event="start", outcome="running")
                 candidate = {table: self._rows(candidate_conn, table, user_id) for table in self.PROJECTION_TABLES}
+                if violations := self._projection_fk_violations(candidate_conn, user_id):
+                    raise self._candidate_error("candidate_foreign_key_invalid", violations[0]["table"],
+                                                parent=violations[0]["parent"])
                 ledger_sum = sum(float(row["amount"]) for row in candidate["server_reward_ledger"])
                 wallet = candidate["server_user_wallets"]
                 if not wallet or abs(float(wallet[0]["balance"]) - ledger_sum) > 0.000001:
@@ -528,25 +547,61 @@ class RewardRebuildService:
                     (user_id, *single_fragment_types),
                 ).fetchone()
                 orphan_composed_event = candidate_conn.execute(
-                    """SELECT event.id FROM server_backpack_events event
+                    """SELECT event.id,event.fragment_id,batch.required_units*batch.output_quantity expected_units,
+                              COALESCE(SUM(contribution.units),0) actual_units,batch.provenance_kind
+                       FROM server_backpack_events event
                        LEFT JOIN server_rewards reward ON reward.user_id=event.user_id AND reward.id=event.reward_id
-                       LEFT JOIN server_reward_fragments fragment ON fragment.user_id=event.user_id
-                         AND fragment.reward_id=event.reward_id AND fragment.compose_batch_id=event.fragment_id
-                         AND fragment.status='consumed'
+                       LEFT JOIN server_reward_fragment_batches batch ON batch.user_id=event.user_id
+                         AND batch.reward_id=event.reward_id AND batch.batch_id=event.fragment_id
+                       LEFT JOIN server_reward_fragment_contributions contribution ON contribution.user_id=batch.user_id
+                         AND contribution.batch_id=batch.batch_id
                        LEFT JOIN server_reward_ledger composed_reward ON composed_reward.user_id=event.user_id
-                         AND composed_reward.source_type='reward_buy'
+                         AND composed_reward.id=batch.output_ledger_id AND composed_reward.source_type='reward_buy'
                          AND composed_reward.source_id='unlock:'||event.reward_id||':fragment:'||event.fragment_id
                        WHERE event.user_id=? AND event.event_type='fragment_composed'
-                       GROUP BY event.id,event.quantity,reward.id
-                       HAVING reward.id IS NULL OR MAX(composed_reward.id) IS NULL
-                         OR event.quantity<=0 OR COUNT(fragment.id)<>event.quantity
+                       GROUP BY event.id,event.quantity,reward.id,batch.id
+                       HAVING reward.id IS NULL OR batch.id IS NULL OR MAX(composed_reward.id) IS NULL
+                         OR event.quantity<=0 OR batch.output_quantity<>event.quantity
+                         OR (batch.provenance_kind='exact'
+                           AND COALESCE(SUM(contribution.units),0)<>batch.required_units*batch.output_quantity)
                        LIMIT 1""", (user_id,),
+                ).fetchone()
+                orphan_provenance = candidate_conn.execute(
+                    """SELECT batch.id FROM server_reward_fragment_batches batch
+                       LEFT JOIN server_backpack_events event ON event.user_id=batch.user_id
+                         AND event.event_type='fragment_composed' AND event.fragment_id=batch.batch_id
+                       LEFT JOIN server_reward_ledger ledger ON ledger.user_id=batch.user_id
+                         AND ledger.id=batch.output_ledger_id AND ledger.source_type='reward_buy'
+                       WHERE batch.user_id=? AND (event.id IS NULL OR ledger.id IS NULL) LIMIT 1""", (user_id,),
                 ).fetchone()
                 unknown_fragment_event = candidate_conn.execute(
                     f"""SELECT id FROM server_backpack_events
                        WHERE user_id=? AND event_type GLOB 'fragment_*'
                          AND event_type NOT IN ({fragment_placeholders}) LIMIT 1""",
                     (user_id, *fragment_types),
+                ).fetchone()
+                fragment_statuses = tuple(sorted(self.FRAGMENT_STATUSES))
+                fragment_status_placeholders = ",".join("?" for _ in fragment_statuses)
+                unknown_fragment_status = candidate_conn.execute(
+                    f"""SELECT id FROM server_reward_fragments
+                       WHERE user_id=? AND (status IS NULL OR status NOT IN ({fragment_status_placeholders}))
+                       LIMIT 1""", (user_id, *fragment_statuses),
+                ).fetchone()
+                noncanonical_fragment = candidate_conn.execute(
+                    """SELECT fragment.id FROM server_reward_fragments fragment
+                       JOIN server_rewards reward ON reward.user_id=fragment.user_id
+                         AND reward.id=fragment.reward_id
+                       WHERE fragment.user_id=? AND reward.fulfillment_mode='fragment'
+                         AND fragment.status='active'
+                         AND (fragment.fragment_measure_mode<>'count' OR fragment.progress_units<>1)
+                       LIMIT 1""", (user_id,),
+                ).fetchone()
+                direct_fragment_card = candidate_conn.execute(
+                    """SELECT ledger.id FROM server_reward_ledger ledger
+                       JOIN server_rewards reward ON reward.user_id=ledger.user_id
+                         AND CAST(reward.id AS TEXT)=CAST(ledger.source_id AS TEXT)
+                       WHERE ledger.user_id=? AND ledger.source_type='reward_buy'
+                         AND reward.fulfillment_mode='fragment' LIMIT 1""", (user_id,),
                 ).fetchone()
                 if duplicate:
                     raise self._candidate_error("duplicate_ledger_id", duplicate["id"])
@@ -561,9 +616,23 @@ class RewardRebuildService:
                 if orphan_fragment_event:
                     raise self._candidate_error("orphan_fragment_backpack_event", orphan_fragment_event["id"])
                 if orphan_composed_event:
-                    raise self._candidate_error("invalid_composed_fragment_event", orphan_composed_event["id"])
+                    raise self._candidate_error(
+                        "invalid_composed_fragment_event", orphan_composed_event["id"],
+                        orphan_composed_event["fragment_id"],
+                        expected_units=orphan_composed_event["expected_units"],
+                        actual_units=orphan_composed_event["actual_units"],
+                        provenance_kind=orphan_composed_event["provenance_kind"],
+                    )
+                if orphan_provenance:
+                    raise self._candidate_error("orphan_fragment_provenance", orphan_provenance["id"])
                 if unknown_fragment_event:
                     raise self._candidate_error("unknown_fragment_backpack_event", unknown_fragment_event["id"])
+                if unknown_fragment_status:
+                    raise self._candidate_error("unknown_fragment_status", unknown_fragment_status["id"])
+                if noncanonical_fragment:
+                    raise self._candidate_error("noncanonical_fragment_unit", noncanonical_fragment["id"])
+                if direct_fragment_card:
+                    raise self._candidate_error("fragment_reward_direct_card", direct_fragment_card["id"])
                 replayed_actions = 0
                 skipped_action_ids = {
                     str(item["source_id"]) for item in report["skipped"]
@@ -605,8 +674,22 @@ class RewardRebuildService:
                         "changed_tables": [table for table in sorted(set(before) | set(after)) if before.get(table) != after.get(table)],
                     }
                     raise error
-                for table, rows in candidate.items():
-                    self._replace_rows(conn, table, user_id, rows)
+                for table in reversed(self.PROJECTION_TABLES):
+                    try:
+                        conn.execute(f"DELETE FROM {table} WHERE user_id=?", (user_id,))
+                    except Exception as error:
+                        error.reward_rebuild_details = {"chain": "publish", "check": "projection_delete_failed", "table": table}
+                        raise
+                for table in self.PROJECTION_TABLES:
+                    try:
+                        self._replace_rows(conn, table, user_id, candidate[table])
+                    except Exception as error:
+                        error.reward_rebuild_details = {"chain": "publish", "check": "projection_insert_failed", "table": table}
+                        raise
+                if violations := self._projection_fk_violations(conn, user_id):
+                    error = RewardRebuildError("published_foreign_key_invalid")
+                    error.reward_rebuild_details = {"chain": "publish", "check": "projection_foreign_key_invalid", **violations[0]}
+                    raise error
                 epoch_row = conn.execute("SELECT active_epoch FROM server_reward_rebuild_epochs WHERE user_id=?", (user_id,)).fetchone()
                 epoch = (int(epoch_row["active_epoch"]) if epoch_row else 0) + 1
                 published_version = self.store._record_server_change(

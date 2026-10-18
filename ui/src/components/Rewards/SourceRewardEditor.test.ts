@@ -12,4 +12,6 @@ assert(editor.includes('<RewardAddSheet'), 'item creation and editing reuse the 
 assert(editor.includes('activePieces') && editor.includes('targetPieces'), 'count fragments render as exact piece progress')
 assert(editor.includes('本周期') && editor.includes('expiresAt'), 'period usage and clearing time are visible')
 assert(editor.includes("measureMode === 'percent'"), 'legacy percentage fragments remain renderable')
+assert(editor.includes('历史百分比') && editor.includes('setSheetReward(item)'), 'legacy products expose their mode and an explicit edit path')
+assert(editor.includes('data.convert_fragment_to_count === true'), 'confirmed conversion reaches the update API')
 console.log('source reward editor contracts passed')

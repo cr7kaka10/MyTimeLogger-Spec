@@ -8,7 +8,7 @@ export type NativeNotificationPlugin = {
   createChannel(options: any): Promise<unknown>; schedule(options: any): Promise<unknown>; cancel(options: any): Promise<void>
   addListener(event: 'localNotificationActionPerformed', listener: (action: any) => void): Promise<{ remove(): Promise<void> | void }> | { remove(): Promise<void> | void }
 }
-const routes = new Set<NotificationRoute>(['timer', 'sleep', 'goals', 'rewards', 'backpack', 'settings'])
+const routes = new Set<NotificationRoute>(['timer', 'sleep', 'goals', 'rewards', 'backpack', 'settings', 'exercise'])
 const channels = [
   ['timer', '计时', 5], ['sleep', '睡眠提醒', 5], ['achievements', '目标成就', 4], ['rewards', '金币与奖励', 4], ['account', '账户状态', 4],
 ] as const

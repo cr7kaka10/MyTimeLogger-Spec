@@ -71,7 +71,9 @@ export interface UseTimeBookReturn {
   updateSession: (id: string | number, fields: Partial<SessionRecord>) => void
   saveSession: (data: SessionEditData) => void
   todaySummary: { groupName: string; minutes: number; color: string }[]
-  diary: { morning_diary?: string; evening_diary?: string; morning_diary_written_at?: string; evening_diary_written_at?: string; report_status?: number; morning_diary_reward_status?: string; morning_diary_reward_amount?: number; morning_diary_reward_reason?: string; evening_diary_reward_status?: string; evening_diary_reward_amount?: number; evening_diary_reward_reason?: string } | null
+  diary: { morning_diary?: string; evening_diary?: string; morning_diary_written_at?: string; evening_diary_written_at?: string; image_uploaded_at?: string; report_status?: number; source?: string; sync_status?: string; full_report_state?: string; report_completed_at?: string; morning_diary_reward_status?: string; morning_diary_reward_amount?: number; morning_diary_reward_reason?: string; evening_diary_reward_status?: string; evening_diary_reward_amount?: number; evening_diary_reward_reason?: string } | null
+  dailyGoals: Array<{ id: string | number; title: string; period: string; operator: string; current: number; target: number; rewardCoins: number; penaltyCoins: number }>
+  dailySummaryLedger: Array<{ id: string | number; source_type: string; source_id?: string | number; amount: number; description?: string; occurred_at?: string | null }>
   saveDiary: (type: 'morning' | 'evening', content: string) => void
   sleepStatusMap: Record<string, number>
   syncError: string
@@ -124,6 +126,8 @@ export const useTimeBook = (isActive = true, runtime?: ManagementPlanRuntime): U
   const [availableDates, setAvailableDates] = useState<string[]>([])
   const [categories, setCategories] = useState<Array<{ id: number; name: string; icon?: string; color?: string }>>([])
   const [diary, setDiary] = useState<UseTimeBookReturn['diary']>(null)
+  const [dailyGoals, setDailyGoals] = useState<UseTimeBookReturn['dailyGoals']>([])
+  const [dailySummaryLedger, setDailySummaryLedger] = useState<UseTimeBookReturn['dailySummaryLedger']>([])
   const [sleepStatusMap, setSleepStatusMap] = useState<Record<string, number>>({})
   const [refreshTrigger, setRefreshTrigger] = useState(0)
   const [syncError, setSyncError] = useState('')
@@ -139,6 +143,8 @@ export const useTimeBook = (isActive = true, runtime?: ManagementPlanRuntime): U
     setAvailableDates(db.getAvailableDates() ?? [])
     setCategories(db.getCategories().map((c: any) => ({ id: c.id, name: c.name, icon: c.icon, color: c.color })))
     if (typeof db.getDiaryForDate === 'function') setDiary(db.getDiaryForDate(selectedDate))
+    if (typeof db.getDailyGoalsForDate === 'function') setDailyGoals(db.getDailyGoalsForDate(selectedDate).map((goal: any) => ({ id: goal.id, title: goal.title, period: goal.period, operator: goal.operator, current: goal.current, target: goal.target, rewardCoins: Number(goal.reward_coins || 0), penaltyCoins: Number(goal.penalty_coins || 0) })))
+    if (typeof db.getDailySummaryLedger === 'function') setDailySummaryLedger(db.getDailySummaryLedger(selectedDate) as any)
     if (typeof db.getSleepStatusMap === 'function') setSleepStatusMap(db.getSleepStatusMap())
 
     if (typeof db.getFlashCards === 'function') {
@@ -390,9 +396,9 @@ export const useTimeBook = (isActive = true, runtime?: ManagementPlanRuntime): U
   return useMemo(
     () => ({
       sessions, selectedDate, setSelectedDate: changeSelectedDate, resetToToday, availableDates, markedDates, categories,
-      deleteSession, updateSession, saveSession, todaySummary, diary, saveDiary, sleepStatusMap, syncError,
+      deleteSession, updateSession, saveSession, todaySummary, diary, dailyGoals, dailySummaryLedger, saveDiary, sleepStatusMap, syncError,
       flashCards, timelineEntries, flashError, taskRecommendations, taskSubmissions, createRecommendedTask, ignoreRecommendedTask, submitFlashClassificationFeedback, loadFlashProcessingLogs, correctFlashPolish, loadFlashSkillHistory, recordFlashCard, saveFlashCard, deleteFlashCard,
     }),
-    [sessions, selectedDate, changeSelectedDate, resetToToday, availableDates, markedDates, categories, deleteSession, updateSession, saveSession, todaySummary, diary, saveDiary, sleepStatusMap, syncError, flashCards, timelineEntries, flashError, taskRecommendations, taskSubmissions, createRecommendedTask, ignoreRecommendedTask, submitFlashClassificationFeedback, loadFlashProcessingLogs, correctFlashPolish, loadFlashSkillHistory, recordFlashCard, saveFlashCard, deleteFlashCard],
+    [sessions, selectedDate, changeSelectedDate, resetToToday, availableDates, markedDates, categories, deleteSession, updateSession, saveSession, todaySummary, diary, dailyGoals, dailySummaryLedger, saveDiary, sleepStatusMap, syncError, flashCards, timelineEntries, flashError, taskRecommendations, taskSubmissions, createRecommendedTask, ignoreRecommendedTask, submitFlashClassificationFeedback, loadFlashProcessingLogs, correctFlashPolish, loadFlashSkillHistory, recordFlashCard, saveFlashCard, deleteFlashCard],
   )
 }

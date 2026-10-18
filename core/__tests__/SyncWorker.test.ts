@@ -1355,6 +1355,23 @@ describe('SyncWorker version cursor', () => {
     expect(get.mock.calls[1][1]).toMatchObject({ since_version: '8' })
   })
 
+  it('emits request-scoped incomplete provider details instead of a generic success', async () => {
+    const db: any = { setEnqueue() {}, getPendingOutbox: () => [], getConfig: () => '', setConfig() {} }
+    const provider = { ok: false, complete: false, status: 'degraded', request_id: 'provider-2',
+      errors: ['tasks:incomplete_snapshot'], retry_at: '2026-09-24T19:00:00+08:00' }
+    const worker = new SyncWorker(); worker.bind({ post: vi.fn(), get: vi.fn(async () => ({ ok: true, data: {
+      status: 'ok', tables: {}, server_time: '2026-09-24 18:59:00', diagnostics: { scope: 'checklist', provider_refresh: provider },
+    } })) } as any, db)
+    const events: any[] = []; const previousWindow = (globalThis as any).window
+    ;(globalThis as any).window = { CustomEvent: class { constructor(public type: string, public init?: any) {} },
+      dispatchEvent: (event: any) => { if (event.type === 'sync-pull-complete') events.push(event.init.detail) } }
+    try {
+      expect(await worker.flushNow(true, { scope: 'checklist', syncRunId: 'provider-2' })).toMatchObject({ ok: false })
+    } finally { (globalThis as any).window = previousWindow }
+    expect(events).toEqual([expect.objectContaining({ provider: 'ticktick', request_id: 'provider-2', complete: false,
+      status: 'degraded', errors: ['tasks:incomplete_snapshot'] })])
+  })
+
   it('emits one-line redacted PC and Android merge diagnostics', async () => {
     const info = vi.spyOn(console, 'info').mockImplementation(() => {})
     const run = async (android: boolean, syncRunId: string) => {

@@ -32,7 +32,9 @@ public final class WidgetTimerCommand {
     }
 
     public static boolean isBlockedCategoryName(String name) {
-        return "输入".equals(name) || "输出".equals(name);
+        return "输入".equals(name) || "输出".equals(name)
+                || "副业生产".equals(name) || "副业研发".equals(name) || "副业营销".equals(name)
+                || "工作".equals(name);
     }
 
     private static long positiveInteger(Object value) {

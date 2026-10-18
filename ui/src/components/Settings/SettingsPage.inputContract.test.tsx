@@ -70,6 +70,16 @@ test('all six saved audio preferences render their selected options', () => {
   }
 })
 
+test('sleep automation exposes full controls only through the Android bridge', () => {
+  assert(/sleepAutomation\.status\(\)/.test(source) && /sleepStatus\.available \? <SleepAutomationSettings/.test(source), 'Android bridge availability must gate full controls')
+  assert(/sleep_automation_consent/.test(source), 'explicit consent must be persisted through settings')
+  assert(/installSleepAutomationStatusLifecycle/.test(source) && /createCapacitorAppLifecycleService/.test(source), 'returning from native settings must refresh actual status')
+  assert(!/setTimeout\(\(\) => setSleepStatus/.test(source), 'authorization must not depend on a premature fixed timeout')
+  assert(source.indexOf('sleepAutomation.disable()') < source.indexOf("updateSetting('sleep_automation_consent', value)"), 'withdrawing consent must stop native automation before persistence')
+  assert(/设置保存失败，请重试/.test(source), 'consent persistence failure must remain visible')
+  assert(/仅 Android 手机端可用/.test(source) && /PC\/Web 不会访问华为运动健康或本地图片/.test(source), 'desktop and web must explain unavailability')
+})
+
 test('account sign-out requires confirmation and returns to login without deleting data', () => {
   const settingsSource = readFileSync(fileURLToPath(new URL('../../hooks/useSettings.ts', import.meta.url)), 'utf8')
   const appSource = readFileSync(fileURLToPath(new URL('../../App.tsx', import.meta.url)), 'utf8')

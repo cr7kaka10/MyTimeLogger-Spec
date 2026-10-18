@@ -17,6 +17,7 @@
 import json
 import re
 import uuid
+from datetime import datetime, timedelta
 
 from .reward_period import period_end, period_window
 
@@ -438,14 +439,15 @@ class RewardWalletService:
         try:
             rows = conn.execute(
                 """
-                SELECT f.reward_id, f.rule_version, SUM(f.progress_units-f.consumed_units) AS active_units,
+                SELECT f.reward_id, MAX(f.rule_version) AS rule_version, SUM(f.progress_units-f.consumed_units) AS active_units,
                        MIN(f.expires_at) AS earliest_expires_at,
                        r.title, r.icon, r.description, r.inventory_mode, r.inventory_limit,
-                       r.fragment_target_count,f.fragment_measure_mode
+                       r.fragment_target_count,'count' AS fragment_measure_mode
                 FROM server_reward_fragments f
                 JOIN server_rewards r ON r.id=f.reward_id AND r.user_id=f.user_id
-                WHERE f.user_id=? AND f.status='active' AND f.expires_at>?
-                GROUP BY f.reward_id, f.rule_version
+                WHERE f.user_id=? AND f.fragment_measure_mode='count'
+                  AND f.status='active' AND f.expires_at>?
+                GROUP BY f.reward_id
                 ORDER BY earliest_expires_at ASC, f.reward_id ASC
                 """, (user_id, self._now()),
             ).fetchall()
@@ -460,7 +462,7 @@ class RewardWalletService:
                         (user_id, f"{reward_id}:%", f"unlock:{reward_id}:%", start, end)).fetchone()["count"] or 0)
                 units = int(row["active_units"] or 0)
                 target = int(row["fragment_target_count"] or 1) if row["fragment_measure_mode"] == "count" else 100
-                result.append({"id": f"fragment:{reward_id}:{row['rule_version']}", "reward_id": reward_id,
+                result.append({"id": f"fragment:{reward_id}", "reward_id": reward_id,
                     "title": row["title"], "icon": row["icon"] or "🧩", "description": row["description"],
                     "current_count": units, "target_count": target, "progress_percent": min(100, round(units * 100 / target)),
                     "measure_mode": row["fragment_measure_mode"],
@@ -468,6 +470,31 @@ class RewardWalletService:
                     "inventory_limit_reached": mode != "unlimited" and limit > 0 and used >= limit,
                     "earliest_expires_at": row["earliest_expires_at"], "rule_version": int(row["rule_version"])})
             return result
+        finally:
+            conn.close()
+
+    def list_expired_backpack_fragments(self, user_id, days=30, limit=100) -> list[dict]:
+        """返回最近过期碎片；只读追溯，不允许再次合成或使用。"""
+        cutoff = (datetime.fromisoformat(self._now()[:19]) - timedelta(days=max(1, int(days)))).strftime("%Y-%m-%d %H:%M:%S")
+        conn = self._connect()
+        try:
+            rows = conn.execute(
+                """SELECT f.id,f.reward_id,f.rule_version,f.progress_units,f.consumed_units,f.expires_at,
+                          f.fragment_measure_mode,r.fragment_target_count,r.title,r.icon,r.description
+                   FROM server_reward_fragments f
+                   JOIN server_rewards r ON r.id=f.reward_id AND r.user_id=f.user_id
+                   WHERE f.user_id=? AND f.status='expired' AND f.expires_at>=?
+                   ORDER BY f.expires_at DESC,f.id DESC LIMIT ?""",
+                (user_id, cutoff, min(100, max(1, int(limit)))),
+            ).fetchall()
+            return [{"id": f"expired:{row['id']}", "fragment_id": str(row["id"]),
+                "reward_id": str(row["reward_id"]), "title": row["title"], "icon": row["icon"] or "🧩",
+                "description": row["description"], "current_count": max(0, int(row["progress_units"] or 0) - int(row["consumed_units"] or 0)),
+                "target_count": int(row["fragment_target_count"] or 1) if row["fragment_measure_mode"] == "count" else 100,
+                "progress_percent": min(100, round(max(0, int(row["progress_units"] or 0) - int(row["consumed_units"] or 0)) * 100 /
+                    (int(row["fragment_target_count"] or 1) if row["fragment_measure_mode"] == "count" else 100))),
+                "earliest_expires_at": row["expires_at"], "expired_at": row["expires_at"],
+                "rule_version": int(row["rule_version"]), "status": "expired"} for row in rows]
         finally:
             conn.close()
 
