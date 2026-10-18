@@ -21,7 +21,7 @@ export function ExerciseItem({
 }) {
   const done = state?.status === 1
   const skip = state?.status === -1
-  const tags = [item.s, item.floor && '地面', item.core && '核心', item.hang && '悬挂', item.stairs && '爬楼', item.isNew && '新增'].filter(Boolean)
+  const tags = [item.s, item.floor && '地面', item.core && '核心', item.hang && '悬挂', item.stairs && '爬楼', (item as any).optional && '可选·不计分', item.isNew && '新增'].filter(Boolean)
 
   return (
     <PressableCheckRow className={`${done ? 'done' : ''} ${skip ? 'skip' : ''}`} onTap={() => onState(done ? 0 : 1)} onLong={() => onState(skip ? 0 : -1)}>

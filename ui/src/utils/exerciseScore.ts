@@ -68,11 +68,12 @@ export function calcScore(
     add(category, earned, points)
     total += earned
   })
-  if (planDefinition.version === 'v4' || (day !== '六' && day !== '日')) {
+  const authoritative = planDefinition.version === 'v4' || planDefinition.version === 'v5'
+  if (authoritative || (day !== '六' && day !== '日')) {
     const items = planDefinition.exercisePlan[day]?.[rain ? 'rain' : 'gym'] || []
     let earned = 0
     if (items.length > 0) {
-      const points = planDefinition.version === 'v4'
+      const points = authoritative
         ? items.map(item => Number(item.scorePoints || 0))
         : exerciseItemPoints(items, planDefinition.exercisePoints)
       items.forEach((_, index) => {
@@ -81,7 +82,7 @@ export function calcScore(
         }
       })
     }
-    add(planDefinition.version === 'v4' ? '运动训练' : '运动', roundScore(earned), planDefinition.exercisePoints)
+    add(authoritative ? '运动训练' : '运动', roundScore(earned), planDefinition.exercisePoints)
     total += earned
   }
   return { total: roundScore(total), cats, plan_version: planDefinition.version }

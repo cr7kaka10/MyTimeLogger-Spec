@@ -1766,5 +1766,71 @@
     ],
     "weekdayScore": [], "saturdayScore": [], "sundayScore": [],
     "categoryOrder": ["运动训练","饮食约束","身体记录"]
+  },
+  "v5": {
+    "version":"v5","title":"运动计划 V5 · 健身房减脂保肌","sourceName":"12周六练·90分钟器械计划","exercisePoints":75,
+    "diet":[
+      {"ruleKey":"protein_at_lunch_and_dinner","time":"午餐和晚餐","content":"每餐先保证1–2掌心蛋白质","note":"鸡蛋、鸡胸/鸡腿去皮、鱼虾、瘦牛肉、豆腐均可；未完成只丢5分，不扣金币"},
+      {"ruleKey":"vegetables_at_lunch_and_dinner","time":"午餐和晚餐","content":"每餐至少2拳蔬菜","note":"优先清蒸、白灼、炖煮；外卖备注少油少盐、酱汁分开"},
+      {"ruleKey":"controlled_staple_and_no_sugary_drink","time":"全天","content":"每餐主食1拳且不喝含糖饮料","note":"米饭半份、面少汤；喝水、无糖茶或黑咖啡；失败仅影响当日饮食分"}
+    ],
+    "weekdaySchedule":[{"time":"训练前","item":"💧 饮水300–500ml并检查状态","note":"胸闷、眩晕、异常气促、锐痛或关节痛立即停止；新器械首组请巡场教练确认调节","accent":"stretch"}],
+    "restSchedule":[{"time":"周一","item":"🚄 返回天津·完全休息","note":"不补练、不追步数；正常吃三餐并优先睡眠恢复","accent":"default"}],
+    "sundayExtra":{"time":"每周日","item":"📝 记录体重周均值与训练完成率","note":"目标每周下降0.5–1.0kg；连续2周超过1kg需增加饮食，避免肌肉流失","accent":"study"},
+    "exercisePlan":{
+      "周一":{"label":"返天津·休息","color":"#76748a","gym":[],"rain":[]},
+      "周二":{"label":"力量A + 椭圆","color":"#e8523a","gym":[
+        {"name":"跑步机热身","sets":"10分钟","intensity":"坡度1–3%，逐步到RPE 3–4；能完整说句子；扶稳后再调速，关节痛立即停","s":"热身","scoreScope":"training","scorePoints":5,"durationMinutes":10},
+        {"name":"坐姿腿举机","sets":"第1–2周2×10–12；第3周起3×8–12","intensity":"座椅调到最低点膝约90°；脚掌全贴踏板、膝盖跟脚尖同向，不锁膝；每组留2–3次余力","s":"力量","scoreScope":"training","scorePoints":8,"durationMinutes":8},
+        {"name":"坐姿腿弯举机","sets":"第1–2周2×10–12；第3周起3×10–12","intensity":"转轴对准膝关节、滚垫压脚踝上方；臀背贴靠，慢放2秒；留2–3次余力","s":"力量","scoreScope":"training","scorePoints":8,"durationMinutes":8},
+        {"name":"坐姿推胸机","sets":"第1–2周2×10–12；第3周起3×8–12","intensity":"手柄与胸中部同高；肩胛贴靠、手腕中立，不耸肩不锁肘；留2–3次余力","s":"力量","scoreScope":"training","scorePoints":8,"durationMinutes":8},
+        {"name":"坐姿划船机","sets":"第1–2周2×10–12；第3周起3×8–12","intensity":"胸垫支撑且把手约下胸高；先收肩胛再拉肘，躯干不后仰；留2–3次余力","s":"力量","scoreScope":"training","scorePoints":7,"durationMinutes":8},
+        {"name":"坐姿推肩机","sets":"第1–2周2×10–12；第3周起3×8–12","intensity":"手柄起点约耳高；腰背贴靠、肋骨不外翻，不耸肩不锁肘；留2–3次余力","s":"力量","scoreScope":"training","scorePoints":7,"durationMinutes":8},
+        {"name":"腹部卷腹机","sets":"第1–2周2×12–15；第3周起3×12–15","intensity":"转轴按说明对齐；呼气卷腹，不用手臂猛拉、不含胸压颈；腹部灼热但动作不变形","s":"力量","scoreScope":"training","scorePoints":7,"durationMinutes":10},
+        {"name":"椭圆机稳态","sets":"25分钟","intensity":"RPE 5–6，可说短句；脚掌贴踏板、膝盖朝脚尖，不踮脚；最后5分钟降阻力","s":"有氧","scoreScope":"training","scorePoints":20,"durationMinutes":25},
+        {"name":"全身放松","sets":"5分钟","intensity":"小腿、股四头、胸背各20–30秒；只拉到轻微牵拉，不弹震、不憋气","s":"放松","scoreScope":"training","scorePoints":5,"durationMinutes":5}],"rain":[]},
+      "周三":{"label":"稳态有氧90分钟","color":"#3a7ee8","gym":[
+        {"name":"跑步机坡走","sets":"35分钟","intensity":"坡度3–6%、RPE 5–6；身体直立不吊扶手，能说短句；膝踝痛先降坡度再停","s":"有氧","scoreScope":"training","scorePoints":30,"durationMinutes":35},
+        {"name":"爬楼机","sets":"5–15分钟","intensity":"先做5分钟；每周最多加2–3分钟至15；RPE≤6，脚掌踩实、躯干直立、不趴扶手；膝痛立即停","s":"有氧","scoreScope":"training","scorePoints":15,"durationMinutes":10,"durationRange":[5,15]},
+        {"name":"椭圆机补足有氧","sets":"40–30分钟，与爬楼合计45分钟","intensity":"RPE 4–5；爬楼做5/10/15分钟则椭圆做40/35/30分钟；步幅顺畅、能完整说句子","s":"有氧","scoreScope":"training","scorePoints":25,"durationMinutes":35,"pairedDurationMinutes":45},
+        {"name":"冷身与活动度","sets":"10分钟","intensity":"慢走5分钟，再做髋、踝、胸椎活动；呼吸恢复后结束，不追求疼痛拉伸","s":"放松","scoreScope":"training","scorePoints":5,"durationMinutes":10}],"rain":[]},
+      "周四":{"label":"力量B + 跑步机","color":"#9b3ae8","gym":[
+        {"name":"椭圆机热身","sets":"10分钟","intensity":"RPE 3–4，脚掌全贴；前5分钟低阻力，后5分钟稍加阻力但能完整说句子","s":"热身","scoreScope":"training","scorePoints":5,"durationMinutes":10},
+        {"name":"腿屈伸机","sets":"第1–2周2×10–12；第3周起3×10–12","intensity":"转轴对准膝关节、滚垫在小腿下端；伸至接近直但不锁死，慢放2秒；留2–3次余力","s":"力量","scoreScope":"training","scorePoints":8,"durationMinutes":8},
+        {"name":"坐姿腿弯举机","sets":"第1–2周2×10–12；第3周起3×10–12","intensity":"膝轴对齐、滚垫压脚踝上方；臀背贴靠，脚跟向下后拉；留2–3次余力","s":"力量","scoreScope":"training","scorePoints":8,"durationMinutes":8},
+        {"name":"高位下拉机","sets":"第1–2周2×10–12；第3周起3×8–12","intensity":"大腿垫压稳；胸口微抬，把手拉到锁骨前，不拉到颈后；留2–3次余力","s":"力量","scoreScope":"training","scorePoints":8,"durationMinutes":8},
+        {"name":"坐姿推胸机","sets":"第1–2周2×10–12；第3周起3×8–12","intensity":"手柄与胸中部同高；肩胛贴靠、手腕中立，推出不锁肘；留2–3次余力","s":"力量","scoreScope":"training","scorePoints":7,"durationMinutes":8},
+        {"name":"坐姿划船机","sets":"第1–2周2×10–12；第3周起3×8–12","intensity":"胸垫贴稳；肘沿身体两侧拉，顶端停1秒，回程不耸肩；留2–3次余力","s":"力量","scoreScope":"training","scorePoints":7,"durationMinutes":8},
+        {"name":"背伸机","sets":"第1–2周2×10–12；第3周起3×10–12","intensity":"髋关节对准转轴；只伸到身体成直线，不反弓腰；臀腿发力，腰痛立即停","s":"力量","scoreScope":"training","scorePoints":7,"durationMinutes":10},
+        {"name":"坐姿哑铃弯举（可选）","sets":"2×10–12次","intensity":"选能留3次余力的轻重量；背贴椅、肘固定，不摆腰；不计分，可直接跳过","s":"可选","scoreScope":"training","scorePoints":0,"durationMinutes":0,"optional":1},
+        {"name":"跑步机稳态","sets":"25分钟","intensity":"坡度2–5%、RPE 5–6；落脚轻、身体直立，不吊扶手；最后5分钟降速冷身","s":"有氧","scoreScope":"training","scorePoints":20,"durationMinutes":25},
+        {"name":"全身放松","sets":"5分钟","intensity":"腿后侧、胸背各20–30秒；轻微牵拉即可，不弹震，呼吸平稳","s":"放松","scoreScope":"training","scorePoints":5,"durationMinutes":5}],"rain":[]},
+      "周五":{"label":"混合有氧90分钟","color":"#2dd4bf","gym":[
+        {"name":"跑步机坡走","sets":"40分钟","intensity":"前5分钟RPE 3热身，中段RPE 5–6，末5分钟降速；坡度3–6%，不吊扶手","s":"有氧","scoreScope":"training","scorePoints":35,"durationMinutes":40},
+        {"name":"爬楼机","sets":"5–15分钟","intensity":"从5分钟起，每周最多加2–3分钟；RPE≤6，脚掌踩实、不跨级、不趴扶手","s":"有氧","scoreScope":"training","scorePoints":15,"durationMinutes":10,"durationRange":[5,15]},
+        {"name":"椭圆机补足有氧","sets":"35–25分钟，与爬楼合计40分钟","intensity":"爬楼做5/10/15分钟则椭圆做35/30/25分钟；RPE 4–5，能完整说句子","s":"有氧","scoreScope":"training","scorePoints":20,"durationMinutes":30,"pairedDurationMinutes":40},
+        {"name":"冷身与活动度","sets":"10分钟","intensity":"慢走5分钟，再活动髋踝胸椎；心率和呼吸明显回落后离开","s":"放松","scoreScope":"training","scorePoints":5,"durationMinutes":10}],"rain":[]},
+      "六":{"label":"力量C + 椭圆","color":"#e8a63a","gym":[
+        {"name":"跑步机热身","sets":"10分钟","intensity":"坡度1–3%、RPE 3–4；逐步加速，关节无痛、能完整说句子","s":"热身","scoreScope":"training","scorePoints":5,"durationMinutes":10},
+        {"name":"坐姿腿举机","sets":"第1–2周2×10–12；第3周起3×8–12","intensity":"膝最低约90°；脚掌全贴、膝随脚尖方向，不锁膝；留2–3次余力","s":"力量","scoreScope":"training","scorePoints":8,"durationMinutes":8},
+        {"name":"坐姿髋外展机","sets":"第1–2周2×12–15；第3周起3×12–15","intensity":"背臀贴靠、膝垫贴稳；打开到臀侧发力且骨盆不晃，慢回；留2–3次余力","s":"力量","scoreScope":"training","scorePoints":8,"durationMinutes":8},
+        {"name":"高位下拉机","sets":"第1–2周2×10–12；第3周起3×8–12","intensity":"大腿垫压稳；下拉到锁骨前，不拉颈后、不后仰借力；留2–3次余力","s":"力量","scoreScope":"training","scorePoints":8,"durationMinutes":8},
+        {"name":"坐姿推胸机","sets":"第1–2周2×10–12；第3周起3×8–12","intensity":"把手与胸中部同高；肩胛贴靠，手腕直、肘不锁死；留2–3次余力","s":"力量","scoreScope":"training","scorePoints":7,"durationMinutes":8},
+        {"name":"坐姿推肩机","sets":"第1–2周2×10–12；第3周起3×8–12","intensity":"手柄约耳高；腰背贴靠、肋骨收住，不耸肩；留2–3次余力","s":"力量","scoreScope":"training","scorePoints":7,"durationMinutes":8},
+        {"name":"腹部卷腹机","sets":"第1–2周2×12–15；第3周起3×12–15","intensity":"呼气卷腹、骨盆稳定；不用手臂猛拉，颈部无压迫；动作变形前停止","s":"力量","scoreScope":"training","scorePoints":7,"durationMinutes":10},
+        {"name":"坐姿哑铃侧平举（可选）","sets":"2×10–12次","intensity":"轻重量且留3次余力；手抬到肩高以下、肘微弯，不耸肩摆腰；不计分","s":"可选","scoreScope":"training","scorePoints":0,"durationMinutes":0,"optional":1},
+        {"name":"椭圆机稳态","sets":"25分钟","intensity":"RPE 5–6、能说短句；步幅顺畅、脚掌贴踏板；最后5分钟逐步降阻力","s":"有氧","scoreScope":"training","scorePoints":20,"durationMinutes":25},
+        {"name":"全身放松","sets":"5分钟","intensity":"小腿、股四头、胸背各20–30秒；只到轻微牵拉，不弹震","s":"放松","scoreScope":"training","scorePoints":5,"durationMinutes":5}],"rain":[]},
+      "日":{"label":"低冲击耐力90分钟","color":"#3ab85a","gym":[
+        {"name":"跑步机轻快走","sets":"30分钟","intensity":"坡度1–3%、RPE 4–5；全程能完整说句子，步幅自然、不吊扶手","s":"有氧","scoreScope":"training","scorePoints":25,"durationMinutes":30},
+        {"name":"椭圆机耐力","sets":"40分钟","intensity":"RPE 4–5；脚掌全贴、膝与脚尖同向；每10分钟检查能否完整说句子","s":"有氧","scoreScope":"training","scorePoints":30,"durationMinutes":40},
+        {"name":"卧式健身车（无则椭圆）","sets":"10分钟","intensity":"座椅调到踩到底膝仍微弯；RPE 3–4，不耸肩；无卧式车则椭圆机补10分钟","s":"有氧","scoreScope":"training","scorePoints":15,"durationMinutes":10},
+        {"name":"恢复活动度","sets":"10分钟","intensity":"慢走与髋踝胸椎活动；RPE≤3，呼吸完全恢复；不做疼痛性拉伸","s":"放松","scoreScope":"training","scorePoints":5,"durationMinutes":10}],"rain":[]}
+    },
+    "progress":[
+      {"when":"第1–2周·适应","text":"力量每项2组，选择能规范完成10–12次且留2–3次余力的重量；爬楼只做5分钟。"},{"when":"第3–4周·建立","text":"力量升至3组；同重量全部达到次数上限且动作稳定，下次加最小一档。"},{"when":"第5–8周·推进","text":"每周只增加一个变量：器械最小重量、坡度1%或有氧2–3分钟；不要同时增加。"},{"when":"第9–12周·巩固","text":"保持3组与RIR 2；疲劳大时减一组或有氧减20%，不要硬顶。"},{"when":"减脂保肌目标","text":"12周先以100kg降到90kg以内为目标；看7日体重均值，每周下降0.5–1.0kg，三餐保证蛋白并完成3次力量训练，不用极端节食。"},{"when":"安全与减重","text":"连续2周下降超过1kg/周或力量明显下降，主食每天增加半拳；胸闷、眩晕、异常气促、锐痛或关节痛立即停止并求助。"},{"when":"早餐·小电锅","text":"任选：鸡蛋2个+燕麦40–50g+无糖奶；或玉米1根+鸡蛋2个+无糖酸奶；或蒸红薯1拳+豆腐/鸡胸1掌+小番茄。"},
+      {"when":"外食·盖饭/快餐","text":"点鸡腿去皮/牛肉/鱼/豆腐 + 双份青菜 + 半份米饭；酱汁分开，不配甜饮。"},{"when":"外食·面馆","text":"选牛肉面/馄饨，加蛋和青菜；面吃约一拳量、少喝汤，不加炸物。"},{"when":"外食·麻辣烫","text":"选瘦肉/虾/蛋/豆腐 + 2拳叶菜菌菇 + 少量薯类；清汤、少麻酱、不喝汤。"},{"when":"外食·便利店","text":"茶叶蛋2个或即食鸡胸1份 + 无糖酸奶/牛奶 + 沙拉/小番茄 + 玉米或饭团1个。"},{"when":"外食·蒸煮套餐","text":"清蒸鱼/白切鸡去皮/炖牛肉 + 两份蔬菜 + 一拳米饭；先吃蛋白和菜。"}
+    ],
+    "weekdayScore":[],"saturdayScore":[],"sundayScore":[],"categoryOrder":["运动训练","饮食约束","身体记录"]
   }
 }

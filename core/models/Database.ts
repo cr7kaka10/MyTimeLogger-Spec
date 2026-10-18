@@ -18,6 +18,8 @@ import { sessionBusinessDate } from '../core/SessionBusinessDate'
 import type { ExercisePlanDefinition, PlanDay, ScoreRule } from './ExercisePlanSampleDataInitializer'
 
 const V4_DIET_RULE_KEYS = ['no_snacks', 'no_sugary_drinks', 'no_refined_staples']
+const V5_DIET_RULE_KEYS = ['protein_at_lunch_and_dinner', 'vegetables_at_lunch_and_dinner', 'controlled_staple_and_no_sugary_drink']
+const AUTHORITATIVE_DIET_RULE_KEYS: Record<string, string[]> = { v4: V4_DIET_RULE_KEYS, v5: V5_DIET_RULE_KEYS }
 
 // system_config 表 key 名常量
 export const SYSTEM_CONFIG_KEYS = {
@@ -382,13 +384,15 @@ export class Database {
   }
 
   private repairInterruptedDietCheckinOutbox(): void {
-    const placeholders = V4_DIET_RULE_KEYS.map(() => '?').join(',')
-    const rows = this._all(`SELECT d.* FROM exercise_diet_checkins d
-      WHERE d.plan_version='v4' AND d.rule_key IN (${placeholders}) AND d.pushed_at IS NULL
-      AND COALESCE(d.updated_at,'') > COALESCE(d.pulled_at,'')
-      AND NOT EXISTS (SELECT 1 FROM sync_outbox o WHERE o.table_name='exercise_diet_checkins'
-        AND o.record_id=CAST(d.id AS TEXT) AND o.status IN ('pending','failed','sending'))`, V4_DIET_RULE_KEYS)
-    rows.forEach(row => this._enqueueOutbox('exercise_diet_checkins', row.id, 'upsert', row, row.pulled_at ?? null))
+    for (const [version, keys] of Object.entries(AUTHORITATIVE_DIET_RULE_KEYS)) {
+      const placeholders = keys.map(() => '?').join(',')
+      const rows = this._all(`SELECT d.* FROM exercise_diet_checkins d
+        WHERE d.plan_version=? AND d.rule_key IN (${placeholders}) AND d.pushed_at IS NULL
+        AND COALESCE(d.updated_at,'') > COALESCE(d.pulled_at,'')
+        AND NOT EXISTS (SELECT 1 FROM sync_outbox o WHERE o.table_name='exercise_diet_checkins'
+          AND o.record_id=CAST(d.id AS TEXT) AND o.status IN ('pending','failed','sending'))`, [version, ...keys])
+      rows.forEach(row => this._enqueueOutbox('exercise_diet_checkins', row.id, 'upsert', row, row.pulled_at ?? null))
+    }
   }
 
   private _formatLedgerDescription(template: string, replacements: Record<string, string>): string {
@@ -2592,7 +2596,11 @@ export class Database {
 
   private _isExercisePlanComplete(version: string): boolean {
     if (!this._get('SELECT 1 FROM exercise_plan_versions WHERE version=? AND is_active=1', [version])) return false;
-    const required: Array<[string, number]> = version === 'v4' ? [
+    const required: Array<[string, number]> = version === 'v5' ? [
+      ['exercise_plan_schedule_items', 3], ['exercise_plan_items', 41],
+      ['exercise_plan_progress_items', 10], ['exercise_plan_diet_rules', 3],
+      ['exercise_plan_category_rules', 3],
+    ] : version === 'v4' ? [
       ['exercise_plan_schedule_items', 8], ['exercise_plan_items', 23],
       ['exercise_plan_progress_items', 4], ['exercise_plan_diet_rules', 3],
       ['exercise_plan_category_rules', 3],
@@ -2668,9 +2676,10 @@ export class Database {
       note: row.note || '',
     }))
     const dietKeys = diet.map(rule => rule.ruleKey || '')
-    const dietRulesValid = planVersion !== 'v4' || (dietKeys.length === V4_DIET_RULE_KEYS.length
-      && new Set(dietKeys).size === V4_DIET_RULE_KEYS.length
-      && dietKeys.every(key => V4_DIET_RULE_KEYS.includes(key)))
+    const expectedDietKeys = AUTHORITATIVE_DIET_RULE_KEYS[planVersion]
+    const dietRulesValid = !expectedDietKeys || (dietKeys.length === expectedDietKeys.length
+      && new Set(dietKeys).size === expectedDietKeys.length
+      && dietKeys.every(key => expectedDietKeys.includes(key)))
     return {
       version: planVersion,
       title: version?.title || '每日打卡表',
@@ -2791,15 +2800,17 @@ export class Database {
   }
 
   getExerciseDietCheckins(date: string, planVersion = this.getActiveExercisePlanVersion()): any[] {
-    if (planVersion !== 'v4') return this._all('SELECT * FROM exercise_diet_checkins WHERE date=? AND plan_version=? ORDER BY rule_key', [date, planVersion]);
-    const placeholders = V4_DIET_RULE_KEYS.map(() => '?').join(',')
-    return this._all(`SELECT * FROM exercise_diet_checkins WHERE date=? AND plan_version=? AND rule_key IN (${placeholders}) ORDER BY rule_key`, [date, planVersion, ...V4_DIET_RULE_KEYS]);
+    const keys = AUTHORITATIVE_DIET_RULE_KEYS[planVersion]
+    if (!keys) return this._all('SELECT * FROM exercise_diet_checkins WHERE date=? AND plan_version=? ORDER BY rule_key', [date, planVersion]);
+    const placeholders = keys.map(() => '?').join(',')
+    return this._all(`SELECT * FROM exercise_diet_checkins WHERE date=? AND plan_version=? AND rule_key IN (${placeholders}) ORDER BY rule_key`, [date, planVersion, ...keys]);
   }
 
   discardInvalidV4DietCheckins(date: string, planVersion = this.getActiveExercisePlanVersion()): number {
-    if (planVersion !== 'v4') return 0
-    const placeholders = V4_DIET_RULE_KEYS.map(() => '?').join(',')
-    const rows = this._all(`SELECT id FROM exercise_diet_checkins WHERE date=? AND plan_version=? AND rule_key NOT IN (${placeholders})`, [date, planVersion, ...V4_DIET_RULE_KEYS])
+    const keys = AUTHORITATIVE_DIET_RULE_KEYS[planVersion]
+    if (!keys) return 0
+    const placeholders = keys.map(() => '?').join(',')
+    const rows = this._all(`SELECT id FROM exercise_diet_checkins WHERE date=? AND plan_version=? AND rule_key NOT IN (${placeholders})`, [date, planVersion, ...keys])
     for (const row of rows) {
       this._run('DELETE FROM exercise_diet_checkins WHERE id=?', [row.id])
       this._run("DELETE FROM sync_outbox WHERE table_name='exercise_diet_checkins' AND record_id=?", [String(row.id)])
@@ -2812,7 +2823,8 @@ export class Database {
   }
 
   toggleExerciseDietCheckin(date: string, ruleKey: string, status: 'pending' | 'completed' | 'failed' | boolean, planVersion = this.getActiveExercisePlanVersion()): void {
-    if (this.isExerciseDateLocked(date) || planVersion !== 'v4' || !V4_DIET_RULE_KEYS.includes(ruleKey)) return;
+    const keys = AUTHORITATIVE_DIET_RULE_KEYS[planVersion]
+    if (this.isExerciseDateLocked(date) || !keys?.includes(ruleKey)) return;
     if (typeof status === 'boolean') status = status ? 'completed' : 'pending';
     const now = this._now(); const id = `diet:${date}:${planVersion}:${ruleKey}`;
     const deadline = new Date(`${date}T00:00:00+08:00`); deadline.setDate(deadline.getDate() + 1);

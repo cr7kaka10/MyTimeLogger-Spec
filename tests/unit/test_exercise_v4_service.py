@@ -5,7 +5,7 @@ import sqlite3
 import pytest
 
 import server.server as server_module
-from server.domain.exercise_v4_service import DIET_RULES, ExerciseV4Service
+from server.domain.exercise_v4_service import DIET_RULES, PLAN_POLICIES, ExerciseV4Service
 from server.domain.sample_data_initialization_service import SampleDataInitializationService
 from server.store import ServerSleepStore
 
@@ -36,11 +36,37 @@ def _daily(conn, user_id, date, weight=None, body_fat=None):
 def test_v4_is_complete_idempotent_and_user_isolated(tmp_db_path):
     store, _ = _setup(tmp_db_path, (1, 4))
     repaired = SampleDataInitializationService(tmp_db_path).repair_v4_diet_rule_keys(1)
-    assert repaired == 3
+    assert repaired == 0
     with store._connect() as conn:
-        assert [tuple(row) for row in conn.execute("SELECT user_id,value FROM server_system_config WHERE key='active_exercise_plan_version' ORDER BY user_id")] == [(1, "v4"), (4, "v4")]
+        assert [tuple(row) for row in conn.execute("SELECT user_id,value FROM server_system_config WHERE key='active_exercise_plan_version' ORDER BY user_id")] == [(1, "v5"), (4, "v5")]
         assert [tuple(row) for row in conn.execute("SELECT user_id,COUNT(*) FROM server_exercise_plan_items WHERE plan_version='v4' GROUP BY user_id ORDER BY user_id")] == [(1, 23), (4, 23)]
+        assert [tuple(row) for row in conn.execute("SELECT user_id,COUNT(*) FROM server_exercise_plan_items WHERE plan_version='v5' GROUP BY user_id ORDER BY user_id")] == [(1, 41), (4, 41)]
         assert conn.execute("SELECT COUNT(*) FROM server_exercise_plan_versions WHERE version='scoring-v3'").fetchone()[0] == 0
+
+
+def test_v5_publish_is_idempotent_and_does_not_override_manual_v4_switch(tmp_db_path):
+    store, _ = _setup(tmp_db_path)
+    seed = SampleDataInitializationService(tmp_db_path)
+    with store._transact() as conn:
+        conn.execute("UPDATE server_system_config SET value='v4' WHERE user_id=1 AND key='active_exercise_plan_version'")
+    seed.ensure_user_sample_data(1)
+    seed.ensure_user_sample_data(1)
+    with store._connect() as conn:
+        active = conn.execute("SELECT value FROM server_system_config WHERE user_id=1 AND key='active_exercise_plan_version'").fetchone()[0]
+        items = conn.execute("SELECT COUNT(*) FROM server_exercise_plan_items WHERE user_id=1 AND plan_version='v5'").fetchone()[0]
+        markers = conn.execute("SELECT COUNT(*) FROM server_sample_data_initializations WHERE user_id=1 AND module='exercise_plan_v5'").fetchone()[0]
+    assert (active, items, markers) == ("v4", 41, 1)
+
+
+def test_v5_state_endpoint_returns_authoritative_domains(tmp_db_path, monkeypatch):
+    store, _ = _setup(tmp_db_path)
+    monkeypatch.setattr(server_module, "store", store)
+    monkeypatch.setattr(server_module, "_exercise_db_path", lambda: str(tmp_db_path))
+    state = server_module.get_exercise_state("2026-10-20", "v5", {"id": 1})
+    assert state["plan_version"] == "v5"
+    assert state["score"]["plan_version"] == "v5"
+    assert set(state["score"]["cats"]) == {"运动训练", "饮食约束", "身体记录"}
+    assert {row["rule_key"] for row in state["diet_checkins"]} == set(PLAN_POLICIES["v5"]["diet_rules"])
 
 
 def test_v4_diet_rule_repair_replaces_empty_keys_and_ignores_empty_checkin_fact(tmp_db_path):
@@ -203,6 +229,51 @@ def test_v4_repeated_settlement_creates_no_new_version_or_wallet_write(tmp_db_pa
     assert after == before
 
 
+def test_v4_policy_is_a_stable_golden_contract():
+    assert PLAN_POLICIES["v4"] == {
+        "rule_version": "exercise-score-v4",
+        "diet_rules": ("no_snacks", "no_sugary_drinks", "no_refined_staples"),
+        "diet_penalty": -20,
+        "effective_from": "2026-09-10",
+    }
+
+
+def test_v5_diet_failure_scores_zero_without_negative_coins(tmp_db_path):
+    store, _ = _setup(tmp_db_path)
+    service = ExerciseV4Service(store.reward_wallet_service, lambda *args: None, "v5")
+    date, late = "2026-09-15", datetime(2026, 9, 16, 0, 1, tzinfo=BJ)
+    with store._transact() as conn:
+        assert service.close_diet(conn, 1, date, late) == 3
+        score = service.settle(conn, 1, date, late)
+        rows = conn.execute("SELECT rule_key,status,plan_version,penalty_source_id FROM server_exercise_diet_checkins WHERE user_id=1 AND date=?", (date,)).fetchall()
+        penalties = conn.execute("SELECT amount FROM server_reward_ledger WHERE user_id=1 AND source_type='exercise_diet_penalty'").fetchall()
+    assert {tuple(row) for row in rows} == {(key, "failed", "v5", None) for key in PLAN_POLICIES["v5"]["diet_rules"]}
+    assert score["cats"]["饮食约束"] == {"s": 0.0, "m": 15.0}
+    assert penalties == []
+
+
+def test_v4_and_v5_same_day_facts_and_rewards_are_isolated(tmp_db_path):
+    store, v4 = _setup(tmp_db_path)
+    v5 = ExerciseV4Service(store.reward_wallet_service, lambda *args: None, "v5")
+    date, now = "2026-09-15", datetime(2026, 9, 15, 8, tzinfo=BJ)
+    with store._transact() as conn:
+        for version, service in (("v4", v4), ("v5", v5)):
+            conn.execute("""INSERT INTO server_exercise_daily_logs
+                (id,user_id,date,plan_version,exercise_type,weight,body_fat_rate,created_at,updated_at)
+                VALUES (?,?,?,?, 'daily',100,35,?,?)""", (f"log-{version}", 1, date, version, date, date))
+            for row in conn.execute("SELECT sort_order FROM server_exercise_plan_items WHERE user_id=1 AND plan_version=? AND day_key='周二'", (version,)):
+                key = f"ex-{date}-g-{row['sort_order']}"
+                conn.execute("INSERT INTO server_exercise_checkins(id,user_id,log_id,plan_version,item_key,status,date,created_at,updated_at) VALUES (?,?,?,?,?,1,?,?,?)",
+                             (f"check-{version}-{key}", 1, f"log-{version}", version, key, date, date, date))
+            for rule in service.diet_rules:
+                service.set_diet(conn, 1, date, rule, True, f"{date} 08:00:00", now)
+            assert service.settle(conn, 1, date, now)["total"] == 100
+        settlements = conn.execute("SELECT plan_version FROM server_exercise_settlements WHERE user_id=1 AND business_date=? ORDER BY plan_version", (date,)).fetchall()
+        rewards = conn.execute("SELECT id FROM server_reward_ledger WHERE user_id=1 AND source_type='exercise_completion_reward' ORDER BY id").fetchall()
+    assert [row[0] for row in settlements] == ["v4", "v5"]
+    assert [row[0] for row in rewards] == [f"exercise-completion-reward:1:v4:{date}", f"exercise-completion-reward:1:v5:{date}"]
+
+
 def test_body_deadline_penalty_survives_late_body_backfill_without_score(tmp_db_path):
     store, service = _setup(tmp_db_path)
     date, late = "2026-09-14", datetime(2026, 9, 14, 10, tzinfo=BJ)
@@ -265,6 +336,8 @@ def test_overdue_v4_notifies_only_when_deadline_facts_change(tmp_db_path, monkey
 
 def test_v4_startup_compensation_notifies_only_for_real_changes(tmp_db_path, monkeypatch):
     store, _ = _setup(tmp_db_path)
+    with store._transact() as conn:
+        conn.execute("UPDATE server_system_config SET value='v4' WHERE user_id=1 AND key='active_exercise_plan_version'")
     now = datetime(2026, 9, 12, 10, tzinfo=BJ)
     notifications = []
     monkeypatch.setattr(server_module, "store", store)

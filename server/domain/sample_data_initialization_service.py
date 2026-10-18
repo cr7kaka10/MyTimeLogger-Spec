@@ -319,6 +319,21 @@ class SampleDataInitializationService:
         if first_v4_publish:
             self._write_seed_change(conn, user_id, "server_system_config", "system_config", "active_exercise_plan_version", namespace="exercise-v4-complete-v1")
             self._mark(conn, user_id, "exercise_plan_v4", now)
+        first_v5_publish = not conn.execute(
+            "SELECT 1 FROM server_sample_data_initializations WHERE user_id=? AND module='exercise_plan_v5'", (user_id,),
+        ).fetchone()
+        self._publish_complete_exercise(conn, user_id, "v5")
+        if first_v5_publish:
+            previous = conn.execute("SELECT value FROM server_system_config WHERE user_id=? AND key='active_exercise_plan_version'", (user_id,)).fetchone()
+            conn.execute("""INSERT INTO server_system_config(user_id,key,value,value_type,description,updated_at)
+                VALUES (?,'previous_exercise_plan_version',?,'string','V5回滚前训练计划版本',?)
+                ON CONFLICT(user_id,key) DO UPDATE SET value=excluded.value,description=excluded.description,updated_at=excluded.updated_at""",
+                (user_id, previous["value"] if previous else "v4", now))
+            conn.execute("""INSERT INTO server_system_config(user_id,key,value,value_type,description,updated_at)
+                VALUES (?,'active_exercise_plan_version','v5','string','当前训练计划版本',?)
+                ON CONFLICT(user_id,key) DO UPDATE SET value='v5',updated_at=excluded.updated_at""", (user_id, now))
+            self._write_seed_change(conn, user_id, "server_system_config", "system_config", "active_exercise_plan_version", namespace="exercise-v5-complete-v1")
+            self._mark(conn, user_id, "exercise_plan_v5", now)
         self._mark(conn, user_id, module, now)
 
     def _repair_v4_diet_rule_keys(self, conn: sqlite3.Connection, user_id: int, now: str) -> int:
@@ -336,7 +351,10 @@ class SampleDataInitializationService:
         return changed
 
     def _publish_complete_exercise_v4(self, conn: sqlite3.Connection, user_id: int) -> None:
-        namespace = "exercise-v4-complete-v1"
+        self._publish_complete_exercise(conn, user_id, "v4")
+
+    def _publish_complete_exercise(self, conn: sqlite3.Connection, user_id: int, version: str) -> None:
+        namespace = f"exercise-{version}-complete-v1"
         tables = (
             ("server_exercise_plan_versions", "exercise_plan_version"),
             ("server_exercise_plan_schedule_items", "exercise_plan_schedule_item"),
@@ -347,8 +365,8 @@ class SampleDataInitializationService:
         )
         for table, entity_type in tables:
             select_id = "version AS id" if table.endswith("versions") else "id"
-            where = "version='v4'" if table.endswith("versions") else "plan_version='v4'"
-            for row in conn.execute(f"SELECT {select_id} FROM {table} WHERE user_id=? AND {where} ORDER BY id", (user_id,)):
+            version_column = "version" if table.endswith("versions") else "plan_version"
+            for row in conn.execute(f"SELECT {select_id} FROM {table} WHERE user_id=? AND {version_column}=? ORDER BY id", (user_id, version)):
                 self._write_seed_change(conn, user_id, table, entity_type, row["id"], namespace=namespace)
 
     def _publish_complete_exercise_v2(self, conn: sqlite3.Connection, user_id: int) -> None:

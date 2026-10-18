@@ -6,7 +6,7 @@ import {
 import { useExercise } from '../hooks/useExercise'
 import { beijingDateHour, dateForTab, todayTab, weekOfYear } from '../utils/exerciseDate'
 import { calcScore, formatScore } from '../utils/exerciseScore'
-import { projectV4Score } from '../utils/exerciseV4Score'
+import { isAuthoritativeExercisePlan, projectAuthoritativeScore } from '../utils/exerciseAuthoritativeScore'
 import { ExercisePanel } from '../components/Exercise/ExercisePanel'
 import { ExerciseHistory } from '../components/Exercise/ExerciseHistory'
 import { requestCapacitorInputFocus } from '../platform/keyboard'
@@ -73,8 +73,9 @@ export const ExercisePage = memo(({ theme, onToggleTheme, onStartFocus }: Props)
   const canEditWeight = isBeijingToday && !x.locked
   const weightFact = x.deadlineFacts.find((fact: any) => fact.fact_type === 'body_weight')
   const bodyFatFact = x.deadlineFacts.find((fact: any) => fact.fact_type === 'body_fat_rate')
-  const weightScore = x.planVersion === 'v4' ? Number(x.itemScores['body:weight']?.earned_points || 0) : log?.weight == null ? 0 : 5
-  const bodyFatScore = x.planVersion === 'v4' ? Number(x.itemScores['body:body_fat_rate']?.earned_points || 0) : log?.body_fat_rate == null ? 0 : 5
+  const authoritative = isAuthoritativeExercisePlan(x.planVersion)
+  const weightScore = authoritative ? Number(x.itemScores['body:weight']?.earned_points || 0) : log?.weight == null ? 0 : 5
+  const bodyFatScore = authoritative ? Number(x.itemScores['body:body_fat_rate']?.earned_points || 0) : log?.body_fat_rate == null ? 0 : 5
   const metricStatus = (value: unknown, fact: any, scoreValue: number) => value == null ? '尚未保存' : fact?.status === 'failed' ? '已补录，截止后不得分' : scoreValue ? '✓ 已得分' : '已保存，等待服务端确认'
   const savedScore = useMemo(() => {
     if (!log?.score_snapshot) return null
@@ -84,11 +85,11 @@ export const ExercisePage = memo(({ theme, onToggleTheme, onStartFocus }: Props)
       return null
     }
   }, [log?.score_snapshot])
-  const authoritativeV4Score = useMemo(() => {
-    if (x.planVersion !== 'v4' || !x.settlement?.score_snapshot) return null
+  const authoritativeScore = useMemo(() => {
+    if (!authoritative || !x.settlement?.score_snapshot) return null
     try { return typeof x.settlement.score_snapshot === 'string' ? JSON.parse(x.settlement.score_snapshot) : x.settlement.score_snapshot } catch { return null }
-  }, [x.planVersion, x.settlement?.score_snapshot])
-  const displayScore = x.planVersion === 'v4' ? projectV4Score(authoritativeV4Score) : (isPastDate && savedScore ? savedScore : score)
+  }, [authoritative, x.settlement?.score_snapshot])
+  const displayScore = authoritative ? projectAuthoritativeScore(authoritativeScore, x.planVersion as 'v4' | 'v5') : (isPastDate && savedScore ? savedScore : score)
   const displayScoreCategories = useMemo(() => {
     const cats = displayScore.cats || {}
     const ordered = (def.categoryOrder || []).filter(c => cats[c])
@@ -124,7 +125,7 @@ export const ExercisePage = memo(({ theme, onToggleTheme, onStartFocus }: Props)
       alert('请输入 3-75% 之间的有效体脂率。')
       return
     }
-    x.saveDay(numericWeight, day, done, total, x.planVersion === 'v4' ? undefined : score, rain ? 'rain' : 'gym', numericBodyFat)
+    x.saveDay(numericWeight, day, done, total, authoritative ? undefined : score, rain ? 'rain' : 'gym', numericBodyFat)
   }
 
   return (

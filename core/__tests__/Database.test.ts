@@ -376,6 +376,24 @@ describe('Database', () => {
     expect(isolated.getExercisePlanDefinition('v4').dietRulesValid).toBe(false)
   })
 
+  it('V5 完整包才可激活且同日饮食事实按版本隔离', () => {
+    const isolated = createIsolatedDb(), date = '2099-10-18'
+    isolated.runRaw("INSERT INTO exercise_plan_versions (version,title,is_active,exercise_points,created_at,updated_at) VALUES ('v5','V5',1,75,?,?)", [date, date])
+    expect(isolated.setActiveExercisePlanVersion('v5')).toEqual({ ok: false, error: 'exercise_plan_version_incomplete' })
+    for (let i=0;i<3;i++) isolated.runRaw("INSERT INTO exercise_plan_schedule_items (id,plan_version,schedule_type,sort_order,time,item,created_at,updated_at) VALUES (?, 'v5','weekday',?,'','',?,?)", [`v5-s-${i}`,i,date,date])
+    for (let i=0;i<41;i++) isolated.runRaw("INSERT INTO exercise_plan_items (id,plan_version,day_key,variant,section,sort_order,name,created_at,updated_at) VALUES (?,'v5','周二','gym','力量',?,'动作',?,?)", [`v5-i-${i}`,i,date,date])
+    for (let i=0;i<10;i++) isolated.runRaw("INSERT INTO exercise_plan_progress_items (id,plan_version,sort_order,when_text,text,created_at,updated_at) VALUES (?,'v5',?,'阶段','说明',?,?)", [`v5-p-${i}`,i,date,date])
+    for (const [i,key] of ['protein_at_lunch_and_dinner','vegetables_at_lunch_and_dinner','controlled_staple_and_no_sugary_drink'].entries()) isolated.runRaw("INSERT INTO exercise_plan_diet_rules (id,plan_version,rule_key,sort_order,time,content,created_at,updated_at) VALUES (?,'v5',?,?,'全天','规则',?,?)", [`v5-d-${i}`,key,i,date,date])
+    for (let i=0;i<3;i++) isolated.runRaw("INSERT INTO exercise_plan_category_rules (id,plan_version,sort_order,category,created_at,updated_at) VALUES (?,'v5',?,'分类',?,?)", [`v5-c-${i}`,i,date,date])
+    expect(isolated.setActiveExercisePlanVersion('v5')).toEqual({ ok: true })
+    isolated.toggleExerciseDietCheckin(date, 'protein_at_lunch_and_dinner', 'completed', 'v5')
+    isolated.toggleExerciseDietCheckin(date, 'no_snacks', 'completed', 'v4')
+    expect(isolated.getExerciseDietCheckins(date, 'v5').map(row => row.rule_key)).toEqual(['protein_at_lunch_and_dinner'])
+    expect(isolated.getExerciseDietCheckins(date, 'v4').map(row => row.rule_key)).toEqual(['no_snacks'])
+    isolated.runRaw("DELETE FROM exercise_plan_items WHERE id='v5-i-0'")
+    expect(isolated.setActiveExercisePlanVersion('v5')).toEqual({ ok: false, error: 'exercise_plan_version_incomplete' })
+  })
+
   it('饮食中断事实仅补偿一次且既有服务端 ID 可单条同步', () => {
     const sqlDb = createBetterSqliteAdapter()
     const initial = new Database(sqlDb)
@@ -435,7 +453,7 @@ describe('Database', () => {
     for (let i=1;i<6;i++) isolated.runRaw(`INSERT INTO exercise_plan_category_rules (id,plan_version,sort_order,category,created_at,updated_at) VALUES ('v2-c${i}','v2',${i},'分类${i}',datetime('now','localtime'),datetime('now','localtime'))`)
     expect(isolated.setActiveExercisePlanVersion('v2')).toEqual({ ok: true })
     expect(isolated.getActiveExercisePlanVersion()).toBe('v2')
-    const date = '2026-08-28'
+    const date = '2099-08-28'
     isolated.toggleExerciseCheckin(date, 'item', 1, undefined, '08:00', undefined, undefined, 'v0')
     isolated.toggleExerciseCheckin(date, 'item', 1, undefined, '09:00', undefined, undefined, 'v1')
     isolated.toggleExerciseCheckin(date, 'item', 1, undefined, '10:00', undefined, undefined, 'v2')

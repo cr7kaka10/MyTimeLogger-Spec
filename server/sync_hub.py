@@ -1094,12 +1094,12 @@ class SyncHub:
                 from server import _exercise_day_key, _exercise_plan_definition, _exercise_score, _persist_exercise_item_scores
             target_date = str(record.get("date") or _cst_today())[:10]
             plan_version = str(record.get("plan_version") or "v0")
-            if plan_version == "v4":
+            if plan_version in {"v4", "v5"}:
                 try:
-                    from .server import _beijing_now, _exercise_v4
+                    from .server import _beijing_now, _exercise_authoritative
                 except (ImportError, ValueError):
-                    from server import _beijing_now, _exercise_v4
-                _exercise_v4().settle(conn, user_id, target_date, _beijing_now())
+                    from server import _beijing_now, _exercise_authoritative
+                _exercise_authoritative(plan_version).settle(conn, user_id, target_date, _beijing_now())
                 return
             day_key = _exercise_day_key(target_date)
             items = [dict(row) for row in conn.execute(

@@ -10,6 +10,7 @@ export type DailySummaryGoal = { id: string | number; title: string; period: str
 export type DailySummaryItem = { key: string; label: string; status: DailySummaryStatus; tab: MainTab; target?: DailySummaryTarget; consequence: 'penalty' | 'sleep_risk' | 'reward_only'; ruleAmount?: number; actualAmount?: number | null; actualTime?: string; sourceIds: string[] }
 
 const DIET_RULES = [['no_snacks', '不吃零食'], ['no_sugary_drinks', '不喝含糖饮料'], ['no_refined_staples', '不吃精制主食']] as const
+const V5_DIET_RULES = [['protein_at_lunch_and_dinner', '午晚餐保证蛋白质'], ['vegetables_at_lunch_and_dinner', '午晚餐至少2拳蔬菜'], ['controlled_staple_and_no_sugary_drink', '控制主食且不喝含糖饮料']] as const
 const SLEEP_LEDGER_RULES: Array<[string, string, number | undefined]> = [
   ['sleep_bedtime_adjustment', '按时入睡', undefined], ['sleep_cycle_penalty', '睡眠周期达标', -50],
   ['sleep_deep_penalty', '深睡时长达标', undefined], ['sleep_no_sleep_penalty', '存在有效主睡眠', undefined],
@@ -53,9 +54,10 @@ export function buildDailySummary({ date, diary, planVersion, dietRulesValid, di
     { key: 'morning-diary', label: '晨间日记', status: diary?.morning_diary?.trim() ? 'completed' : failed(diary?.morning_diary_reward_status) ? 'failed' : 'pending', tab: 'sleep', target: 'morning-diary', consequence: 'reward_only', actualAmount: diary?.morning_diary_reward_status ? Number(diary.morning_diary_reward_amount || 0) : null, sourceIds: [] },
     { key: 'evening-diary', label: '晚间日记', status: diary?.evening_diary?.trim() ? 'completed' : failed(diary?.evening_diary_reward_status) ? 'failed' : 'pending', tab: 'sleep', target: 'evening-diary', consequence: 'reward_only', actualAmount: diary?.evening_diary_reward_status ? Number(diary.evening_diary_reward_amount || 0) : null, sourceIds: [] },
   ]
-  if (planVersion === 'v4' && dietRulesValid) for (const [key, label] of DIET_RULES) {
+  const dietRules = planVersion === 'v4' ? DIET_RULES : planVersion === 'v5' ? V5_DIET_RULES : []
+  if (dietRulesValid) for (const [key, label] of dietRules) {
     const value = dietCheckins[key]?.status, actual = sumMatches(ledger, 'exercise_diet_penalty', key)
-    items.push({ key: `diet-${key}`, label, status: value === 'completed' ? 'completed' : value === 'failed' || (actual.amount != null && actual.amount < 0) ? 'failed' : 'pending', tab: 'exercise', consequence: 'penalty', ruleAmount: -20, actualAmount: actual.amount, sourceIds: actual.ids })
+    items.push({ key: `diet-${key}`, label, status: value === 'completed' ? 'completed' : value === 'failed' || (actual.amount != null && actual.amount < 0) ? 'failed' : 'pending', tab: 'exercise', consequence: planVersion === 'v4' ? 'penalty' : 'reward_only', ruleAmount: planVersion === 'v4' ? -20 : 0, actualAmount: actual.amount, sourceIds: actual.ids })
   }
   for (const goal of dailyGoals.filter(goal => goal.period === 'daily')) {
     const met = goal.operator === '<=' ? goal.current <= goal.target : goal.current >= goal.target
