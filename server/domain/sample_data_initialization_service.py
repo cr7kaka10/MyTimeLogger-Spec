@@ -290,7 +290,8 @@ class SampleDataInitializationService:
             definitions["v2"] = v2
         for version, definition in definitions.items():
             self._insert_exercise_plan_definition(conn, user_id, version, definition, now)
-        self._repair_v5_cardio_revision(conn, user_id, definitions.get("v5") or {}, now)
+        self._repair_v5_cardio_revision(conn, user_id, definitions.get("v5") or {}, now, "v2")
+        self._repair_v5_cardio_revision(conn, user_id, definitions.get("v5") or {}, now, "v3")
         self._repair_v4_diet_rule_keys(conn, user_id, now)
         self._migrate_exercise_scoring(conn, user_id, definitions, now)
         self._publish_complete_exercise_v2(conn, user_id)
@@ -337,8 +338,9 @@ class SampleDataInitializationService:
             self._mark(conn, user_id, "exercise_plan_v5", now)
         self._mark(conn, user_id, module, now)
 
-    def _repair_v5_cardio_revision(self, conn: sqlite3.Connection, user_id: int, definition: dict, now: str) -> int:
-        module, namespace = "exercise_plan_v5_cardio_v2", "exercise-v5-cardio-v2"
+    def _repair_v5_cardio_revision(self, conn: sqlite3.Connection, user_id: int, definition: dict, now: str,
+                                   revision: str) -> int:
+        module, namespace = f"exercise_plan_v5_cardio_{revision}", f"exercise-v5-cardio-{revision}"
         if conn.execute("SELECT 1 FROM server_sample_data_initializations WHERE user_id=? AND module=?", (user_id, module)).fetchone():
             return 0
         expected = {}

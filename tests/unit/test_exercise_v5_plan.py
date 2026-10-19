@@ -31,17 +31,28 @@ def test_v5_prescriptions_are_executable_and_cover_three_strength_days():
     assert "卧式健身车" not in cardio_names
 
 
-def test_v5_has_three_stair_days_and_walking_only_treadmills():
+def test_v5_has_three_stair_days_and_treadmills_are_warmup_only():
     plan = _plan()
     stair_days = [day for day, value in plan["exercisePlan"].items()
                   if any("爬楼机" in item["name"] for item in value["gym"])]
     assert stair_days == ["周三", "周五", "日"]
     treadmills = [item for day in plan["exercisePlan"].values()
                   for item in day["gym"] if "跑步机" in item["name"]]
-    assert treadmills and all("不跑" in item["intensity"] for item in treadmills)
-    sunday = plan["exercisePlan"]["日"]["gym"]
-    assert next(item for item in sunday if "爬楼机" in item["name"])["durationRange"] == [5, 10]
-    assert sum(item["durationMinutes"] for item in sunday) == 90
+    assert len(treadmills) == 6
+    assert all(item["durationMinutes"] == 10 for item in treadmills)
+    assert all(item["s"] == "热身" and "热身" in item["name"] for item in treadmills)
+    assert all("不跑" in item["intensity"] for item in treadmills)
+
+    for day, duration, duration_range in (("周三", 20, [10, 30]),
+                                           ("周五", 20, [10, 30]),
+                                           ("日", 15, [10, 20])):
+        items = plan["exercisePlan"][day]["gym"]
+        stair = next(item for item in items if "爬楼机" in item["name"])
+        ellipse = next(item for item in items if "椭圆漫步机" in item["name"])
+        assert stair["durationMinutes"] == duration
+        assert stair["durationRange"] == duration_range
+        assert stair["pairedDurationMinutes"] == ellipse["pairedDurationMinutes"] == 70
+        assert max(stair["durationRange"]) <= 30
 
 
 def test_v5_personal_calorie_budget_contract():
