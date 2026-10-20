@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/daily_row" android:layout_width="match_parent" android:layout_height="48dp"
+    android:gravity="center_vertical" android:orientation="horizontal" android:paddingHorizontal="4dp">
+    <TextView android:id="@+id/daily_check" android:layout_width="40dp" android:layout_height="48dp"
+        android:gravity="center_vertical|center_horizontal" android:text="□" android:textSize="24sp"
+        android:textColor="#A3A0B9" android:contentDescription="完成" />
+    <TextView android:id="@+id/daily_name" android:layout_width="0dp" android:layout_height="wrap_content"
+        android:layout_weight="1" android:ellipsize="end" android:maxLines="1" android:textColor="#FFFFFF"
+        android:textSize="15sp" />
+    <TextView android:id="@+id/daily_badge" android:layout_width="wrap_content" android:layout_height="wrap_content"
+        android:gravity="end" android:minWidth="42dp" android:textColor="#7497FF" android:textSize="12sp" />
+</LinearLayout>

@@ -44,6 +44,7 @@ import { createBackNavigationService, runBackNavigation } from './platform/backN
 import { createNotificationNavigator } from './platform/notificationNavigation'
 import { getNotificationRuntime } from './platform/notificationRuntime'
 import { platformFetch } from './platform/fetch'
+import { attachDailyWidget } from './platform/dailyWidget'
 import type { HabitSection, MainTab } from './types'
 import type { ManagementPlanDraft } from './hooks/useManagementPlan'
 import { mindmapRewardFingerprint, type ManagementPlanMindmap } from './hooks/useManagementPlanMindmap'
@@ -81,6 +82,9 @@ const AppSession = ({ initialAuthenticated, onAccountActivated }: { initialAuthe
   const settings = useSettings()
   const timeBook = useTimeBook(activeTab === 'timebook', { serverUrl: settings.selectedEnvironmentProfile.serverUrl, authToken: settings.selectedEnvironmentProfile.authToken })
   const habits = useHabits()
+  useEffect(() => attachDailyWidget(authenticated && !!settings.selectedEnvironmentProfile.verifiedUserId),
+    [authenticated, settings.selectedEnvironmentProfile.verifiedUserId,
+      settings.selectedEnvironmentProfile.serverUrl])
   const goals = useGoals()
   const rewards = useRewards()
   const sleep = useSleep()
@@ -153,6 +157,8 @@ const AppSession = ({ initialAuthenticated, onAccountActivated }: { initialAuthe
       if (detail === 'timer' || detail?.route === 'timer') {
         handleNavigate('timer')
         if (detail?.focusAi) setTimerAiFocusRequest(current => current + 1)
+      } else if (detail?.route === 'checklist') {
+        handleNavigate('checklist')
       }
     }
     window.addEventListener('mtl:navigate', navigate)

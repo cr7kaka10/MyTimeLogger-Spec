@@ -30,6 +30,7 @@ const provisionTimerWidgetRuntime = (db: any, profile: { serverUrl: string, auth
   let deviceId = db.getConfig('device_id')
   if (!deviceId) { deviceId = `mtl-${crypto.randomUUID()}`; db.setConfig('device_id', deviceId) }
   configureTimerWidgetRuntime({ ...profile, deviceId, generation: Date.now() })
+  window.dispatchEvent(new Event('mtl:daily-widget-runtime-changed'))
 }
 
 export const safeFetch = async (url: string, options?: any, timeout = 3000): Promise<{ ok: boolean; status: number; text: () => Promise<string>; json: () => Promise<any> }> => {

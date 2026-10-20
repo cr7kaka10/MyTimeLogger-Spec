@@ -209,6 +209,11 @@ export const useChecklist = (): UseChecklistReturn => {
   }, [loadLocal, refreshTrigger])
 
   useEffect(() => {
+    window.addEventListener('mtl:daily-widget-task-complete', loadLocal)
+    return () => window.removeEventListener('mtl:daily-widget-task-complete', loadLocal)
+  }, [loadLocal])
+
+  useEffect(() => {
     const handleSyncPullComplete = (event: Event) => {
       const detail = (event as CustomEvent<Record<string, any>>).detail || {}
       console.info('[useChecklist] sync-pull-complete: reload local tasks')
