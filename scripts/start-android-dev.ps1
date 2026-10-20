@@ -1,11 +1,12 @@
 param(
     [switch]$PreflightOnly,
     [switch]$DryRun,
-    [ValidateSet('stale_runtime', 'complete_snapshot', 'active_lock', 'unknown_lock', 'avd_missing', 'boot_timeout', 'transport_unavailable', 'transport_ready', 'transport_reconnected', 'transport_cold_recovered', 'transport_identity_unknown', 'target_identity_child', 'target_identity_other', 'snapshot_self_recovered', 'snapshot_cold_recovered', 'snapshot_cold_exhausted', 'emulator_output_redirected', 'window_service_pending', 'bootanim_running', 'systemui_unstable', 'build_failure', 'active_start', 'surface_delayed', 'activity_recovered', 'activity_not_foreground', 'activity_window_not_visible', 'input_ready', 'input_no_window', 'input_recovered', 'input_reboot_recovered', 'input_recovery_failed')]
+    [ValidateSet('stale_runtime', 'complete_snapshot', 'active_lock', 'unknown_lock', 'avd_missing', 'boot_timeout', 'transport_unavailable', 'transport_ready', 'transport_reconnected', 'transport_cold_recovered', 'transport_identity_unknown', 'target_identity_child', 'target_identity_other', 'snapshot_self_recovered', 'snapshot_cold_recovered', 'snapshot_cold_exhausted', 'emulator_output_redirected', 'window_service_pending', 'bootanim_running', 'systemui_unstable', 'build_failure', 'active_start', 'surface_delayed', 'activity_recovered', 'activity_not_foreground', 'activity_window_not_visible', 'input_ready', 'input_no_window', 'input_recovered', 'input_reboot_recovered', 'input_recovery_failed', 'log_contention')]
     [string]$TestScenario
 )
 
 $ErrorActionPreference = 'Stop'
+$env:ADB_SERVER_PORT = '5038'
 $root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $avdName = 'aTimeLogger_Extraction_API35'
 $targetSerial = 'emulator-5554'
@@ -74,7 +75,19 @@ function Resolve-AndroidSdk {
 function Write-Stage([string]$message) {
     $line = "[$([DateTimeOffset]::UtcNow.ToOffset([TimeSpan]::FromHours(8)).ToString('yyyy-MM-dd HH:mm:ss'))] [$script:stage] $message"
     Write-Host "[android] $line"
-    Add-Content -LiteralPath $script:logPath -Value $line
+    for ($attempt = 1; $attempt -le 5; $attempt++) {
+        try {
+            Add-Content -LiteralPath $script:logPath -Value $line -ErrorAction Stop
+            return
+        } catch [System.IO.IOException] {
+            if ($_.Exception.HResult -ne -2147024864) { throw }
+            if ($attempt -eq 5) {
+                [Console]::Error.WriteLine("[android] Startup log is temporarily locked; continuing without this log line: $script:logPath")
+                return
+            }
+            Start-Sleep -Milliseconds 100
+        }
+    }
 }
 
 function Set-Stage([string]$name) {
@@ -507,16 +520,17 @@ function Invoke-AndroidWebBuild {
 }
 
 function Install-DebugApk([string]$Serial) {
-    $previousSerial = $env:ANDROID_SERIAL
-    $env:ANDROID_SERIAL = $Serial
+    $apkPath = Join-Path $root 'ui\android\app\build\outputs\apk\debug\app-debug.apk'
     Push-Location (Join-Path $root 'ui\android')
     try {
-        Write-Stage "Installing Debug APK on $Serial."
-        Invoke-Checked ':app:installDebug' { & $gradleWrapper ':app:installDebug' }
+        Write-Stage "Building Debug APK for $Serial."
+        Invoke-Checked ':app:assembleDebug' { & $gradleWrapper ':app:assembleDebug' }
     } finally {
-        $env:ANDROID_SERIAL = $previousSerial
         Pop-Location
     }
+    if (-not (Test-Path -LiteralPath $apkPath -PathType Leaf)) { throw "Debug APK missing: $apkPath" }
+    Write-Stage "Installing Debug APK on $Serial with SDK ADB port $env:ADB_SERVER_PORT."
+    Invoke-Checked 'adb install -r' { & $script:adb -s $Serial install -r $apkPath }
 }
 
 function Start-AndroidApp([string]$Serial) {
@@ -630,7 +644,14 @@ $exitCode = 1
 try {
     Set-Stage 'plan'; Show-Plan
     if ($DryRun) {
-        if ($TestScenario) { if (Invoke-ControlledDryRun $TestScenario) { $exitCode = 0 } }
+        if ($TestScenario -eq 'log_contention') {
+            $lock = [IO.File]::Open($script:logPath, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+            try { Set-Stage 'log_contention' }
+            finally { $lock.Dispose() }
+            Set-Stage 'dry_run'
+            Write-Stage 'Dry-run log contention recovered.'
+            $exitCode = 0
+        } elseif ($TestScenario) { if (Invoke-ControlledDryRun $TestScenario) { $exitCode = 0 } }
         else { Set-Stage 'dry_run'; Write-Stage 'Dry-run complete; no process was started and no device was accessed.'; $exitCode = 0 }
     } else {
         Set-Stage 'preflight'

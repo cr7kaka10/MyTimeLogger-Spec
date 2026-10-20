@@ -1,7 +1,26 @@
+import json
 from pathlib import Path
+import re
+import subprocess
 
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+def test_android_log_contention_does_not_abort_startup_summary():
+    result = subprocess.run(
+        ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+         str(ROOT / "scripts" / "start-android-dev.ps1"), "-DryRun", "-TestScenario", "log_contention"],
+        cwd=ROOT, capture_output=True, text=True, timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Startup log is temporarily locked" in result.stderr
+    match = re.search(r"Summary: (.+\.summary\.json) \(success/dry_run\)", result.stdout)
+    assert match, result.stdout
+    summary = json.loads(Path(match.group(1)).read_text(encoding="utf-8-sig"))
+    assert (summary["result"], summary["stage"], summary["exit_code"]) == ("success", "dry_run", 0)
+    log = Path(summary["log_path"]).read_text(encoding="utf-8-sig")
+    assert "Dry-run log contention recovered." in log
 
 
 def test_start_all_orchestrates_android_without_destructive_operations():
@@ -22,7 +41,10 @@ def test_start_all_orchestrates_android_without_destructive_operations():
     assert "npm run build:android-web" in helper
     assert "npx cap sync android" in helper
     assert "ui\\android\\gradlew.bat" in helper
-    assert ":app:installdebug" in helper
+    assert "$env:adb_server_port = '5038'" in helper
+    assert ":app:assembledebug" in helper
+    assert "& $script:adb -s $serial install -r $apkpath" in helper
+    assert ":app:installdebug" not in helper
     assert "com.mytimelogger.app/.mainactivity" in helper
     assert "wait-androidinputready" in helper
     assert "focusedwindows" in helper
