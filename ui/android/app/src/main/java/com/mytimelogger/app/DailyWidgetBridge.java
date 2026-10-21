@@ -38,7 +38,6 @@ public final class DailyWidgetBridge implements AutoCloseable {
         if (!isReady()) return;
         if (new DailyWidgetStore(context).snapshot() == null) return;
         ArrayList<Map.Entry<String, JsonElement>> pending = new ArrayList<>(new DailyWidgetStore(context).pending().entrySet());
-        if (!pending.isEmpty()) scripts.send("window.dispatchEvent(new CustomEvent('mtl:navigate',{detail:{route:'checklist'}}))");
         for (Map.Entry<String, JsonElement> item : pending)
             dispatch(item.getValue().getAsJsonObject());
     }
@@ -67,9 +66,7 @@ public final class DailyWidgetBridge implements AutoCloseable {
         if (!isReady() || command == null) return;
         JsonObject snapshot = new DailyWidgetStore(context).snapshot();
         try {
-            if (snapshot == null || !DailyWidgetStore.today().equals(command.get("date").getAsString())
-                    || !snapshot.get("userId").getAsString().equals(command.get("userId").getAsString())
-                    || snapshot.get("generation").getAsLong() != command.get("generation").getAsLong()) return;
+            if (!DailyWidgetStore.matchesCommand(snapshot, command, DailyWidgetStore.today())) return;
             scripts.send("window.dispatchEvent(new CustomEvent('mtl:daily-widget-command',{detail:"
                     + command.toString() + "}))");
         } catch (RuntimeException ignored) { }

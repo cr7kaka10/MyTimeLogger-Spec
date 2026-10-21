@@ -43,6 +43,14 @@ final class DailyWidgetStore {
                 && value.getAsJsonObject("days").has(day); }
         catch (Exception ignored) { return false; }
     }
+    static boolean matchesCommand(JsonObject snapshot, JsonObject command, String day) {
+        try {
+            return snapshot != null && command != null && day.equals(string(command, "date"))
+                    && string(snapshot, "userId").equals(string(command, "userId"))
+                    && snapshot.get("generation").getAsLong() == command.get("generation").getAsLong()
+                    && (!command.has("database") || string(snapshot, "database").equals(string(command, "database")));
+        } catch (RuntimeException ignored) { return false; }
+    }
     boolean publish(String raw) {
         WidgetTimerRuntimeStore.Config runtime = runtime();
         String database = databaseName();
@@ -72,22 +80,29 @@ final class DailyWidgetStore {
             return editor.commit();
         } catch (Exception ignored) { return false; }
     }
-    synchronized JsonObject claim(String kind, String id, String day) {
+    synchronized JsonObject claim(String kind, String id, String day) { return claim(kind, id, day, "complete"); }
+    synchronized JsonObject claim(String kind, String id, String day, String action) {
         JsonObject snapshot = snapshot();
         if (snapshot == null || !today().equals(day) || !("habit".equals(kind) || "task".equals(kind))) return null;
+        if (!("complete".equals(action) || ("habit".equals(kind) && "fail".equals(action)))) return null;
         if (id == null || id.isEmpty() || id.length() > 128) return null;
         JsonObject pending = readObject("pending");
         String key = kind + ":" + id + ":" + day;
         JsonObject existing = existingClaim(pending, readObject("done"), key);
-        if (existing != null || readObject("done").has(key)) return existing;
+        if (existing != null) {
+            String previousAction = string(existing, "action");
+            return action.equals(previousAction.isEmpty() ? "complete" : previousAction) ? existing : null;
+        }
+        if (readObject("done").has(key)) return null;
         JsonObject command = new JsonObject();
         command.addProperty("kind", kind); command.addProperty("id", id);
+        command.addProperty("action", action);
         command.addProperty("date", day); command.addProperty("commandId", "daily-" + UUID.randomUUID());
         command.addProperty("userId", snapshot.get("userId").getAsString());
         command.addProperty("generation", snapshot.get("generation").getAsLong());
+        command.addProperty("database", snapshot.get("database").getAsString());
         pending.add(key, command);
-        values.edit().putString("pending", pending.toString()).commit();
-        return command;
+        return values.edit().putString("pending", pending.toString()).commit() ? command : null;
     }
     static JsonObject existingClaim(JsonObject pending, JsonObject done, String key) {
         return done.has(key) ? null : pending.has(key) ? pending.getAsJsonObject(key) : null;
@@ -100,7 +115,13 @@ final class DailyWidgetStore {
             JsonObject command = pending.getAsJsonObject(key);
             if (commandId.equals(command.get("commandId").getAsString())) { matchedKey = key; break; }
         }
-        if (matchedKey == null || !("applied".equals(result) || "pending_sync".equals(result))) return;
+        if (matchedKey == null) return;
+        if ("failed".equals(result)) {
+            pending.getAsJsonObject(matchedKey).addProperty("lastResult", "failed");
+            values.edit().putString("pending", pending.toString()).commit();
+            return;
+        }
+        if (!("applied".equals(result) || "pending_sync".equals(result))) return;
         JsonObject done = readObject("done");
         done.addProperty(matchedKey, result);
         pending.remove(matchedKey);
@@ -122,6 +143,7 @@ final class DailyWidgetStore {
             try {
                 JsonObject command = old.getAsJsonObject(key);
                 if (!day.equals(string(command, "date"))) continue;
+                if (!command.has("action")) command.addProperty("action", "complete");
                 command.addProperty("generation", generation);
                 pending.add(key, command);
             } catch (RuntimeException ignored) { }

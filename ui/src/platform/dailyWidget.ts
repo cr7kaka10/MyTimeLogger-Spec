@@ -1,7 +1,7 @@
 import { getCurrentTimerClient, getDatabase, syncChecklistNow, syncNow } from '../db'
 import { projectHabits, shanghaiDay } from './dailyWidgetProjection'
 
-type Command = { kind: 'habit' | 'task'; id: string; date: string; commandId: string }
+type Command = { kind: 'habit' | 'task'; action?: 'complete' | 'fail'; id: string; date: string; commandId: string }
 type Host = Window & { MTLDailyWidget?: { ready(): void; pause(): void; publish(value: string): boolean; refresh(): void; ack(id: string, result: string): void } }
 const host = () => window as Host
 const inFlight = new Set<string>()
@@ -14,14 +14,19 @@ export async function publishDailyWidget(isCurrent = () => true) {
 }
 
 export async function applyDailyWidgetCommand(command: Command): Promise<'applied' | 'pending_sync' | 'failed'> {
-  if (!['habit', 'task'].includes(command.kind) || !command.id || command.date !== shanghaiDay()) return 'failed'
+  const action = command.action ?? 'complete'
+  if (!['habit', 'task'].includes(command.kind) || !['complete', 'fail'].includes(action)
+    || (command.kind === 'task' && action !== 'complete') || !command.id || command.date !== shanghaiDay()) return 'failed'
   const db = await getDatabase()
   if (command.kind === 'habit') {
     const client = getCurrentTimerClient()
     if (!client) return 'failed'
     const checkins = db.getTodayCheckins(command.date) as Array<{ habit_id: string | number; status: number }>
-    if (checkins.some(row => String(row.habit_id) === command.id && Number(row.status) === 2)) return 'applied'
-    const response = await client.commandHabitCheckin({ habit_id: command.id, date: command.date, desired_status: 2, idempotency_key: command.commandId })
+    const desired = action === 'fail' ? 1 : 2
+    const current = checkins.find(row => String(row.habit_id) === command.id)
+    if (Number(current?.status) === desired) return 'applied'
+    if (Number(current?.status) === 2 && action === 'fail') return 'failed'
+    const response = await client.commandHabitCheckin({ habit_id: command.id, date: command.date, desired_status: desired, idempotency_key: command.commandId })
     if (!response.ok || response.data?.status !== 'confirmed') return 'failed'
     try { return (await syncNow({ reason: 'daily-widget-habit' })).ok ? 'applied' : 'pending_sync' }
     catch { return 'pending_sync' }
