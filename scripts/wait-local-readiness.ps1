@@ -1,6 +1,6 @@
 param(
     [string]$ServerUrl = 'http://127.0.0.1:8000/ping',
-    [string]$UiUrl = 'http://127.0.0.1:5173/',
+    [string]$UiUrl = '',
     [ValidateRange(1, 600)][int]$TimeoutSeconds = 90,
     [switch]$RequirePortsFree
 )
@@ -11,6 +11,24 @@ $logDirectory = Join-Path $root 'tests\runtime\startup-logs'
 $expectedBuild = ''
 try { $expectedBuild = (& git -C $root rev-parse --short=12 HEAD 2>$null).Trim() } catch {}
 $finalBackupVersion = 2
+$viteStatePath = Join-Path $logDirectory 'Vite.state.json'
+if (-not $UiUrl -and $RequirePortsFree) { $UiUrl = 'http://127.0.0.1:5173/' }
+if (-not $UiUrl) {
+    if (-not (Test-Path -LiteralPath $viteStatePath)) {
+        Write-Error '[readiness] missing_vite_state' -ErrorAction Continue; exit 2
+    }
+    try { $viteState = Get-Content -Raw -LiteralPath $viteStatePath | ConvertFrom-Json }
+    catch { Write-Error '[readiness] invalid_vite_state' -ErrorAction Continue; exit 2 }
+    $vitePort = 0
+    if ($viteState.endpoint -ne 'Vite' -or -not $viteState.pid -or
+        ($env:MTL_STARTUP_RUN_ID -and $viteState.run_id -ne $env:MTL_STARTUP_RUN_ID) -or
+        -not [int]::TryParse([string]$viteState.port, [ref]$vitePort) -or
+        $vitePort -lt 1 -or $vitePort -gt 65535 -or
+        $viteState.url -ne "http://127.0.0.1:$vitePort/") {
+        Write-Error '[readiness] stale_or_invalid_vite_state' -ErrorAction Continue; exit 2
+    }
+    $UiUrl = [string]$viteState.url
+}
 $allowedHosts = @('localhost', '127.0.0.1', '::1', '[::1]')
 foreach ($candidate in @($ServerUrl, $UiUrl)) {
     try { $uri = [Uri]$candidate } catch { Write-Error '[readiness] Invalid URL' -ErrorAction Continue; exit 2 }
@@ -54,7 +72,7 @@ function Get-TrackedProjectProcess([string]$name) {
     if (-not $processInfo) { return [pscustomobject]@{ Valid = $false; Reason = 'process_exited'; State = $state; StatePath = $statePath } }
     $commandLine = [string]$processInfo.CommandLine
     $belongs = if ($name -eq 'Server') { $commandLine -match 'uvicorn\s+server\.server:app' } else {
-        ($commandLine -like "*$root*" -and $commandLine -match 'vite') -or $commandLine -match 'cmd\.exe"?\s+/d\s+/c\s+npm\s+run\s+dev'
+        ($commandLine -like "*$root*" -and $commandLine -match '[/\\]vite[/\\](bin|dist)[/\\]')
     }
     if (-not $belongs) { return [pscustomobject]@{ Valid = $false; Reason = 'process_not_project_owned'; State = $state; StatePath = $statePath } }
     return [pscustomobject]@{ Valid = $true; State = $state; StatePath = $statePath }
