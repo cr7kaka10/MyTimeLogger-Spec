@@ -5,6 +5,8 @@ import com.google.gson.JsonObject;
 import java.time.Instant;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.Arrays;
+import java.util.List;
 import org.junit.Test;
 
 public class DailyWidgetContractTest {
@@ -56,5 +58,39 @@ public class DailyWidgetContractTest {
         assertEquals(1, restored.size());
         assertEquals(2, restored.getAsJsonObject("task:a:2026-10-20").get("generation").getAsInt());
         assertEquals("daily-fixed", restored.getAsJsonObject("task:a:2026-10-20").get("commandId").getAsString());
+    }
+
+    @Test public void tasksPrecedeHabitsAndHandledHabitsDisappear() {
+        DailyWidgetRepository.Row today = new DailyWidgetRepository.Row("task", "t1", "今天", "今天", "2026-10-20", false, false);
+        DailyWidgetRepository.Row overdue = new DailyWidgetRepository.Row("task", "t2", "过期", "10-19", "2026-10-20", false, false);
+        DailyWidgetRepository.Row habit = new DailyWidgetRepository.Row("habit", "h1", "习惯", "习惯", "2026-10-20", false, false);
+        List<DailyWidgetRepository.Row> rows = DailyWidgetRepository.assemble(
+                Collections.singletonList(today), Collections.singletonList(overdue), Collections.singletonList(habit));
+        assertEquals(Arrays.asList("今日任务", "今天", "已过期", "过期", "今日习惯", "习惯"),
+                Arrays.asList(rows.get(0).title, rows.get(1).title, rows.get(2).title,
+                        rows.get(3).title, rows.get(4).title, rows.get(5).title));
+        assertEquals(0, DailyWidgetRepository.assemble(Collections.emptyList(), Collections.emptyList(), Collections.emptyList()).size());
+        assertTrue(DailyWidgetRepository.unhandled(0));
+        assertFalse(DailyWidgetRepository.unhandled(1));
+        assertFalse(DailyWidgetRepository.unhandled(2));
+        assertEquals("处理中", DailyWidgetRepository.badge("习惯", "pending"));
+        assertEquals("重试", DailyWidgetRepository.badge("今天", "failed"));
+        assertEquals("今天", DailyWidgetRepository.badge("今天", ""));
+    }
+
+    @Test public void actionAndSnapshotMustMatchTodayAndOwner() {
+        JsonObject snapshot = new JsonObject(), command = new JsonObject();
+        snapshot.addProperty("userId", "7"); snapshot.addProperty("generation", 5);
+        snapshot.addProperty("database", "account-7.db");
+        command.addProperty("userId", "7"); command.addProperty("generation", 5);
+        command.addProperty("database", "account-7.db"); command.addProperty("date", "2026-10-20");
+        command.addProperty("kind", "habit"); command.addProperty("id", "h1"); command.addProperty("action", "fail");
+        assertTrue(DailyWidgetHeadlessExecutor.valid(snapshot, command, "2026-10-20"));
+        command.addProperty("kind", "task");
+        assertFalse(DailyWidgetHeadlessExecutor.valid(snapshot, command, "2026-10-20"));
+        command.addProperty("action", "complete");
+        assertFalse(DailyWidgetHeadlessExecutor.valid(snapshot, command, "2026-10-21"));
+        command.addProperty("date", "2026-10-21"); command.addProperty("userId", "8");
+        assertFalse(DailyWidgetHeadlessExecutor.valid(snapshot, command, "2026-10-21"));
     }
 }

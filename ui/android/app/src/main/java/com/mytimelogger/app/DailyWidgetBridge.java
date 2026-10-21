@@ -60,13 +60,22 @@ public final class DailyWidgetBridge implements AutoCloseable {
         new DailyWidgetStore(context).ack(commandId, result);
         DailyWidgetProvider.refresh(context);
         if (!"applied".equals(result)) new Handler(Looper.getMainLooper()).post(() -> Toast.makeText(context,
-                "pending_sync".equals(result) ? "已完成，等待同步" : "完成失败，请检查网络后重试", Toast.LENGTH_SHORT).show());
+                "pending_sync".equals(result) ? "已完成，等待同步" : "操作失败，请检查网络后重试", Toast.LENGTH_SHORT).show());
     }
     void dispatch(JsonObject command) {
         if (!isReady() || command == null) return;
         JsonObject snapshot = new DailyWidgetStore(context).snapshot();
         try {
             if (!DailyWidgetStore.matchesCommand(snapshot, command, DailyWidgetStore.today())) return;
+            boolean eligible = false;
+            for (DailyWidgetRepository.Row row : new DailyWidgetRepository(context).load())
+                if (!row.header && row.kind.equals(command.get("kind").getAsString())
+                        && row.id.equals(command.get("id").getAsString())) { eligible = true; break; }
+            if (!eligible) {
+                new DailyWidgetStore(context).ack(command.get("commandId").getAsString(), "rejected");
+                DailyWidgetProvider.refresh(context);
+                return;
+            }
             scripts.send("window.dispatchEvent(new CustomEvent('mtl:daily-widget-command',{detail:"
                     + command.toString() + "}))");
         } catch (RuntimeException ignored) { }

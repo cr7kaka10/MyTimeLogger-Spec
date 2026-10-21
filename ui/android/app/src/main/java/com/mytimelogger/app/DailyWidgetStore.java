@@ -51,7 +51,8 @@ final class DailyWidgetStore {
                     && (!command.has("database") || string(snapshot, "database").equals(string(command, "database")));
         } catch (RuntimeException ignored) { return false; }
     }
-    boolean publish(String raw) {
+    boolean publish(String raw) { synchronized (DailyWidgetStore.class) { return publishLocked(raw); } }
+    private boolean publishLocked(String raw) {
         WidgetTimerRuntimeStore.Config runtime = runtime();
         String database = databaseName();
         if (runtime == null || database == null || raw == null || raw.length() > 500_000) return false;
@@ -80,8 +81,11 @@ final class DailyWidgetStore {
             return editor.commit();
         } catch (Exception ignored) { return false; }
     }
-    synchronized JsonObject claim(String kind, String id, String day) { return claim(kind, id, day, "complete"); }
-    synchronized JsonObject claim(String kind, String id, String day, String action) {
+    JsonObject claim(String kind, String id, String day) { return claim(kind, id, day, "complete"); }
+    JsonObject claim(String kind, String id, String day, String action) {
+        synchronized (DailyWidgetStore.class) { return claimLocked(kind, id, day, action); }
+    }
+    private JsonObject claimLocked(String kind, String id, String day, String action) {
         JsonObject snapshot = snapshot();
         if (snapshot == null || !today().equals(day) || !("habit".equals(kind) || "task".equals(kind))) return null;
         if (!("complete".equals(action) || ("habit".equals(kind) && "fail".equals(action)))) return null;
@@ -108,7 +112,10 @@ final class DailyWidgetStore {
         return done.has(key) ? null : pending.has(key) ? pending.getAsJsonObject(key) : null;
     }
     synchronized JsonObject pending() { return readObject("pending"); }
-    synchronized void ack(String commandId, String result) {
+    void ack(String commandId, String result) {
+        synchronized (DailyWidgetStore.class) { ackLocked(commandId, result); }
+    }
+    private void ackLocked(String commandId, String result) {
         JsonObject pending = readObject("pending");
         String matchedKey = null;
         for (String key : pending.keySet()) {
@@ -121,6 +128,11 @@ final class DailyWidgetStore {
             values.edit().putString("pending", pending.toString()).commit();
             return;
         }
+        if ("rejected".equals(result)) {
+            pending.remove(matchedKey);
+            values.edit().putString("pending", pending.toString()).commit();
+            return;
+        }
         if (!("applied".equals(result) || "pending_sync".equals(result))) return;
         JsonObject done = readObject("done");
         done.addProperty(matchedKey, result);
@@ -128,7 +140,15 @@ final class DailyWidgetStore {
         values.edit().putString("done", done.toString()).putString("pending", pending.toString()).commit();
     }
     boolean isDone(String kind, String id, String day) { return readObject("done").has(kind + ":" + id + ":" + day); }
-    void clear() { values.edit().clear().commit(); }
+    String pendingState(String kind, String id, String day) {
+        try {
+            JsonObject pending = readObject("pending");
+            String key = kind + ":" + id + ":" + day;
+            if (!pending.has(key)) return "";
+            return "failed".equals(string(pending.getAsJsonObject(key), "lastResult")) ? "failed" : "pending";
+        } catch (RuntimeException ignored) { return ""; }
+    }
+    void clear() { synchronized (DailyWidgetStore.class) { values.edit().clear().commit(); } }
     private JsonObject readObject(String key) {
         try { return JsonParser.parseString(values.getString(key, "{}")).getAsJsonObject(); }
         catch (Exception ignored) { return new JsonObject(); }

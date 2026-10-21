@@ -43,9 +43,10 @@ final class DailyWidgetRepository {
             for (Map<String, Object> item : db.query("SELECT id,name FROM habits WHERE is_active=0 AND source='local' ORDER BY sort_order,id", Collections.emptyList())) {
                 String id = text(item.get("id"));
                 int status = checkins.getOrDefault(id, 0);
-                if (includeHabit(scheduled, checkins, id) && status != 1 && status != 2
+                if (includeHabit(scheduled, checkins, id) && unhandled(status)
                         && !store.isDone("habit", id, today))
-                    habits.add(new Row("habit", id, text(item.get("name")), "习惯", today, false, false));
+                    habits.add(new Row("habit", id, text(item.get("name")),
+                            badge("习惯", store.pendingState("habit", id, today)), today, false, false));
             }
             List<Row> dueToday = new ArrayList<>(), overdue = new ArrayList<>();
             for (Map<String, Object> item : db.query("SELECT id,title,due_date FROM tasks WHERE status=0 AND deleted_at IS NULL "
@@ -53,12 +54,11 @@ final class DailyWidgetRepository {
                 String id = text(item.get("id")), due = text(item.get("due_date"));
                 if (due.length() < 10 || store.isDone("task", id, today)) continue;
                 boolean late = dueBucket(due, today) < 0;
-                Row row = new Row("task", id, text(item.get("title")), late ? due.substring(5, 10) : "今天", today, false, false);
+                Row row = new Row("task", id, text(item.get("title")),
+                        badge(late ? due.substring(5, 10) : "今天", store.pendingState("task", id, today)), today, false, false);
                 (late ? overdue : dueToday).add(row);
             }
-            if (!dueToday.isEmpty()) { result.add(header("今日任务", String.valueOf(dueToday.size()))); result.addAll(dueToday); }
-            if (!overdue.isEmpty()) { result.add(header("已过期", String.valueOf(overdue.size()))); result.addAll(overdue); }
-            if (!habits.isEmpty()) { result.add(header("今日习惯", String.valueOf(habits.size()))); result.addAll(habits); }
+            result.addAll(assemble(dueToday, overdue, habits));
             if (result.isEmpty()) result.add(header("今天已完成", "暂无待办"));
             return result;
         } catch (RuntimeException error) {
@@ -72,5 +72,16 @@ final class DailyWidgetRepository {
     }
     static boolean includeHabit(Set<String> scheduled, Map<String, Integer> checkins, String id) {
         return scheduled.contains(id) || checkins.containsKey(id);
+    }
+    static boolean unhandled(int status) { return status != 1 && status != 2; }
+    static String badge(String original, String pending) {
+        return "pending".equals(pending) ? "处理中" : "failed".equals(pending) ? "重试" : original;
+    }
+    static List<Row> assemble(List<Row> dueToday, List<Row> overdue, List<Row> habits) {
+        List<Row> rows = new ArrayList<>();
+        if (!dueToday.isEmpty()) { rows.add(header("今日任务", String.valueOf(dueToday.size()))); rows.addAll(dueToday); }
+        if (!overdue.isEmpty()) { rows.add(header("已过期", String.valueOf(overdue.size()))); rows.addAll(overdue); }
+        if (!habits.isEmpty()) { rows.add(header("今日习惯", String.valueOf(habits.size()))); rows.addAll(habits); }
+        return rows;
     }
 }

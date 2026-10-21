@@ -30,6 +30,7 @@ public final class DailyWidgetViewsFactory implements RemoteViewsService.RemoteV
         view.setContentDescription(R.id.daily_fail, row.title + "，标记失败");
         view.setTextColor(R.id.daily_name, row.header ? Color.rgb(188, 181, 211) : Color.WHITE);
         view.setTextColor(R.id.daily_badge, row.header ? Color.rgb(188, 181, 211)
+                : row.badge.equals("处理中") ? Color.rgb(245, 201, 95)
                 : row.badge.equals("今天") || row.badge.equals("习惯") ? Color.rgb(116, 151, 255) : Color.rgb(255, 92, 92));
         view.setContentDescription(R.id.daily_row, row.header ? row.title : row.title + "，" + row.badge);
         if (!row.header) {
