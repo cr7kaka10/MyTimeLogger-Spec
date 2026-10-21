@@ -24,7 +24,10 @@ public final class DailyWidgetViewsFactory implements RemoteViewsService.RemoteV
         view.setTextViewText(R.id.daily_name, row.title);
         view.setTextViewText(R.id.daily_badge, row.badge);
         view.setViewVisibility(R.id.daily_check, row.header ? View.GONE : View.VISIBLE);
+        view.setViewVisibility(R.id.daily_fail, "habit".equals(row.kind) ? View.VISIBLE : View.GONE);
         view.setTextViewText(R.id.daily_check, row.checked ? "☑" : "□");
+        view.setContentDescription(R.id.daily_check, row.title + "，标记完成");
+        view.setContentDescription(R.id.daily_fail, row.title + "，标记失败");
         view.setTextColor(R.id.daily_name, row.header ? Color.rgb(188, 181, 211) : Color.WHITE);
         view.setTextColor(R.id.daily_badge, row.header ? Color.rgb(188, 181, 211)
                 : row.badge.equals("今天") || row.badge.equals("习惯") ? Color.rgb(116, 151, 255) : Color.rgb(255, 92, 92));
@@ -36,6 +39,9 @@ public final class DailyWidgetViewsFactory implements RemoteViewsService.RemoteV
             view.setOnClickFillInIntent(R.id.daily_badge, open);
             if (!row.checked) view.setOnClickFillInIntent(R.id.daily_check, new Intent()
                     .putExtra("action", "complete").putExtra("kind", row.kind)
+                    .putExtra("id", row.id).putExtra("date", row.day));
+            if ("habit".equals(row.kind)) view.setOnClickFillInIntent(R.id.daily_fail, new Intent()
+                    .putExtra("action", "fail").putExtra("kind", row.kind)
                     .putExtra("id", row.id).putExtra("date", row.day));
         }
         return view;

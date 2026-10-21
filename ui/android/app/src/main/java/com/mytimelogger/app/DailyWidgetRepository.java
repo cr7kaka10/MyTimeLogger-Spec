@@ -42,11 +42,11 @@ final class DailyWidgetRepository {
             List<Row> habits = new ArrayList<>();
             for (Map<String, Object> item : db.query("SELECT id,name FROM habits WHERE is_active=0 AND source='local' ORDER BY sort_order,id", Collections.emptyList())) {
                 String id = text(item.get("id"));
-                if (includeHabit(scheduled, checkins, id))
-                    habits.add(new Row("habit", id, text(item.get("name")), "习惯", today,
-                            checkins.getOrDefault(id, 0) == 2 || store.isDone("habit", id, today), false));
+                int status = checkins.getOrDefault(id, 0);
+                if (includeHabit(scheduled, checkins, id) && status != 1 && status != 2
+                        && !store.isDone("habit", id, today))
+                    habits.add(new Row("habit", id, text(item.get("name")), "习惯", today, false, false));
             }
-            if (!habits.isEmpty()) { result.add(header("今日习惯", String.valueOf(habits.size()))); result.addAll(habits); }
             List<Row> dueToday = new ArrayList<>(), overdue = new ArrayList<>();
             for (Map<String, Object> item : db.query("SELECT id,title,due_date FROM tasks WHERE status=0 AND deleted_at IS NULL "
                     + "AND due_date IS NOT NULL AND due_date<>'' AND substr(due_date,1,10)<=? ORDER BY due_date,priority DESC,id", Collections.singletonList(today))) {
@@ -58,6 +58,7 @@ final class DailyWidgetRepository {
             }
             if (!dueToday.isEmpty()) { result.add(header("今日任务", String.valueOf(dueToday.size()))); result.addAll(dueToday); }
             if (!overdue.isEmpty()) { result.add(header("已过期", String.valueOf(overdue.size()))); result.addAll(overdue); }
+            if (!habits.isEmpty()) { result.add(header("今日习惯", String.valueOf(habits.size()))); result.addAll(habits); }
             if (result.isEmpty()) result.add(header("今天已完成", "暂无待办"));
             return result;
         } catch (RuntimeException error) {
