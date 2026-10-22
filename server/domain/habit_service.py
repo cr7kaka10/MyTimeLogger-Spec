@@ -49,7 +49,7 @@ class HabitDomainService:
         except sqlite3.IntegrityError:
             return False
 
-    def checkin_habit_in_txn(self, conn, user_id, habit_id, date_str) -> str | None:
+    def checkin_habit_in_txn(self, conn, user_id, habit_id, date_str, replace_failed=False) -> str | None:
         """在调用方事务内登记服务端确认的打卡和全部派生奖励事实。"""
         if not self._active_in_txn(conn, user_id, habit_id):
             return None
@@ -60,14 +60,27 @@ class HabitDomainService:
         if not habit:
             return None
         now_ts = self._now()
-        checkin_id = uuid.uuid4().hex
+        existing = conn.execute(
+            "SELECT id,status FROM server_habit_checkins WHERE user_id=? AND habit_id=? AND COALESCE(checkin_date,date)=?",
+            (user_id, habit_id, date_str),
+        ).fetchone() if replace_failed else None
+        if existing and int(existing["status"] or 0) == 2:
+            return existing["id"]
+        checkin_id = existing["id"] if existing else uuid.uuid4().hex
         checkin_time = now_ts.split(" ")[1] if " " in now_ts else "12:00:00"
-        conn.execute(
-            """INSERT INTO server_habit_checkins
-               (id,user_id,habit_id,date,checkin_date,checkin_time,status,created_at,updated_at)
-               VALUES (?,?,?,?,?,?,2,?,?)""",
-            (checkin_id, user_id, habit_id, date_str, date_str, checkin_time, now_ts, now_ts),
-        )
+        if existing:
+            self._reward_settlement.remove_state_ledgers_in_txn(
+                conn, user_id, habit_id, ("habit_fail", "habit_cancel"), date_str
+            )
+            conn.execute("UPDATE server_habit_checkins SET status=2,checkin_time=?,updated_at=? WHERE id=?",
+                         (checkin_time, now_ts, checkin_id))
+        else:
+            conn.execute(
+                """INSERT INTO server_habit_checkins
+                   (id,user_id,habit_id,date,checkin_date,checkin_time,status,created_at,updated_at)
+                   VALUES (?,?,?,?,?,?,2,?,?)""",
+                (checkin_id, user_id, habit_id, date_str, date_str, checkin_time, now_ts, now_ts),
+            )
         reward = self._reward_rules.calculate_habit_success(
             user_id, habit_id, habit["name"], habit["difficulty"] or "easy", date_str, now_ts
         )

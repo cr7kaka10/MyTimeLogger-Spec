@@ -47,10 +47,11 @@ class HabitCheckinCommandService:
                 self._require_active(conn, user_id, habit_id)
                 if int(desired_status) == 2:
                     existing = conn.execute(
-                        "SELECT id FROM server_habit_checkins WHERE user_id=? AND habit_id=? AND COALESCE(checkin_date,date)=?",
+                        "SELECT id,status FROM server_habit_checkins WHERE user_id=? AND habit_id=? AND COALESCE(checkin_date,date)=?",
                         (user_id, habit_id, checkin_date),
                     ).fetchone()
-                    if not existing and not self._habits.checkin_habit_in_txn(conn, user_id, habit_id, checkin_date):
+                    if (not existing or int(existing["status"] or 0) != 2) and not self._habits.checkin_habit_in_txn(
+                            conn, user_id, habit_id, checkin_date, replace_failed=True):
                         self._commands.mark_in_txn(conn, user_id, idempotency_key, "retryable_failed", error_code="habit_not_found")
                         finalize_error = "habit_not_found"
                 elif int(desired_status) == 1:

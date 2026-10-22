@@ -183,6 +183,7 @@ try:
     from .domain.atimelogger_final_backup import ATimeLoggerFinalBackupWorker
     from .domain.ticktick_task_mutation_service import TickTickTaskMutationService
     from .domain.habit_checkin_command_service import HabitCheckinCommandService
+    from .domain.habit_auto_failure_service import HabitAutoFailureService
     from .domain.management_plan_service import ManagementPlanError, ManagementPlanService
     from .domain.user_behavior_audit_service import UserBehaviorAuditService
     from .domain.management_planning_policy import system_policy_prompt
@@ -224,6 +225,7 @@ except (ImportError, ValueError):
     from domain.atimelogger_final_backup import ATimeLoggerFinalBackupWorker
     from domain.ticktick_task_mutation_service import TickTickTaskMutationService
     from domain.habit_checkin_command_service import HabitCheckinCommandService
+    from domain.habit_auto_failure_service import HabitAutoFailureService
     from domain.management_plan_service import ManagementPlanError, ManagementPlanService
     from domain.user_behavior_audit_service import UserBehaviorAuditService
     from domain.management_planning_policy import system_policy_prompt
@@ -291,6 +293,7 @@ habit_checkin_command_store = HabitCheckinCommandStore(store._connect)
 habit_checkin_command_service = HabitCheckinCommandService(
     store._transact, store.habit_domain_service, habit_checkin_command_store
 )
+habit_auto_failure_service = HabitAutoFailureService(store._transact, store.habit_domain_service)
 management_plan_service = ManagementPlanService(store._connect)
 def _behavior_audit_service() -> UserBehaviorAuditService:
     return UserBehaviorAuditService(store._connect)
@@ -649,6 +652,18 @@ async def _run_goal_settlement_schedule():
         await asyncio.sleep(max(1, (next_midnight - now).total_seconds()))
         await asyncio.to_thread(_settle_completed_goal_periods)
 
+async def _run_habit_auto_failure_schedule():
+    while True:
+        try:
+            await asyncio.to_thread(habit_auto_failure_service.run)
+        except Exception as exc:
+            logger.error("习惯漏打卡结算失败，下一轮重试: %s", type(exc).__name__)
+            await asyncio.sleep(60)
+            continue
+        now = datetime.now(timezone(timedelta(hours=8)))
+        next_midnight = (now + timedelta(days=1)).replace(hour=0, minute=0, second=2, microsecond=0)
+        await asyncio.sleep(max(1, (next_midnight - now).total_seconds()))
+
 
 async def _run_exercise_settlement_schedule():
     """服务启动补偿一次，随后在每个北京时间零点后锁定运动日。"""
@@ -791,6 +806,7 @@ async def lifespan(app: FastAPI):
     exercise_settlement_task = None
     body_metric_deadline_task = None
     sleep_automation_task = None
+    habit_auto_failure_task = None
     _repair_flash_task_pollution_on_startup()
     _migrate_flash_recommendations_on_startup()
     try:
@@ -833,6 +849,7 @@ async def lifespan(app: FastAPI):
     exercise_settlement_task = asyncio.create_task(_run_exercise_settlement_schedule())
     body_metric_deadline_task = asyncio.create_task(_run_body_metric_deadline_schedule())
     sleep_automation_task = asyncio.create_task(_run_sleep_automation_schedule())
+    habit_auto_failure_task = asyncio.create_task(_run_habit_auto_failure_schedule())
     try:
         yield
     finally:
@@ -869,6 +886,12 @@ async def lifespan(app: FastAPI):
                 await sleep_automation_task
             except asyncio.CancelledError:
                 logger.info("睡眠自动化调度已停止")
+        if habit_auto_failure_task:
+            habit_auto_failure_task.cancel()
+            try:
+                await habit_auto_failure_task
+            except asyncio.CancelledError:
+                logger.info("习惯漏打卡结算调度已停止")
 
 
 app = FastAPI(
@@ -4670,6 +4693,7 @@ def get_today_summary(date: str, user: dict = Depends(get_current_user_optional)
 # --- 3. 习惯管理 (Habits) ---
 @app.get("/api/habits")
 def get_habits(user: dict = Depends(get_current_user_optional)):
+    habit_auto_failure_service.run(user_id=int(user["id"]))
     return {"status": "ok", "habits": store.list_habits(user["id"])}
 
 @app.post("/api/habits")
@@ -4705,6 +4729,7 @@ async def update_habit(habit_id: str, request: Request, user: dict = Depends(get
 
 @app.get("/api/habits/today_checkins")
 def get_today_checkins(date: str, user: dict = Depends(get_current_user_optional)):
+    habit_auto_failure_service.run(user_id=int(user["id"]))
     checkins = store.list_today_checkins(user["id"], date)
     return {"status": "ok", "checkins": checkins}
 
