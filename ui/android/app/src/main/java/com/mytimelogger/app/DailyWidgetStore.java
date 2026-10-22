@@ -33,14 +33,22 @@ final class DailyWidgetStore {
         if (runtime == null || database == null) return null;
         try {
             JsonObject value = JsonParser.parseString(values.getString("snapshot", "")).getAsJsonObject();
-            return matches(value, runtime.verifiedUserId, runtime.generation, database, today()) ? value : null;
+            String day = today();
+            if (!ownerMatches(value, runtime.verifiedUserId, runtime.generation, database)) return null;
+            JsonObject days = value.getAsJsonObject("days");
+            if (!days.has(day)) days.add(day, DailyWidgetSchedule.ids(context, database, day));
+            return value;
         } catch (Exception ignored) { return null; }
     }
-    static boolean matches(JsonObject value, String userId, long generation, String database, String day) {
+    static boolean ownerMatches(JsonObject value, String userId, long generation, String database) {
         try { return value != null && value.get("generation").getAsLong() == generation
                 && userId.equals(value.get("userId").getAsString())
                 && database.equals(value.get("database").getAsString())
-                && value.getAsJsonObject("days").has(day); }
+                && value.getAsJsonObject("days") != null; }
+        catch (Exception ignored) { return false; }
+    }
+    static boolean matches(JsonObject value, String userId, long generation, String database, String day) {
+        try { return ownerMatches(value, userId, generation, database) && value.getAsJsonObject("days").has(day); }
         catch (Exception ignored) { return false; }
     }
     static boolean matchesCommand(JsonObject snapshot, JsonObject command, String day) {

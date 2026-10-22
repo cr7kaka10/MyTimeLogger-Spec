@@ -71,7 +71,7 @@ final class DailyWidgetRepository {
         return Integer.signum(due.substring(0, 10).compareTo(today));
     }
     static boolean includeHabit(Set<String> scheduled, Map<String, Integer> checkins, String id) {
-        return scheduled.contains(id) || checkins.containsKey(id);
+        return scheduled.contains(id);
     }
     static boolean unhandled(int status) { return status != 1 && status != 2; }
     static String badge(String original, String pending) {

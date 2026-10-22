@@ -10,12 +10,18 @@ import android.net.Uri;
 import android.widget.RemoteViews;
 
 public final class DailyWidgetProvider extends AppWidgetProvider {
+    static final String ACTION_REFRESH = "com.mytimelogger.app.DAILY_WIDGET_REFRESH";
+    static Intent refreshIntent(Context context) {
+        return new Intent(ACTION_REFRESH).setClass(context, DailyWidgetProvider.class)
+                .setPackage(context.getPackageName());
+    }
     @Override public void onEnabled(Context context) { refresh(context); }
     @Override public void onUpdate(Context context, AppWidgetManager manager, int[] ids) { refresh(context); }
     @Override public void onReceive(Context context, Intent intent) {
         super.onReceive(context, intent);
         if (intent != null && intent.getAction() != null &&
-                (Intent.ACTION_DATE_CHANGED.equals(intent.getAction())
+                (ACTION_REFRESH.equals(intent.getAction())
+                || Intent.ACTION_DATE_CHANGED.equals(intent.getAction())
                 || Intent.ACTION_TIMEZONE_CHANGED.equals(intent.getAction())
                 || Intent.ACTION_TIME_CHANGED.equals(intent.getAction()))) refresh(context);
     }
@@ -37,7 +43,9 @@ public final class DailyWidgetProvider extends AppWidgetProvider {
                             .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP),
                     PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
             views.setOnClickPendingIntent(R.id.daily_title, open);
-            views.setOnClickPendingIntent(R.id.daily_refresh, open);
+            views.setOnClickPendingIntent(R.id.daily_refresh, PendingIntent.getBroadcast(context, 0x445100 + id,
+                    refreshIntent(context),
+                    PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE));
             manager.updateAppWidget(id, views);
             manager.notifyAppWidgetViewDataChanged(id, R.id.daily_list);
         }

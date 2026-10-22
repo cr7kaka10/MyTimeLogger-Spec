@@ -37,7 +37,7 @@ public class DailyWidgetReceiverTest {
         context.deleteDatabase(database);
         db = new SqliteConnection(context, database); db.open();
         db.execute("CREATE TABLE tasks(id TEXT PRIMARY KEY,status INTEGER,deleted_at TEXT,title TEXT,due_date TEXT,priority INTEGER,updated_at TEXT,pushed_at TEXT)", Collections.emptyList());
-        db.execute("CREATE TABLE habits(id TEXT,name TEXT,is_active INTEGER,source TEXT,sort_order INTEGER)", Collections.emptyList());
+        db.execute("CREATE TABLE habits(id TEXT,name TEXT,is_active INTEGER,source TEXT,sort_order INTEGER,repeat_rule TEXT)", Collections.emptyList());
         db.execute("CREATE TABLE habit_checkins(habit_id TEXT,status INTEGER,checkin_date TEXT)", Collections.emptyList());
         db.execute("CREATE TABLE rewards(id TEXT,title TEXT,unlock_task_id TEXT,is_active INTEGER)", Collections.emptyList());
         db.execute("CREATE TABLE reward_ledger(id TEXT,amount REAL,source_type TEXT,source_id TEXT,description TEXT,created_at TEXT,updated_at TEXT)", Collections.emptyList());
@@ -45,7 +45,7 @@ public class DailyWidgetReceiverTest {
         db.execute("CREATE TABLE sync_outbox(id INTEGER PRIMARY KEY,change_id TEXT,device_id TEXT,table_name TEXT,record_id TEXT,operation TEXT,base_version TEXT,payload_json TEXT,status TEXT,retry_count INTEGER,created_at TEXT,updated_at TEXT,last_error TEXT)", Collections.emptyList());
         db.execute("INSERT INTO system_config VALUES('device_id','device-widget-test')", Collections.emptyList());
         db.execute("INSERT INTO tasks(id,status,title,due_date) VALUES('task-1',0,'任务',?)", Collections.singletonList(DailyWidgetStore.today()));
-        db.execute("INSERT INTO habits VALUES('habit-1','习惯',0,'local',1)", Collections.emptyList());
+        db.execute("INSERT INTO habits VALUES('habit-1','习惯',0,'local',1,'FREQ=DAILY')", Collections.emptyList());
         db.close();
         JsonObject config = new JsonObject();
         config.addProperty("serverUrl", "http://127.0.0.1:9"); config.addProperty("authToken", "test");
@@ -83,6 +83,37 @@ public class DailyWidgetReceiverTest {
             Thread.sleep(100);
         }
         return false;
+    }
+    @Test public void refreshBroadcastReloadsRowsWithoutOpeningActivity() {
+        Intent refresh = DailyWidgetProvider.refreshIntent(context);
+        assertEquals(DailyWidgetProvider.ACTION_REFRESH, refresh.getAction());
+        assertEquals(DailyWidgetProvider.class.getName(), refresh.getComponent().getClassName());
+        Instrumentation instrumentation = InstrumentationRegistry.getInstrumentation();
+        Instrumentation.ActivityMonitor monitor = instrumentation.addMonitor(MainActivity.class.getName(), null, false);
+        try {
+            DailyWidgetViewsFactory factory = new DailyWidgetViewsFactory(context);
+            factory.onCreate();
+            assertTrue(factory.getCount() > 0);
+            db.open();
+            db.execute("UPDATE tasks SET status=2 WHERE id='task-1'", Collections.emptyList());
+            db.close();
+            context.sendBroadcast(refresh);
+            instrumentation.waitForIdleSync();
+            factory.onDataSetChanged();
+            assertFalse(new DailyWidgetRepository(context).load().stream().anyMatch(row -> "task-1".equals(row.id)));
+            assertEquals(0, monitor.getHits());
+        } finally { instrumentation.removeMonitor(monitor); }
+    }
+    @Test public void expiredProjectionUsesCurrentAccountScheduleOnly() {
+        JsonObject old = new JsonObject(), days = new JsonObject();
+        old.addProperty("userId", "widget-test"); old.addProperty("generation", 777);
+        old.addProperty("database", database);
+        days.add("2026-01-01", new JsonArray()); old.add("days", days);
+        widget.edit().putString("snapshot", old.toString()).commit();
+        assertTrue(new DailyWidgetRepository(context).load().stream().anyMatch(row -> "habit-1".equals(row.id)));
+        old.addProperty("userId", "another-user");
+        widget.edit().putString("snapshot", old.toString()).commit();
+        assertFalse(new DailyWidgetRepository(context).load().stream().anyMatch(row -> "habit-1".equals(row.id)));
     }
     @Test public void backgroundTaskCompletesWithoutOpeningActivity() throws Exception {
         Instrumentation instrumentation = InstrumentationRegistry.getInstrumentation();

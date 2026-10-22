@@ -19,7 +19,8 @@ public class DailyWidgetContractTest {
         assertEquals(0, DailyWidgetRepository.dueBucket("2026-10-20 00:00:00", "2026-10-20"));
         assertEquals(1, DailyWidgetRepository.dueBucket("2026-10-21", "2026-10-20"));
         HashMap<String, Integer> checked = new HashMap<>(); checked.put("once", 2);
-        assertTrue(DailyWidgetRepository.includeHabit(Collections.emptySet(), checked, "once"));
+        assertFalse(DailyWidgetRepository.includeHabit(Collections.emptySet(), checked, "once"));
+        assertTrue(DailyWidgetRepository.includeHabit(Collections.singleton("once"), checked, "once"));
         assertFalse(DailyWidgetRepository.includeHabit(Collections.emptySet(), checked, "absent"));
     }
 
@@ -34,6 +35,13 @@ public class DailyWidgetContractTest {
         assertFalse(DailyWidgetStore.matches(value, "7", 43L, "account-7.db", "2026-10-20"));
         assertFalse(DailyWidgetStore.matches(value, "7", 42L, "account-8.db", "2026-10-20"));
         assertFalse(DailyWidgetStore.matches(value, "7", 42L, "account-7.db", "2026-10-21"));
+    }
+    @Test public void weeklyNativeProjectionMatchesBeijingDay() {
+        assertTrue(DailyWidgetSchedule.scheduled(null, "2026-10-19"));
+        assertTrue(DailyWidgetSchedule.scheduled("FREQ=DAILY", "2026-10-25"));
+        assertTrue(DailyWidgetSchedule.scheduled("RRULE:FREQ=WEEKLY;BYDAY=MO,TU", "2026-10-19"));
+        assertFalse(DailyWidgetSchedule.scheduled("FREQ=WEEKLY;BYDAY=MO,TU", "2026-10-25"));
+        assertTrue(DailyWidgetSchedule.scheduled("FREQ=WEEKLY;BYDAY=SA,SU", "2026-10-25"));
     }
 
     @Test public void duplicateTapReusesPendingCommandAndConfirmedTapStops() {
