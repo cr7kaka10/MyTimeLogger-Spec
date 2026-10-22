@@ -46,7 +46,7 @@ final class DailyWidgetRepository {
                 if (includeHabit(scheduled, checkins, id) && unhandled(status)
                         && !store.isDone("habit", id, today))
                     habits.add(new Row("habit", id, text(item.get("name")),
-                            badge("习惯", store.pendingState("habit", id, today)), today, false, false));
+                            badge("今天", store.pendingState("habit", id, today)), today, false, false));
             }
             List<Row> dueToday = new ArrayList<>(), overdue = new ArrayList<>();
             for (Map<String, Object> item : db.query("SELECT id,title,due_date FROM tasks WHERE status=0 AND deleted_at IS NULL "
