@@ -27,7 +27,7 @@ public class DailyWidgetReceiverTest {
     private final Context context = InstrumentationRegistry.getInstrumentation().getTargetContext();
     private final String database = "daily-widget-receiver-test.db";
     private SharedPreferences capacitor, runtime, widget;
-    private String oldDatabase, oldRuntime, oldSnapshot, oldPending, oldDone;
+    private String oldDatabase, oldRuntime, oldSnapshot, oldPending, oldDone, oldMenu;
     private SqliteConnection db;
     @Before public void setup() {
         capacitor = context.getSharedPreferences("CapacitorStorage", Context.MODE_PRIVATE);
@@ -36,7 +36,8 @@ public class DailyWidgetReceiverTest {
         oldDatabase = capacitor.getString(WidgetTimerPreferences.ACTIVE_DB_KEY, null);
         oldRuntime = runtime.getString("runtime", null);
         oldSnapshot = widget.getString("snapshot", null); oldPending = widget.getString("pending", null);
-        oldDone = widget.getString("done", null);
+        oldDone = widget.getString("done", null); oldMenu = widget.getString("menu", null);
+        widget.edit().remove("snapshot").remove("pending").remove("done").remove("menu").commit();
         context.deleteDatabase(database);
         db = new SqliteConnection(context, database); db.open();
         db.execute("CREATE TABLE tasks(id TEXT PRIMARY KEY,status INTEGER,deleted_at TEXT,title TEXT,due_date TEXT,priority INTEGER,updated_at TEXT,pushed_at TEXT)", Collections.emptyList());
@@ -71,6 +72,7 @@ public class DailyWidgetReceiverTest {
         restore(capacitor, WidgetTimerPreferences.ACTIVE_DB_KEY, oldDatabase);
         restore(runtime, "runtime", oldRuntime);
         restore(widget, "snapshot", oldSnapshot); restore(widget, "pending", oldPending); restore(widget, "done", oldDone);
+        restore(widget, "menu", oldMenu);
     }
     private void tap(String kind, String id, String action) {
         context.sendBroadcast(new Intent(DailyWidgetCommandReceiver.ACTION)
@@ -86,6 +88,13 @@ public class DailyWidgetReceiverTest {
             Thread.sleep(100);
         }
         return false;
+    }
+    private void awaitMenu(boolean expected) throws Exception {
+        for (int i = 0; i < 60; i++) {
+            if (new DailyWidgetStore(context).isMenuOpen("habit-1", DailyWidgetStore.today()) == expected) return;
+            Thread.sleep(100);
+        }
+        fail("菜单状态未更新");
     }
     @Test public void refreshBroadcastReloadsRowsWithoutOpeningActivity() {
         Intent refresh = DailyWidgetProvider.refreshIntent(context);
@@ -130,7 +139,7 @@ public class DailyWidgetReceiverTest {
         db.close();
         assertTrue(new DailyWidgetRepository(context).load().stream().anyMatch(row -> "habit-1".equals(row.id)));
     }
-    @Test public void todayHabitShowsDateAndFailureAsAction() {
+    @Test public void todayHabitShowsDateAndNeutralMenu() {
         assertEquals("今天 · " + DailyWidgetStore.today(),
                 DailyWidgetProvider.titleForDay(DailyWidgetStore.today()));
         DailyWidgetRepository.Row habit = new DailyWidgetRepository(context).load().stream()
@@ -143,14 +152,57 @@ public class DailyWidgetReceiverTest {
             ViewGroup view = (ViewGroup) factory.getViewAt(i).apply(context, null);
             TextView name = view.findViewById(R.id.daily_name);
             if (!"习惯".contentEquals(name.getText())) continue;
-            TextView failure = view.findViewById(R.id.daily_fail);
-            assertEquals(View.VISIBLE, failure.getVisibility());
-            assertEquals("记失败", failure.getText().toString());
+            TextView more = view.findViewById(R.id.daily_fail);
+            assertEquals(View.VISIBLE, more.getVisibility());
+            assertEquals("⋮", more.getText().toString());
             assertEquals("今天", ((TextView) view.findViewById(R.id.daily_badge)).getText().toString());
-            assertTrue(view.indexOfChild(failure) > view.indexOfChild(name));
+            assertEquals(View.GONE, view.findViewById(R.id.daily_confirm).getVisibility());
+            assertTrue(view.indexOfChild(more) > view.indexOfChild(name));
             return;
         }
         fail("今日习惯行未渲染");
+    }
+    @Test public void menuNeedsSecondTapAndCanBeCancelled() throws Exception {
+        tap("habit", "habit-1", "fail");
+        tap("habit", "habit-1", "menu_confirm");
+        InstrumentationRegistry.getInstrumentation().waitForIdleSync();
+        assertEquals(0, new DailyWidgetStore(context).pending().size());
+        tap("habit", "habit-1", "menu_open"); awaitMenu(true);
+        assertEquals(0, new DailyWidgetStore(context).pending().size());
+        DailyWidgetViewsFactory factory = new DailyWidgetViewsFactory(context);
+        factory.onCreate();
+        boolean menuVisible = false;
+        for (int i = 0; i < factory.getCount(); i++) {
+            ViewGroup view = (ViewGroup) factory.getViewAt(i).apply(context, null);
+            if (!"习惯".contentEquals(((TextView) view.findViewById(R.id.daily_name)).getText())) continue;
+            menuVisible = view.findViewById(R.id.daily_confirm).getVisibility() == View.VISIBLE
+                    && view.findViewById(R.id.daily_cancel).getVisibility() == View.VISIBLE
+                    && view.findViewById(R.id.daily_badge).getVisibility() == View.GONE;
+        }
+        assertTrue(menuVisible);
+        tap("habit", "habit-1", "menu_cancel"); awaitMenu(false);
+        tap("habit", "habit-1", "menu_confirm");
+        assertEquals(0, new DailyWidgetStore(context).pending().size());
+        tap("habit", "habit-1", "menu_open"); awaitMenu(true);
+        context.sendBroadcast(DailyWidgetProvider.refreshIntent(context)); awaitMenu(false);
+    }
+    @Test public void habitCheckboxDispatchesCompleteWithoutOpeningActivity() throws Exception {
+        AtomicReference<String> script = new AtomicReference<>();
+        DailyWidgetBridge bridge = new DailyWidgetBridge(context, script::set);
+        DailyWidgetBridge.attach(bridge); bridge.setForeground(true); bridge.ready();
+        Instrumentation instrumentation = InstrumentationRegistry.getInstrumentation();
+        Instrumentation.ActivityMonitor monitor = instrumentation.addMonitor(MainActivity.class.getName(), null, false);
+        try {
+            tap("habit", "habit-1", "complete");
+            for (int i = 0; i < 60 && script.get() == null; i++) Thread.sleep(100);
+            assertNotNull(script.get());
+            assertTrue(script.get().contains("\"action\":\"complete\""));
+            JsonObject command = new DailyWidgetStore(context).pending()
+                    .getAsJsonObject("habit:habit-1:" + DailyWidgetStore.today());
+            new DailyWidgetStore(context).ack(command.get("commandId").getAsString(), "applied");
+            assertFalse(new DailyWidgetRepository(context).load().stream().anyMatch(row -> "habit-1".equals(row.id)));
+            assertEquals(0, monitor.getHits());
+        } finally { bridge.close(); instrumentation.removeMonitor(monitor); }
     }
     @Test public void backgroundTaskCompletesWithoutOpeningActivity() throws Exception {
         Instrumentation instrumentation = InstrumentationRegistry.getInstrumentation();
@@ -180,7 +232,11 @@ public class DailyWidgetReceiverTest {
         } finally { bridge.close(); instrumentation.removeMonitor(monitor); }
     }
     @Test public void offlineHabitFailureStaysVisibleForSameIdRetry() throws Exception {
-        tap("habit", "habit-1", "fail");
+        tap("habit", "habit-1", "menu_open");
+        for (int i = 0; i < 60 && !new DailyWidgetStore(context).isMenuOpen("habit-1", DailyWidgetStore.today()); i++)
+            Thread.sleep(100);
+        assertTrue(new DailyWidgetStore(context).pending().size() == 0);
+        tap("habit", "habit-1", "menu_confirm");
         DailyWidgetStore store = new DailyWidgetStore(context);
         String key = "habit:habit-1:" + DailyWidgetStore.today();
         for (int i = 0; i < 60; i++) {
@@ -219,7 +275,10 @@ public class DailyWidgetReceiverTest {
             Instrumentation instrumentation = InstrumentationRegistry.getInstrumentation();
             Instrumentation.ActivityMonitor monitor = instrumentation.addMonitor(MainActivity.class.getName(), null, false);
             try {
-                tap("habit", "habit-1", "fail");
+                tap("habit", "habit-1", "menu_open");
+                for (int i = 0; i < 60 && !new DailyWidgetStore(context).isMenuOpen("habit-1", DailyWidgetStore.today()); i++)
+                    Thread.sleep(100);
+                tap("habit", "habit-1", "menu_confirm");
                 for (int i = 0; i < 60 && !new DailyWidgetStore(context).isDone("habit", "habit-1", DailyWidgetStore.today()); i++)
                     Thread.sleep(100);
                 assertTrue(new DailyWidgetStore(context).isDone("habit", "habit-1", DailyWidgetStore.today()));

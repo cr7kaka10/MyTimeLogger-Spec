@@ -20,6 +20,7 @@ public final class DailyWidgetProvider extends AppWidgetProvider {
     @Override public void onUpdate(Context context, AppWidgetManager manager, int[] ids) { refresh(context); }
     @Override public void onReceive(Context context, Intent intent) {
         super.onReceive(context, intent);
+        if (intent != null && ACTION_REFRESH.equals(intent.getAction())) new DailyWidgetStore(context).clearMenu();
         if (intent != null && intent.getAction() != null &&
                 (ACTION_REFRESH.equals(intent.getAction())
                 || Intent.ACTION_DATE_CHANGED.equals(intent.getAction())

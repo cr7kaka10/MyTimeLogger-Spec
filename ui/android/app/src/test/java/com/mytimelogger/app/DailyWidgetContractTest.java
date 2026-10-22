@@ -101,4 +101,21 @@ public class DailyWidgetContractTest {
         command.addProperty("date", "2026-10-21"); command.addProperty("userId", "8");
         assertFalse(DailyWidgetHeadlessExecutor.valid(snapshot, command, "2026-10-21"));
     }
+    @Test public void failureMenuExpiresAndRejectsOtherOwnerDayOrHabit() {
+        JsonObject owner = new JsonObject(), menu = new JsonObject();
+        owner.addProperty("userId", "7"); owner.addProperty("generation", 5);
+        owner.addProperty("database", "account-7.db");
+        menu.addProperty("userId", "7"); menu.addProperty("generation", 5);
+        menu.addProperty("database", "account-7.db");
+        menu.addProperty("date", "2026-10-20"); menu.addProperty("id", "h1");
+        menu.addProperty("expiresAt", 2_000L);
+        assertTrue(DailyWidgetStore.menuMatches(owner, menu, "h1", "2026-10-20", 1_999L));
+        assertFalse(DailyWidgetStore.menuMatches(owner, menu, "h2", "2026-10-20", 1_999L));
+        assertFalse(DailyWidgetStore.menuMatches(owner, menu, "h1", "2026-10-21", 1_999L));
+        assertFalse(DailyWidgetStore.menuMatches(owner, menu, "h1", "2026-10-20", 2_000L));
+        owner.addProperty("generation", 6);
+        assertFalse(DailyWidgetStore.menuMatches(owner, menu, "h1", "2026-10-20", 1_999L));
+        owner.addProperty("generation", 5); owner.addProperty("userId", "8");
+        assertFalse(DailyWidgetStore.menuMatches(owner, menu, "h1", "2026-10-20", 1_999L));
+    }
 }

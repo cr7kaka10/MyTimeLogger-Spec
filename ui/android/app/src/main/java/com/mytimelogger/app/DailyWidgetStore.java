@@ -148,6 +148,36 @@ final class DailyWidgetStore {
         values.edit().putString("done", done.toString()).putString("pending", pending.toString()).commit();
     }
     boolean isDone(String kind, String id, String day) { return readObject("done").has(kind + ":" + id + ":" + day); }
+    boolean openMenu(String id, String day) {
+        synchronized (DailyWidgetStore.class) {
+            JsonObject owner = snapshot();
+            if (owner == null || !today().equals(day) || id == null || id.isEmpty()) return false;
+            JsonObject menu = new JsonObject();
+            menu.addProperty("userId", owner.get("userId").getAsString());
+            menu.addProperty("generation", owner.get("generation").getAsLong());
+            menu.addProperty("database", owner.get("database").getAsString());
+            menu.addProperty("date", day); menu.addProperty("id", id);
+            menu.addProperty("expiresAt", System.currentTimeMillis() + 120_000);
+            return values.edit().putString("menu", menu.toString()).commit();
+        }
+    }
+    boolean isMenuOpen(String id, String day) {
+        return today().equals(day) && menuMatches(snapshot(), readObject("menu"), id, day, System.currentTimeMillis());
+    }
+    boolean consumeMenu(String id, String day) {
+        synchronized (DailyWidgetStore.class) {
+            boolean valid = isMenuOpen(id, day);
+            values.edit().remove("menu").commit();
+            return valid;
+        }
+    }
+    void clearMenu() { values.edit().remove("menu").commit(); }
+    static boolean menuMatches(JsonObject owner, JsonObject menu, String id, String day, long now) {
+        try {
+            return owner != null && id.equals(string(menu, "id")) && day.equals(string(menu, "date"))
+                    && matchesCommand(owner, menu, day) && menu.get("expiresAt").getAsLong() > now;
+        } catch (RuntimeException ignored) { return false; }
+    }
     String pendingState(String kind, String id, String day) {
         try {
             JsonObject pending = readObject("pending");

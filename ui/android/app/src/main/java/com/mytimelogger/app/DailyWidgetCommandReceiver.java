@@ -21,18 +21,32 @@ public final class DailyWidgetCommandReceiver extends BroadcastReceiver {
                 || !getClass().getName().equals(intent.getComponent().getClassName())) return;
         String action = intent.getStringExtra("action");
         if ("open".equals(action)) { openChecklist(context); return; }
-        if (!("complete".equals(action) || "fail".equals(action))) return;
+        if (!("complete".equals(action) || "menu_open".equals(action)
+                || "menu_cancel".equals(action) || "menu_confirm".equals(action))) return;
         String kind = intent.getStringExtra("kind"), id = intent.getStringExtra("id");
         String day = intent.getStringExtra("date");
         if (kind == null || id == null || day == null || !day.equals(DailyWidgetStore.today())
-                || ("fail".equals(action) && !"habit".equals(kind))) return;
+                || (!"complete".equals(action) && !"habit".equals(kind))) return;
+        DailyWidgetStore store = new DailyWidgetStore(context);
+        if ("menu_cancel".equals(action)) {
+            store.consumeMenu(id, day);
+            DailyWidgetProvider.refresh(context);
+            return;
+        }
+        if ("menu_confirm".equals(action) && !store.consumeMenu(id, day)) return;
         boolean eligible = false;
         for (DailyWidgetRepository.Row row : new DailyWidgetRepository(context).load())
             if (!row.header && !row.checked && row.kind.equals(kind) && row.id.equals(id) && row.day.equals(day)) {
                 eligible = true; break;
             }
         if (!eligible) return;
-        JsonObject command = new DailyWidgetStore(context).claim(kind, id, day, action);
+        if ("menu_open".equals(action)) {
+            if (store.openMenu(id, day)) DailyWidgetProvider.refresh(context);
+            return;
+        }
+        if ("complete".equals(action)) store.clearMenu();
+        JsonObject command = store.claim(kind, id, day,
+                "menu_confirm".equals(action) ? "fail" : "complete");
         if (command == null) return;
         DailyWidgetProvider.refresh(context);
         DailyWidgetBridge bridge = DailyWidgetBridge.current();

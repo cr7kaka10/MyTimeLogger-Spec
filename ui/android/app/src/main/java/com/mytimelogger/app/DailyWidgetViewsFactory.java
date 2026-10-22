@@ -21,13 +21,19 @@ public final class DailyWidgetViewsFactory implements RemoteViewsService.RemoteV
         if (position < 0 || position >= rows.size()) return null;
         DailyWidgetRepository.Row row = rows.get(position);
         RemoteViews view = new RemoteViews(context.getPackageName(), R.layout.daily_widget_row);
+        boolean menu = "habit".equals(row.kind) && new DailyWidgetStore(context).isMenuOpen(row.id, row.day);
         view.setTextViewText(R.id.daily_name, row.title);
         view.setTextViewText(R.id.daily_badge, row.badge);
+        view.setViewVisibility(R.id.daily_badge, menu ? View.GONE : View.VISIBLE);
         view.setViewVisibility(R.id.daily_check, row.header ? View.GONE : View.VISIBLE);
-        view.setViewVisibility(R.id.daily_fail, "habit".equals(row.kind) ? View.VISIBLE : View.GONE);
+        view.setViewVisibility(R.id.daily_fail, "habit".equals(row.kind) && !menu ? View.VISIBLE : View.GONE);
+        view.setViewVisibility(R.id.daily_cancel, menu ? View.VISIBLE : View.GONE);
+        view.setViewVisibility(R.id.daily_confirm, menu ? View.VISIBLE : View.GONE);
         view.setTextViewText(R.id.daily_check, row.checked ? "☑" : "□");
         view.setContentDescription(R.id.daily_check, row.title + "，标记完成");
-        view.setContentDescription(R.id.daily_fail, row.title + "，标记失败");
+        view.setContentDescription(R.id.daily_fail, row.title + "，更多操作");
+        view.setContentDescription(R.id.daily_cancel, row.title + "，取消记失败");
+        view.setContentDescription(R.id.daily_confirm, row.title + "，确认记失败");
         view.setTextColor(R.id.daily_name, row.header ? Color.rgb(188, 181, 211) : Color.WHITE);
         view.setTextColor(R.id.daily_badge, row.header ? Color.rgb(188, 181, 211)
                 : row.badge.equals("处理中") ? Color.rgb(245, 201, 95)
@@ -37,13 +43,17 @@ public final class DailyWidgetViewsFactory implements RemoteViewsService.RemoteV
             Intent open = new Intent().putExtra("action", "open").putExtra("kind", row.kind)
                     .putExtra("id", row.id).putExtra("date", row.day);
             view.setOnClickFillInIntent(R.id.daily_name, open);
-            view.setOnClickFillInIntent(R.id.daily_badge, open);
+            if (!"habit".equals(row.kind)) view.setOnClickFillInIntent(R.id.daily_badge, open);
             if (!row.checked) view.setOnClickFillInIntent(R.id.daily_check, new Intent()
                     .putExtra("action", "complete").putExtra("kind", row.kind)
                     .putExtra("id", row.id).putExtra("date", row.day));
-            if ("habit".equals(row.kind)) view.setOnClickFillInIntent(R.id.daily_fail, new Intent()
-                    .putExtra("action", "fail").putExtra("kind", row.kind)
-                    .putExtra("id", row.id).putExtra("date", row.day));
+            if ("habit".equals(row.kind)) {
+                String[] actions = menu ? new String[]{"menu_cancel", "menu_confirm"} : new String[]{"menu_open"};
+                int[] targets = menu ? new int[]{R.id.daily_cancel, R.id.daily_confirm} : new int[]{R.id.daily_fail};
+                for (int i = 0; i < actions.length; i++) view.setOnClickFillInIntent(targets[i], new Intent()
+                        .putExtra("action", actions[i]).putExtra("kind", row.kind)
+                        .putExtra("id", row.id).putExtra("date", row.day));
+            }
         }
         return view;
     }
