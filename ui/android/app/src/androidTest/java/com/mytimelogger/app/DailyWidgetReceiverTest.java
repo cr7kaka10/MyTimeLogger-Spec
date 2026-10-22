@@ -5,6 +5,9 @@ import android.app.Instrumentation;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.view.View;
+import android.view.ViewGroup;
+import android.widget.TextView;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.platform.app.InstrumentationRegistry;
 import com.google.gson.JsonArray;
@@ -126,6 +129,28 @@ public class DailyWidgetReceiverTest {
         db.execute("UPDATE habits SET repeat_rule='FREQ=DAILY' WHERE id='habit-1'", Collections.emptyList());
         db.close();
         assertTrue(new DailyWidgetRepository(context).load().stream().anyMatch(row -> "habit-1".equals(row.id)));
+    }
+    @Test public void todayHabitShowsDateAndFailureAsAction() {
+        assertEquals("今天 · " + DailyWidgetStore.today(),
+                DailyWidgetProvider.titleForDay(DailyWidgetStore.today()));
+        DailyWidgetRepository.Row habit = new DailyWidgetRepository(context).load().stream()
+                .filter(row -> "habit-1".equals(row.id)).findFirst().get();
+        assertEquals(DailyWidgetStore.today(), habit.day);
+        assertEquals("今天", habit.badge);
+        DailyWidgetViewsFactory factory = new DailyWidgetViewsFactory(context);
+        factory.onCreate();
+        for (int i = 0; i < factory.getCount(); i++) {
+            ViewGroup view = (ViewGroup) factory.getViewAt(i).apply(context, null);
+            TextView name = view.findViewById(R.id.daily_name);
+            if (!"习惯".contentEquals(name.getText())) continue;
+            TextView failure = view.findViewById(R.id.daily_fail);
+            assertEquals(View.VISIBLE, failure.getVisibility());
+            assertEquals("记失败", failure.getText().toString());
+            assertEquals("今天", ((TextView) view.findViewById(R.id.daily_badge)).getText().toString());
+            assertTrue(view.indexOfChild(failure) > view.indexOfChild(name));
+            return;
+        }
+        fail("今日习惯行未渲染");
     }
     @Test public void backgroundTaskCompletesWithoutOpeningActivity() throws Exception {
         Instrumentation instrumentation = InstrumentationRegistry.getInstrumentation();

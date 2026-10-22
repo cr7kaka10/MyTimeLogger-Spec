@@ -11,6 +11,7 @@ import android.widget.RemoteViews;
 
 public final class DailyWidgetProvider extends AppWidgetProvider {
     static final String ACTION_REFRESH = "com.mytimelogger.app.DAILY_WIDGET_REFRESH";
+    static String titleForDay(String day) { return "今天 · " + day; }
     static Intent refreshIntent(Context context) {
         return new Intent(ACTION_REFRESH).setClass(context, DailyWidgetProvider.class)
                 .setPackage(context.getPackageName());
@@ -30,6 +31,7 @@ public final class DailyWidgetProvider extends AppWidgetProvider {
         int[] ids = manager.getAppWidgetIds(new ComponentName(context, DailyWidgetProvider.class));
         for (int id : ids) {
             RemoteViews views = new RemoteViews(context.getPackageName(), R.layout.daily_widget);
+            views.setTextViewText(R.id.daily_title, titleForDay(DailyWidgetStore.today()));
             Intent service = new Intent(context, DailyWidgetViewsService.class)
                     .putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, id)
                     .setData(Uri.parse("mtl://daily-widget/" + id));
