@@ -115,6 +115,18 @@ public class DailyWidgetReceiverTest {
         widget.edit().putString("snapshot", old.toString()).commit();
         assertFalse(new DailyWidgetRepository(context).load().stream().anyMatch(row -> "habit-1".equals(row.id)));
     }
+    @Test public void refreshUsesCurrentLocalHabitSchedule() {
+        assertTrue(new DailyWidgetRepository(context).load().stream().anyMatch(row -> "habit-1".equals(row.id)));
+        db.open();
+        db.execute("UPDATE habits SET repeat_rule='FREQ=WEEKLY;BYDAY=XX' WHERE id='habit-1'", Collections.emptyList());
+        db.close();
+        context.sendBroadcast(DailyWidgetProvider.refreshIntent(context));
+        assertFalse(new DailyWidgetRepository(context).load().stream().anyMatch(row -> "habit-1".equals(row.id)));
+        db.open();
+        db.execute("UPDATE habits SET repeat_rule='FREQ=DAILY' WHERE id='habit-1'", Collections.emptyList());
+        db.close();
+        assertTrue(new DailyWidgetRepository(context).load().stream().anyMatch(row -> "habit-1".equals(row.id)));
+    }
     @Test public void backgroundTaskCompletesWithoutOpeningActivity() throws Exception {
         Instrumentation instrumentation = InstrumentationRegistry.getInstrumentation();
         Instrumentation.ActivityMonitor monitor = instrumentation.addMonitor(MainActivity.class.getName(), null, false);

@@ -36,7 +36,7 @@ final class DailyWidgetStore {
             String day = today();
             if (!ownerMatches(value, runtime.verifiedUserId, runtime.generation, database)) return null;
             JsonObject days = value.getAsJsonObject("days");
-            if (!days.has(day)) days.add(day, DailyWidgetSchedule.ids(context, database, day));
+            days.add(day, DailyWidgetSchedule.ids(context, database, day));
             return value;
         } catch (Exception ignored) { return null; }
     }
