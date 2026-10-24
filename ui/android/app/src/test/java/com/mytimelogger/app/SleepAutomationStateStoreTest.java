@@ -31,4 +31,12 @@ public class SleepAutomationStateStoreTest {
         assertEquals("main_alarm",store.lastStartSource());assertEquals(123L,store.nextRetryAt());
         store.setNextRetryAt(-1L);assertEquals(0L,store.nextRetryAt());
     }
+    @Test public void jobsAreIsolatedByVerifiedAccount() {
+        SleepAutomationStateStore store=new SleepAutomationStateStore();
+        store.switchOwnerForTest("account-a");store.save(s("UPLOADED","2026-10-24",1));
+        store.switchOwnerForTest("account-b");assertNull(store.load("2026-10-24"));assertTrue(store.history().isEmpty());
+        store.save(s("MEDIA","2026-10-24",2));store.switchOwnerForTest("account-a");
+        assertEquals("UPLOADED",store.load("2026-10-24").stage);
+        assertEquals(1,store.history().size());
+    }
 }

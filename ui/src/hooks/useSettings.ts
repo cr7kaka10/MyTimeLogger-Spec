@@ -13,6 +13,7 @@ import { detectPlatformRuntime } from '../platform/runtime'
 import { clearActiveAccountStorageKey, setSecureCredential, writeActiveAccountStorageKey } from '../platform/credentials'
 import { formatPlatformNetworkError } from '../platform/fetch'
 import { clearTimerWidgetRuntime, configureTimerWidgetRuntime } from '../platform/timerWidget'
+import { createSleepAutomationConfigSync } from '../platform/sleepAutomation'
 import { resolveActiveSessionVerification, type ActiveSessionVerification } from '../auth/sessionState'
 import {
   AUDIO_SETTING_DEFAULTS,
@@ -155,6 +156,13 @@ export const useSettings = (): UseSettingsReturn => {
   const environmentInitialized = useRef(false)
   const connectionRequestIds = useRef<Record<EnvironmentName, number>>({ development: 0, testing: 0, production: 0 })
   const androidThemeOverrideRef = useRef<AndroidThemeOverride | null>(null)
+  const sleepAutomationSync = useRef(createSleepAutomationConfigSync())
+
+  useEffect(() => {
+    if (!profileReady || detectPlatformRuntime() !== 'capacitor-android' || selectedEnvironment !== activeEnvironment) return
+    const { serverUrl, authToken, verifiedUserId } = selectedEnvironmentProfile
+    sleepAutomationSync.current(serverUrl && authToken && verifiedUserId ? { url: serverUrl, token: authToken, userId: verifiedUserId } : null)
+  }, [profileReady, activeEnvironment, selectedEnvironment, selectedEnvironmentProfile.serverUrl, selectedEnvironmentProfile.authToken, selectedEnvironmentProfile.verifiedUserId])
 
   useEffect(() => {
     if (!profileReady || detectPlatformRuntime() !== 'capacitor-android') return
@@ -320,6 +328,7 @@ export const useSettings = (): UseSettingsReturn => {
       }
       else db.setConfig(tokenKey, body.token)
       provisionTimerWidgetRuntime(db, { serverUrl: url, authToken: body.token, verifiedUserId: String(userId) })
+      if (detectPlatformRuntime() === 'capacitor-android') sleepAutomationSync.current({ url, token: body.token, userId: String(userId) })
       if (environment === activeEnvironment) await refreshSyncConfiguration(db)
       setSelectedEnvironmentProfile({ serverUrl: url, username: username.trim(), authToken: body.token, verifiedUserId: String(userId) })
       setConnectionStatuses(prev => ({ ...prev, [environment]: 'connected' }))
@@ -338,6 +347,7 @@ export const useSettings = (): UseSettingsReturn => {
       else await setSecureCredential(tokenKey, '')
       await clearActiveAccountStorageKey()
       clearTimerWidgetRuntime()
+      sleepAutomationSync.current(null)
     } else db.setConfig(tokenKey, '')
     db.setConfig(environmentKey(activeEnvironment, 'username'), '')
     db.setConfig(environmentKey(activeEnvironment, 'verified_user_id'), '')

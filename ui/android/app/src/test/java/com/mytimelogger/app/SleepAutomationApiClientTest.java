@@ -17,5 +17,8 @@ public class SleepAutomationApiClientTest {
         assertFalse(SleepAutomationApiClient.statusJob(new SleepAutomationApiClient.Result("ok","{\"request_id\":\"abc\",\"status\":\"done\",\"date\":\"2026-10-01\",\"result\":{\"report_status\":1}}"),"2026-10-01").reportReady);
         assertEquals("date_mismatch",SleepAutomationApiClient.statusJob(new SleepAutomationApiClient.Result("ok","{\"request_id\":\"abc\",\"status\":\"done\",\"date\":\"2026-09-30\"}"),"2026-10-01").state);
         assertEquals("protocol_error",SleepAutomationApiClient.statusJob(new SleepAutomationApiClient.Result("ok","{\"request_id\":\"abc\",\"status\":\"mystery\"}"),"2026-10-01").state);
+        assertEquals("vision_model_unconfigured",SleepAutomationApiClient.statusJob(new SleepAutomationApiClient.Result("ok","{\"request_id\":\"abc\",\"status\":\"error\",\"error\":\"当前用户未配置视觉大模型\"}"),"2026-10-01").state);
+        assertEquals("ocr_failed",SleepAutomationApiClient.statusJob(new SleepAutomationApiClient.Result("ok","{\"request_id\":\"abc\",\"status\":\"error\",\"error\":\"OCR failed\"}"),"2026-10-01").state);
+        assertEquals("report_failed",SleepAutomationApiClient.statusJob(new SleepAutomationApiClient.Result("ok","{\"request_id\":\"abc\",\"status\":\"error\",\"error\":\"secret-value\"}"),"2026-10-01").state);
     }
 }

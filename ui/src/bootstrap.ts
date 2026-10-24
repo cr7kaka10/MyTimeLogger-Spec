@@ -54,7 +54,7 @@ export async function bootstrapApplication(loadCredentials: () => Promise<void> 
     await installNotificationRuntime(runtime, await getDatabase(), appLifecycle)
     if (runtime === 'capacitor-android') {
       const syncSleep = createSleepAutomationConfigSync()
-      const pull = () => { void getDatabase().then(db => { const cfg = db.getAllConfig(); const active = cfg.active_environment || 'development'; const prefix = `env_${active}_`; const url = cfg[`${prefix}server_url`] || ''; const token = cfg[`${prefix}auth_token`] || ''; syncSleep(url && token ? { url, token } : null) }) }
+      const pull = () => { void getDatabase().then(db => { const cfg = db.getAllConfig(); const active = cfg.active_environment || 'development'; const prefix = `env_${active}_`; const url = cfg[`${prefix}server_url`] || ''; const token = cfg[`${prefix}auth_token`] || ''; const userId = cfg[`${prefix}verified_user_id`] || ''; syncSleep(url && token && userId ? { url, token, userId } : null) }) }
       const timer = window.setInterval(pull, 1000)
       window.addEventListener('mtl:auth-cleared', pull); pull()
       removeSleepConfigSync = () => { window.clearInterval(timer); window.removeEventListener('mtl:auth-cleared', pull) }

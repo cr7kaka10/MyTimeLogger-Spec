@@ -31,7 +31,7 @@ public class SleepAutomationRunnerServiceTest {
     }
 
     @Test public void everyMissingGateHasStableCode() {
-        String[] expected={"accessibility_unavailable","notifications_denied","media_permission_limited","login_required","huawei_version_unsupported","device_locked","already_succeeded"};
+        String[] expected={"accessibility_unavailable","notifications_denied","media_permission_limited","login_required","huawei_not_installed","device_locked","already_succeeded"};
         for(int missing=0;missing<expected.length;missing++) {
             boolean[] ok={true,true,true,true,true,true,true}; ok[missing]=false;
             assertTrue(expected[missing].equals(SleepAutomationRunnerService.decide(ok)));
@@ -57,7 +57,7 @@ public class SleepAutomationRunnerServiceTest {
     @Test public void apiStatesSeparateSuccessPermanentAndRecoverable(){
         assertTrue("SUCCESS".equals(SleepAutomationRunnerService.outcome("done",true)));
         assertTrue("SUCCESS".equals(SleepAutomationRunnerService.outcome("reused",true)));
-        assertTrue("FAILED".equals(SleepAutomationRunnerService.outcome("done",false)));
+        assertTrue("POLLING".equals(SleepAutomationRunnerService.outcome("done",false)));
         assertTrue("FAILED".equals(SleepAutomationRunnerService.outcome("error",false)));
         assertTrue("POLLING".equals(SleepAutomationRunnerService.outcome("network_error",false)));
         assertTrue("POLLING".equals(SleepAutomationRunnerService.outcome("running",false)));
@@ -65,11 +65,12 @@ public class SleepAutomationRunnerServiceTest {
         assertTrue(store.advance(new SleepAutomationSnapshot("RUNNING","2026-10-02","","",1,"",2)));
     }
     private static long at(int h,int m){Calendar c=Calendar.getInstance(SleepAutomationScheduler.BEIJING);c.clear();c.set(2026,Calendar.OCTOBER,1,h,m);return c.getTimeInMillis();}
-    @Test public void retrySlotsAreBoundedAndPermanentErrorsStop(){
-        assertEquals(at(8,50),SleepAutomationRunnerService.nextRetry(at(8,40),"device_locked"));
-        assertEquals(at(9,10),SleepAutomationRunnerService.nextRetry(at(8,50),"media_not_found"));
-        assertEquals(at(10,10),SleepAutomationRunnerService.nextRetry(at(9,40),"network_error"));
-        assertEquals(-1,SleepAutomationRunnerService.nextRetry(at(10,30),"network_error"));
+    @Test public void retryWindowContinuesTodayAndPermanentErrorsStop(){
+        assertEquals(at(8,45),SleepAutomationRunnerService.nextRetry(at(8,40),"device_locked"));
+        assertEquals(at(8,55),SleepAutomationRunnerService.nextRetry(at(8,50),"media_not_found"));
+        assertEquals(at(9,55),SleepAutomationRunnerService.nextRetry(at(9,40),"network_error"));
+        assertEquals(at(10,45),SleepAutomationRunnerService.nextRetry(at(10,30),"done"));
+        assertEquals(-1,SleepAutomationRunnerService.nextRetry(at(23,40),"network_error"));
         assertEquals(-1,SleepAutomationRunnerService.nextRetry(at(8,40),"unauthorized"));
     }
 }

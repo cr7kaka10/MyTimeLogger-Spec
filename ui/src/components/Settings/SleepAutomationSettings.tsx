@@ -22,6 +22,8 @@ export function SleepAutomationSettings({ status, consented, permissions, onCons
     {!ready && <div className="px-4 pb-2 text-xs text-amber-600">{!consented ? '请先确认自动化与图片上传同意。' : `尚未授权：${missing.join('、')}`}{status.enabled ? ' 已保留每日执行；补齐后自动恢复。' : ''}</div>}
     <div className="border-t border-gray-50 px-4 py-2 text-xs text-gray-400">下次执行：{status.nextRunAt || '开启后计算'}</div>
     {(status.stage || status.reason) && <div className="px-4 py-2 text-xs text-red-500">失败阶段：{safeText(status.stage)} · {safeText(status.reason)}</div>}
+    {(status.captureStep || status.captureWindow) && <div className="px-4 py-1 text-xs text-gray-500">华为步骤：{safeText(status.captureStep)} · 窗口：{safeText(status.captureWindow)}</div>}
+    <div className="px-4 py-1 text-xs text-gray-500">图片已确认：{status.mediaSelected ? '是' : '否'} · 上传任务已建立：{status.requestIdPresent ? '是' : '否'}</div>
     <div className="flex gap-2 px-4 py-2"><button type="button" onClick={onTest}>立即测试</button><button type="button" onClick={onRetry}>重试</button><button type="button" onClick={onStop}>停止</button></div>
     {history.length > 0 && <div className="border-t border-gray-50 px-4 py-2 text-xs">最近七次运行{history.map((run, index) => <div data-run={index} key={index}>{safeText(run.stage)} · {safeText(run.result)} · {safeText(run.reason)}</div>)}</div>}
     <div className="px-4 py-2 text-xs text-gray-400">自动化失败时，可手动保存睡眠图片后到睡眠分析页上传。</div>

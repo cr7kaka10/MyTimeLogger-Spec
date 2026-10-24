@@ -35,6 +35,21 @@ public class HuaweiSleepAutomationServiceTest {
         assertEquals("com.huawei.health:id/list_popup_window_item",HuaweiSleepSelectors.RULES.get("CHOOSE_SHARE").target);
     }
 
+    @Test public void localizedSemanticAnchorsAreUniqueAndFailClosed(){
+        assertEquals(2,HuaweiSleepSelectors.uniqueStage(Arrays.asList("Heart","Weight","Sleep"),"OPEN_SLEEP"));
+        assertEquals(0,HuaweiSleepSelectors.uniqueStage(Arrays.asList("More items"),"OPEN_MORE"));
+        assertEquals(0,HuaweiSleepSelectors.uniqueStage(Arrays.asList("Share","Sleep settings"),"CHOOSE_SHARE"));
+        assertEquals(0,HuaweiSleepSelectors.uniqueStage(Arrays.asList("Save","WeChat"),"SAVE_LOCAL"));
+        assertEquals(-2,HuaweiSleepSelectors.uniqueStage(Arrays.asList("Save","保存"),"SAVE_LOCAL"));
+        assertEquals(-1,HuaweiSleepSelectors.uniqueStage(Arrays.asList("Delete"),"SAVE_LOCAL"));
+    }
+    @Test public void todayAcceptsChineseAndEnglishButNotYesterday(){
+        Calendar c=Calendar.getInstance(SleepAutomationScheduler.BEIJING);c.clear();c.set(2026,Calendar.OCTOBER,24,8,40);
+        assertTrue(HuaweiSleepSelectors.isToday("10月24日",c.getTime()));
+        assertTrue(HuaweiSleepSelectors.isToday("Sat, Oct 24",c.getTime()));
+        assertFalse(HuaweiSleepSelectors.isToday("Fri, Oct 23",c.getTime()));
+    }
+
     @Test public void transientWindowClassNeverReplacesTrustedActivity() {
         String home="com.huawei.health.MainActivity",detail="com.huawei.ui.main.stories.fitness.activity.coresleep.KnitSleepDetailActivity";
         assertEquals(home,HuaweiSleepAutomationService.trustedActivity(home,"android.widget.FrameLayout"));
@@ -74,6 +89,7 @@ public class HuaweiSleepAutomationServiceTest {
         assertEquals("ok",HuaweiSleepAutomationService.guard("OPEN_SLEEP","com.huawei.health",home,false));
         assertEquals("ok",HuaweiSleepAutomationService.guard("VERIFY_DAY","com.huawei.health",home,false));
         assertEquals("ok",HuaweiSleepAutomationService.guard("WAIT_PREVIEW","com.huawei.health","com.huawei.ui.main.stories.fitness.activity.coresleep.KnitSleepDetailActivity",false));
+        assertEquals("wait",HuaweiSleepAutomationService.guard("WAIT_PREVIEW","com.huawei.health",home,false));
         assertEquals("duplicate",HuaweiSleepAutomationService.guard("OPEN_SLEEP","com.huawei.health",home,true));
         assertEquals("package_changed",HuaweiSleepAutomationService.guard("OPEN_SLEEP","com.android.systemui",home,false));
         assertEquals("user_left",HuaweiSleepAutomationService.guard("OPEN_SLEEP","com.mytimelogger.app",home,false));
@@ -81,12 +97,4 @@ public class HuaweiSleepAutomationServiceTest {
         assertEquals("inactive",HuaweiSleepAutomationService.guard(null,"com.huawei.health",home,false));
     }
 
-    @Test public void coordinateFallbackRequiresAllFourConstraints() {
-        assertNull(HuaweiSleepSelectors.fallback("OPEN_MORE","17.0.8.301",1220,2712,"portrait",true));
-        assertNull(HuaweiSleepSelectors.fallback("OPEN_MORE","17.0.8.300",1080,2400,"portrait",true));
-        assertNull(HuaweiSleepSelectors.fallback("OPEN_MORE","17.0.8.300",1220,2712,"landscape",true));
-        assertNull(HuaweiSleepSelectors.fallback("OPEN_MORE","17.0.8.300",1220,2712,"portrait",false));
-        HuaweiSleepSelectors.Selection s=HuaweiSleepSelectors.fallback("OPEN_MORE","17.0.8.300",1220,2712,"portrait",true);
-        assertNotNull(s);assertEquals("coordinate_fallback",s.selectorType);assertEquals(1120,s.x);assertEquals(190,s.y);
-    }
 }
