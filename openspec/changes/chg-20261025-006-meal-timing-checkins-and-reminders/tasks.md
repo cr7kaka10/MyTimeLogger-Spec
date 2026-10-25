@@ -11,5 +11,5 @@
 
 ## 3. Android 本地提醒
 
-- [ ] 3.1 增加按日期和餐次稳定排程/取消提醒的薄封装；最多修改 `ui/src/platform/mealReminders.ts`、`ui/src/platform/reminders.ts` 两个文件、50 行。DoD：五个时点和文案正确，重复排程幂等，通知权限不可用不阻断打卡。
+- [x] 3.1 增加按日期和餐次稳定排程/取消提醒的薄封装；最多修改 `ui/src/platform/mealReminders.ts`、`ui/src/platform/reminders.ts` 两个文件、50 行。DoD：五个时点和文案正确，重复排程幂等，通知权限不可用不阻断打卡。
 - [ ] 3.2 接入启动、回前台、V5 切换、打卡及同步状态 reconcile；最多修改 `ui/src/bootstrap.ts`、`ui/src/hooks/useExercise.ts`、`ui/src/pages/ExercisePage.tsx` 三个文件、50 行。DoD：只为活动 V5 排程；完成餐次立即取消其剩余提醒，切换离开 V5 时清除未触发提醒。

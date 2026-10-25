@@ -1,6 +1,7 @@
 import { LocalNotifications } from '@capacitor/local-notifications'
 import type { RemindersService } from './services'
 import { detectPlatformRuntime, type PlatformRuntime } from './runtime'
+import { mealReminderBody } from './mealReminders'
 
 export interface ReminderBackend {
   schedule(id: string, atMs: number): Promise<void>
@@ -26,7 +27,7 @@ export function createCapacitorRemindersService(runtime: PlatformRuntime = detec
   return createRemindersService({
     async schedule(id, atMs) {
       if (!await allowDisplay()) throw new Error('notification_permission_denied')
-      await plugin.schedule({ notifications: [{ id: nativeId(id), title: 'MyTimeLogger', body: '计时已结束', schedule: { at: new Date(atMs) } }] })
+      await plugin.schedule({ notifications: [{ id: nativeId(id), title: 'MyTimeLogger', body: mealReminderBody(id) || '计时已结束', schedule: { at: new Date(atMs) } }] })
     },
     async cancel(id) { await plugin.cancel({ notifications: [{ id: nativeId(id) }] }) },
   })
