@@ -1,7 +1,7 @@
 import { useRef } from 'react'
-import type { MainTab } from '../../types'
+import type { MainTab, SourceRewardType, TaskItem } from '../../types'
 import type { UseTimeBookReturn } from '../../hooks/useTimeBook'
-import type { TaskItem } from '../../types'
+import { SourceRewardSummary } from '../Rewards/SourceRewardSummary'
 import { isHabitScheduledForDate } from '@core/HabitSchedule'
 import { filterTasksForChecklistDate } from '../../utils/checklistFilter'
 
@@ -11,7 +11,7 @@ export type DailySummaryNavigationIntent = { tab: MainTab; date: string; target?
 export type DailySummaryLedger = { id: string | number; source_type: string; source_id?: string | number; amount: number; description?: string; occurred_at?: string | null }
 export type DailySummaryGoal = { id: string | number; title: string; period: string; operator: string; current: number; target: number; rewardCoins: number; penaltyCoins: number }
 export type DailySummaryHabit = { id: string | number; name: string; icon?: string; repeatRule?: string | null; status: number }
-export type DailySummaryItem = { key: string; label: string; status: DailySummaryStatus; tab: MainTab; target?: DailySummaryTarget; consequence: 'penalty' | 'sleep_risk' | 'reward_only'; ruleAmount?: number; actualAmount?: number | null; actualTime?: string; subLabel?: string; sourceIds: string[] }
+export type DailySummaryItem = { key: string; label: string; status: DailySummaryStatus; tab: MainTab; target?: DailySummaryTarget; consequence: 'penalty' | 'sleep_risk' | 'reward_only'; ruleAmount?: number; actualAmount?: number | null; actualTime?: string; subLabel?: string; rewardSource?: { sourceType: SourceRewardType; sourceId: string }; sourceIds: string[] }
 
 const DIET_RULES = [['no_snacks', '不吃零食'], ['no_sugary_drinks', '不喝含糖饮料'], ['no_refined_staples', '不吃精制主食']] as const
 const V5_DIET_RULES = [['protein_at_lunch_and_dinner', '午晚餐保证蛋白质'], ['vegetables_at_lunch_and_dinner', '午晚餐至少2拳蔬菜'], ['controlled_staple_and_no_sugary_drink', '控制主食且不喝含糖饮料']] as const
@@ -62,11 +62,11 @@ export function buildDailySummary({ date, diary, planVersion, dietRulesValid, di
   ]
   for (const habit of dailyHabits) {
     if (!isHabitScheduledForDate(habit.repeatRule, date) && !habit.status) continue
-    items.push({ key: `habit-${habit.id}`, label: `${habit.icon?.trim() ? `${habit.icon} ` : ''}${habit.name}`, status: habit.status === 2 ? 'completed' : habit.status === 1 ? 'failed' : 'pending', tab: 'checklist', consequence: 'reward_only', subLabel: '清单习惯', sourceIds: [] })
+    items.push({ key: `habit-${habit.id}`, label: `${habit.icon?.trim() ? `${habit.icon} ` : ''}${habit.name}`, status: habit.status === 2 ? 'completed' : habit.status === 1 ? 'failed' : 'pending', tab: 'checklist', consequence: 'reward_only', subLabel: '清单习惯', rewardSource: { sourceType: 'habit', sourceId: String(habit.id) }, sourceIds: [] })
   }
   const dueTasks = filterTasksForChecklistDate(checklistTasks, new Date(`${date}T12:00:00+08:00`))
   const tasks = new Map([...dueTasks, ...checklistTasks.filter(task => task.is_overdue && task.status !== 2)].map(task => [task.id, task]))
-  for (const task of tasks.values()) items.push({ key: `task-${task.id}`, label: `${task.is_overdue && task.status !== 2 ? '【超期】' : ''}${task.title}`, status: task.status === 2 ? 'completed' : 'pending', tab: 'checklist', consequence: 'reward_only', subLabel: '清单任务', sourceIds: [] })
+  for (const task of tasks.values()) items.push({ key: `task-${task.id}`, label: `${task.is_overdue && task.status !== 2 ? '【超期】' : ''}${task.title}`, status: task.status === 2 ? 'completed' : 'pending', tab: 'checklist', consequence: 'reward_only', subLabel: '清单任务', rewardSource: { sourceType: 'checklist_task', sourceId: task.id }, sourceIds: [] })
   const dietRules = planVersion === 'v4' ? DIET_RULES : planVersion === 'v5' ? V5_DIET_RULES : []
   if (dietRulesValid) for (const [key, label] of dietRules) {
     const value = dietCheckins[key]?.status, actual = sumMatches(ledger, 'exercise_diet_penalty', key)
@@ -98,6 +98,6 @@ export function TimeBookDailySummary(props: Parameters<typeof buildDailySummary>
   return <aside aria-label="每日摘要" className="min-w-0 self-start p-2 lg:sticky lg:top-2 lg:max-h-[calc(100vh-7rem)] lg:overflow-y-auto lg:p-3">
     <h3 className="mb-1 truncate text-xs font-bold text-slate-700 dark:text-slate-200">每日摘要</h3>
     <p className="mb-2 text-[10px] text-slate-500">奖励 {coins(rewards)} · 处罚 {coins(penalties)} · 净额 {coins(rewards + penalties)}</p>
-    <div className="space-y-1.5">{items.map(item => { const [label, tone] = statusView[item.status]; return <button key={item.key} type="button" onClick={() => props.onNavigate({ tab: item.tab, date: props.date, target: item.target, nonce: ++nonce.current })} className={`grid w-full min-w-0 grid-cols-[1fr_auto] items-center gap-2 rounded-lg border px-2 py-2 text-left text-[11px] ${tone}`}><span className="min-w-0"><span className="block break-words leading-4">{item.label}{item.ruleAmount != null ? `（规则 ${coins(item.ruleAmount)}）` : ''}</span><span className="block text-[10px] opacity-80">{item.subLabel ?? `实际 ${item.actualAmount == null ? '未结算' : coins(item.actualAmount)}${item.actualTime ? ` · ${item.actualTime}` : ''}`}</span></span><span aria-label={label} className="whitespace-nowrap font-semibold">{label}</span></button> })}</div>
+    <div className="space-y-1.5">{items.map(item => { const [label, tone] = statusView[item.status]; return <button key={item.key} type="button" onClick={() => props.onNavigate({ tab: item.tab, date: props.date, target: item.target, nonce: ++nonce.current })} className={`grid w-full min-w-0 grid-cols-[1fr_auto] items-center gap-2 rounded-lg border px-2 py-2 text-left text-[11px] ${tone}`}><span className="min-w-0"><span className="block break-words leading-4">{item.label}{item.ruleAmount != null ? `（规则 ${coins(item.ruleAmount)}）` : ''}</span><span className="block text-[10px] opacity-80">{item.subLabel ?? `实际 ${item.actualAmount == null ? '未结算' : coins(item.actualAmount)}${item.actualTime ? ` · ${item.actualTime}` : ''}`}</span>{item.rewardSource && <span className="block text-[10px] opacity-80">完成奖励：<SourceRewardSummary {...item.rewardSource} compact displayOnly /></span>}</span><span aria-label={label} className="whitespace-nowrap font-semibold">{label}</span></button> })}</div>
   </aside>
 }
