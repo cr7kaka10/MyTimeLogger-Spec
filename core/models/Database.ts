@@ -18,7 +18,9 @@ import { sessionBusinessDate } from '../core/SessionBusinessDate'
 import type { ExercisePlanDefinition, PlanDay, ScoreRule } from './ExercisePlanSampleDataInitializer'
 
 const V4_DIET_RULE_KEYS = ['no_snacks', 'no_sugary_drinks', 'no_refined_staples']
-const V5_DIET_RULE_KEYS = ['protein_at_lunch_and_dinner', 'vegetables_at_lunch_and_dinner', 'controlled_staple_and_no_sugary_drink']
+const V5_LEGACY_DIET_RULE_KEYS = ['protein_at_lunch_and_dinner', 'vegetables_at_lunch_and_dinner', 'controlled_staple_and_no_sugary_drink']
+const V5_MEAL_RULE_KEYS = ['breakfast_on_time', 'lunch_on_time', 'dinner_on_time']
+const V5_DIET_RULE_KEYS = [...V5_LEGACY_DIET_RULE_KEYS, ...V5_MEAL_RULE_KEYS]
 const AUTHORITATIVE_DIET_RULE_KEYS: Record<string, string[]> = { v4: V4_DIET_RULE_KEYS, v5: V5_DIET_RULE_KEYS }
 
 // system_config 表 key 名常量
@@ -2677,9 +2679,10 @@ export class Database {
     }))
     const dietKeys = diet.map(rule => rule.ruleKey || '')
     const expectedDietKeys = AUTHORITATIVE_DIET_RULE_KEYS[planVersion]
-    const dietRulesValid = !expectedDietKeys || (dietKeys.length === expectedDietKeys.length
-      && new Set(dietKeys).size === expectedDietKeys.length
-      && dietKeys.every(key => expectedDietKeys.includes(key)))
+    const matchesDietKeys = (keys: string[]) => dietKeys.length === keys.length && new Set(dietKeys).size === keys.length && dietKeys.every(key => keys.includes(key))
+    const dietRulesValid = !expectedDietKeys || (planVersion === 'v5'
+      ? matchesDietKeys(V5_LEGACY_DIET_RULE_KEYS) || matchesDietKeys(V5_DIET_RULE_KEYS)
+      : matchesDietKeys(expectedDietKeys))
     return {
       version: planVersion,
       title: version?.title || '每日打卡表',
