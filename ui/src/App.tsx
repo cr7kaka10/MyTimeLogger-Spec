@@ -289,8 +289,9 @@ const AppSession = ({ initialAuthenticated, onAccountActivated }: { initialAuthe
       setActiveTab('sleep')
       return
     }
+    if (intent.tab === 'checklist') habits.setSelectedDate(intent.date)
     handleNavigate(intent.tab)
-  }, [handleNavigate, sleep.setSelectedDate])
+  }, [handleNavigate, habits.setSelectedDate, sleep.setSelectedDate])
 
   const handleOpenSleepFromSettings = useCallback(() => handleNavigate('sleep'), [handleNavigate])
   const handleOpenCategoryManager = useCallback(() => setShowCategoryManager(true), [])

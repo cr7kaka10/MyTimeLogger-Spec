@@ -74,6 +74,7 @@ export interface UseTimeBookReturn {
   diary: { morning_diary?: string; evening_diary?: string; morning_diary_written_at?: string; evening_diary_written_at?: string; image_uploaded_at?: string; report_status?: number; source?: string; sync_status?: string; full_report_state?: string; report_completed_at?: string; morning_diary_reward_status?: string; morning_diary_reward_amount?: number; morning_diary_reward_reason?: string; evening_diary_reward_status?: string; evening_diary_reward_amount?: number; evening_diary_reward_reason?: string } | null
   dailyGoals: Array<{ id: string | number; title: string; period: string; operator: string; current: number; target: number; rewardCoins: number; penaltyCoins: number }>
   dailySummaryLedger: Array<{ id: string | number; source_type: string; source_id?: string | number; amount: number; description?: string; occurred_at?: string | null }>
+  dailyHabits: Array<{ id: string | number; name: string; icon?: string; repeatRule?: string | null; status: number }>
   saveDiary: (type: 'morning' | 'evening', content: string) => void
   sleepStatusMap: Record<string, number>
   syncError: string
@@ -128,6 +129,7 @@ export const useTimeBook = (isActive = true, runtime?: ManagementPlanRuntime): U
   const [diary, setDiary] = useState<UseTimeBookReturn['diary']>(null)
   const [dailyGoals, setDailyGoals] = useState<UseTimeBookReturn['dailyGoals']>([])
   const [dailySummaryLedger, setDailySummaryLedger] = useState<UseTimeBookReturn['dailySummaryLedger']>([])
+  const [dailyHabits, setDailyHabits] = useState<UseTimeBookReturn['dailyHabits']>([])
   const [sleepStatusMap, setSleepStatusMap] = useState<Record<string, number>>({})
   const [refreshTrigger, setRefreshTrigger] = useState(0)
   const [syncError, setSyncError] = useState('')
@@ -159,8 +161,15 @@ export const useTimeBook = (isActive = true, runtime?: ManagementPlanRuntime): U
       const value = String(time || '').trim()
       return /^\d{4}-\d{2}-\d{2}/.test(value) ? value : value && date ? `${date} ${value}` : ''
     }
-    const habitNames = new Map((db.getHabits?.() || []).map((habit: any) => [String(habit.id), String(habit.name || '')]))
-    const habitEntries = (db.getTodayCheckins?.(selectedDate) || []).flatMap((checkin: any) => {
+    const allHabits = (db.getHabits?.() || []) as any[]
+    const dayCheckins = (db.getTodayCheckins?.(selectedDate) || []) as any[]
+    const habitNames = new Map(allHabits.map((habit: any) => [String(habit.id), String(habit.name || '')]))
+    const checkinsByHabit = new Map(dayCheckins.map((checkin: any) => [String(checkin.habit_id ?? checkin.habitId), checkin]))
+    setDailyHabits(allHabits.filter((habit: any) => Number(habit.is_active || 0) === 0).map((habit: any) => ({
+      id: habit.id, name: String(habit.name || habit.title || ''), icon: String(habit.icon || ''),
+      repeatRule: habit.repeat_rule || habit.repeatRule || null, status: Number(checkinsByHabit.get(String(habit.id))?.status || 0),
+    })).filter(habit => habit.name))
+    const habitEntries = dayCheckins.flatMap((checkin: any) => {
       const status = Number(checkin.status)
       const at = toAt(checkin.checkin_date || selectedDate, status === 1 ? checkin.updated_at || checkin.checkin_time : checkin.checkin_time || checkin.updated_at)
       const name = String(checkin.habit_name || habitNames.get(String(checkin.habit_id)) || '')
@@ -396,9 +405,9 @@ export const useTimeBook = (isActive = true, runtime?: ManagementPlanRuntime): U
   return useMemo(
     () => ({
       sessions, selectedDate, setSelectedDate: changeSelectedDate, resetToToday, availableDates, markedDates, categories,
-      deleteSession, updateSession, saveSession, todaySummary, diary, dailyGoals, dailySummaryLedger, saveDiary, sleepStatusMap, syncError,
+      deleteSession, updateSession, saveSession, todaySummary, diary, dailyGoals, dailySummaryLedger, dailyHabits, saveDiary, sleepStatusMap, syncError,
       flashCards, timelineEntries, flashError, taskRecommendations, taskSubmissions, createRecommendedTask, ignoreRecommendedTask, submitFlashClassificationFeedback, loadFlashProcessingLogs, correctFlashPolish, loadFlashSkillHistory, recordFlashCard, saveFlashCard, deleteFlashCard,
     }),
-    [sessions, selectedDate, changeSelectedDate, resetToToday, availableDates, markedDates, categories, deleteSession, updateSession, saveSession, todaySummary, diary, dailyGoals, dailySummaryLedger, saveDiary, sleepStatusMap, syncError, flashCards, timelineEntries, flashError, taskRecommendations, taskSubmissions, createRecommendedTask, ignoreRecommendedTask, submitFlashClassificationFeedback, loadFlashProcessingLogs, correctFlashPolish, loadFlashSkillHistory, recordFlashCard, saveFlashCard, deleteFlashCard],
+    [sessions, selectedDate, changeSelectedDate, resetToToday, availableDates, markedDates, categories, deleteSession, updateSession, saveSession, todaySummary, diary, dailyGoals, dailySummaryLedger, dailyHabits, saveDiary, sleepStatusMap, syncError, flashCards, timelineEntries, flashError, taskRecommendations, taskSubmissions, createRecommendedTask, ignoreRecommendedTask, submitFlashClassificationFeedback, loadFlashProcessingLogs, correctFlashPolish, loadFlashSkillHistory, recordFlashCard, saveFlashCard, deleteFlashCard],
   )
 }
