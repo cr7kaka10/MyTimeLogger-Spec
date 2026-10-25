@@ -81,6 +81,7 @@ const AppSession = ({ initialAuthenticated, onAccountActivated }: { initialAuthe
   const timer = useTimer()
   const settings = useSettings()
   const timeBook = useTimeBook(activeTab === 'timebook', { serverUrl: settings.selectedEnvironmentProfile.serverUrl, authToken: settings.selectedEnvironmentProfile.authToken })
+  const checklist = useChecklist()
   const habits = useHabits()
   useEffect(() => attachDailyWidget(authenticated && !!settings.selectedEnvironmentProfile.verifiedUserId),
     [authenticated, settings.selectedEnvironmentProfile.verifiedUserId,
@@ -366,7 +367,7 @@ const AppSession = ({ initialAuthenticated, onAccountActivated }: { initialAuthe
     if (activeTab === 'exercise') return <ExercisePage theme={settings.theme} onToggleTheme={settings.toggleTheme} onStartFocus={handleStartExerciseFocus} />
     if (activeTab === 'learning') return <LearningPage onNavigate={handleNavigate} onStartFocus={handleStartLearningFocus} runtime={{ serverUrl: settings.selectedEnvironmentProfile.serverUrl, authToken: settings.selectedEnvironmentProfile.authToken }} />
     if (activeTab === 'timer') return <TimerPage {...timer} theme={settings.theme} onToggleTheme={settings.toggleTheme} onNavigate={handleNavigate} onOpenLedger={() => setShowLedger(true)} onOpenSettings={() => handleNavigate('settings')} runtime={{ serverUrl: settings.selectedEnvironmentProfile.serverUrl, authToken: settings.selectedEnvironmentProfile.authToken }} onRecordFlashCard={timeBook.recordFlashCard} diary={timeBook.diary} onSaveDiary={timeBook.saveDiary} onOpenLockedDiary={() => handleNavigateToSleep(timeBook.selectedDate)} focusAiRequest={timerAiFocusRequest} onFocusAiHandled={handleTimerAiFocusHandled} />
-    if (activeTab === 'timebook') return <TimeBookPage {...timeBook} onNavigate={handleNavigate} onSummaryNavigate={handleSummaryNavigate} />
+    if (activeTab === 'timebook') return <TimeBookPage {...timeBook} checklistTasks={checklist.tasks} onNavigate={handleNavigate} onSummaryNavigate={handleSummaryNavigate} />
       if (activeTab === 'sleep') return (
         <SleepPage {...sleep}
           onPickImage={sleep.pickImage}

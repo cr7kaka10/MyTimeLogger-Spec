@@ -1,7 +1,9 @@
 import { useRef } from 'react'
 import type { MainTab } from '../../types'
 import type { UseTimeBookReturn } from '../../hooks/useTimeBook'
+import type { TaskItem } from '../../types'
 import { isHabitScheduledForDate } from '@core/HabitSchedule'
+import { filterTasksForChecklistDate } from '../../utils/checklistFilter'
 
 export type DailySummaryStatus = 'pending' | 'completed' | 'failed' | 'overdue'
 export type DailySummaryTarget = 'morning-diary' | 'evening-diary'
@@ -37,9 +39,9 @@ const sumMatches = (ledger: DailySummaryLedger[], source: string, token?: string
   return { amount: rows.length ? rows.reduce((sum, row) => sum + Number(row.amount || 0), 0) : null, ids: rows.map(row => String(row.id)) }
 }
 
-export function buildDailySummary({ date, diary, planVersion, dietRulesValid, dietCheckins, bodyMetrics, dailyGoals = [], ledger = [], dailyHabits = [], nowMs = Date.now() }: {
+export function buildDailySummary({ date, diary, planVersion, dietRulesValid, dietCheckins, bodyMetrics, dailyGoals = [], ledger = [], dailyHabits = [], checklistTasks = [], nowMs = Date.now() }: {
   date: string; diary: UseTimeBookReturn['diary']; planVersion: string; dietRulesValid?: boolean; dietCheckins: Record<string, any>
-  bodyMetrics?: { weight?: number | null; body_fat_rate?: number | null; updated_at?: string | null }; dailyGoals?: DailySummaryGoal[]; ledger?: DailySummaryLedger[]; dailyHabits?: DailySummaryHabit[]; nowMs?: number
+  bodyMetrics?: { weight?: number | null; body_fat_rate?: number | null; updated_at?: string | null }; dailyGoals?: DailySummaryGoal[]; ledger?: DailySummaryLedger[]; dailyHabits?: DailySummaryHabit[]; checklistTasks?: TaskItem[]; nowMs?: number
 }): DailySummaryItem[] {
   const deadline = Date.parse(`${date}T09:00:00+08:00`)
   const timedStatus = (actual?: string, explicitFailure = false): DailySummaryStatus => {
@@ -61,6 +63,9 @@ export function buildDailySummary({ date, diary, planVersion, dietRulesValid, di
     if (!isHabitScheduledForDate(habit.repeatRule, date) && !habit.status) continue
     items.push({ key: `habit-${habit.id}`, label: `${habit.icon?.trim() ? `${habit.icon} ` : ''}${habit.name}`, status: habit.status === 2 ? 'completed' : habit.status === 1 ? 'failed' : 'pending', tab: 'checklist', consequence: 'reward_only', subLabel: '清单习惯', sourceIds: [] })
   }
+  const dueTasks = filterTasksForChecklistDate(checklistTasks, new Date(`${date}T12:00:00+08:00`))
+  const tasks = new Map([...dueTasks, ...checklistTasks.filter(task => task.is_overdue && task.status !== 2)].map(task => [task.id, task]))
+  for (const task of tasks.values()) items.push({ key: `task-${task.id}`, label: `${task.is_overdue && task.status !== 2 ? '【超期】' : ''}${task.title}`, status: task.status === 2 ? 'completed' : 'pending', tab: 'checklist', consequence: 'reward_only', subLabel: '清单任务', sourceIds: [] })
   const dietRules = planVersion === 'v4' ? DIET_RULES : planVersion === 'v5' ? V5_DIET_RULES : []
   if (dietRulesValid) for (const [key, label] of dietRules) {
     const value = dietCheckins[key]?.status, actual = sumMatches(ledger, 'exercise_diet_penalty', key)
@@ -76,7 +81,7 @@ export function buildDailySummary({ date, diary, planVersion, dietRulesValid, di
     if (actual.amount == null) continue
     items.push({ key: source, label, status: actual.amount < 0 ? 'failed' : 'completed', tab: 'sleep', consequence: actual.amount < 0 ? 'penalty' : 'reward_only', ruleAmount, actualAmount: actual.amount, sourceIds: actual.ids })
   }
-  return items.sort((left, right) => summaryOrder(left) - summaryOrder(right))
+  return items.sort((left, right) => Number(left.status === 'completed' || left.status === 'failed') - Number(right.status === 'completed' || right.status === 'failed') || summaryOrder(left) - summaryOrder(right))
 }
 
 const statusView: Record<DailySummaryStatus, [string, string]> = {

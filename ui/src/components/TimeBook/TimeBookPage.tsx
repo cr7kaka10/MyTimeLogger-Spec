@@ -1,5 +1,5 @@
 import { memo, useCallback, useMemo, useState } from 'react'
-import type { MainTab, SessionEditData } from '../../types'
+import type { MainTab, SessionEditData, TaskItem } from '../../types'
 import type { FlashCard, FlashPolishCorrectionInput, UseTimeBookReturn } from '../../hooks/useTimeBook'
 import { ConfirmSheet } from '../common/ConfirmSheet'
 import { EmptyState } from '../common/EmptyState'
@@ -12,6 +12,7 @@ import { useExercise } from '../../hooks/useExercise'
 import { formatBeijingDateTime, parseBeijingDateTimeMs } from '@core/BeijingTime'
 
 interface TimeBookPageProps extends UseTimeBookReturn {
+  checklistTasks: TaskItem[]
   onNavigate: (tab: MainTab) => void
   onSummaryNavigate: (intent: DailySummaryNavigationIntent) => void
 }
@@ -60,7 +61,7 @@ const FlashCardEditor = ({ value, onSave, onCancel }: { value: FlashCard; onSave
 }
 
 export const TimeBookPage = memo(({
-  sessions, selectedDate, setSelectedDate, todaySummary, diary, dailyGoals, dailySummaryLedger, dailyHabits, onNavigate, onSummaryNavigate, syncError,
+  sessions, selectedDate, setSelectedDate, todaySummary, diary, dailyGoals, dailySummaryLedger, dailyHabits, checklistTasks, onNavigate, onSummaryNavigate, syncError,
   markedDates, categories, saveSession, deleteSession,
   timelineEntries, flashError, taskRecommendations, taskSubmissions, createRecommendedTask, ignoreRecommendedTask, submitFlashClassificationFeedback, loadFlashProcessingLogs, correctFlashPolish, loadFlashSkillHistory, deleteFlashCard,
 }: TimeBookPageProps) => {
@@ -139,7 +140,7 @@ export const TimeBookPage = memo(({
       {syncError && <div className="mx-6 text-[10px] text-amber-600">本地记录已显示 · {syncError}</div>}
 
       <div className="mx-3 grid min-w-0 grid-cols-[42%_minmax(0,58%)] gap-0 lg:mx-6 lg:grid-cols-[minmax(250px,320px)_minmax(0,1fr)] lg:gap-4">
-        <TimeBookDailySummary date={selectedDate} diary={diary} planVersion={exercise.planVersion} dietRulesValid={exercise.planDefinition?.dietRulesValid} dietCheckins={exercise.dietCheckins} bodyMetrics={exercise.log} dailyGoals={dailyGoals} ledger={dailySummaryLedger} dailyHabits={dailyHabits} onNavigate={onSummaryNavigate} />
+        <TimeBookDailySummary date={selectedDate} diary={diary} planVersion={exercise.planVersion} dietRulesValid={exercise.planDefinition?.dietRulesValid} dietCheckins={exercise.dietCheckins} bodyMetrics={exercise.log} dailyGoals={dailyGoals} ledger={dailySummaryLedger} dailyHabits={dailyHabits} checklistTasks={checklistTasks} onNavigate={onSummaryNavigate} />
         <div className="min-w-0">{timelineEntries.length === 0 ? (
           <EmptyState icon="📭" title="这一天还没有记录" description="开始专注后，时间会自动流进这里。" actionLabel="开始专注" onAction={handleStart} />
         ) : (
