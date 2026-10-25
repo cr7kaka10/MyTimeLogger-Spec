@@ -76,6 +76,8 @@ export const ExercisePage = memo(({ theme, onToggleTheme, onStartFocus }: Props)
   const authoritative = isAuthoritativeExercisePlan(x.planVersion)
   const weightScore = authoritative ? Number(x.itemScores['body:weight']?.earned_points || 0) : log?.weight == null ? 0 : 5
   const bodyFatScore = authoritative ? Number(x.itemScores['body:body_fat_rate']?.earned_points || 0) : log?.body_fat_rate == null ? 0 : 5
+  const hasMealPolicy = x.planVersion === 'v5' && ['breakfast_on_time', 'lunch_on_time', 'dinner_on_time'].some(key => x.dietCheckins[key])
+  const bodyPoints = (def as any).bodyPoints ?? (hasMealPolicy ? 0 : undefined)
   const metricStatus = (value: unknown, fact: any, scoreValue: number) => value == null ? '尚未保存' : fact?.status === 'failed' ? '已补录，截止后不得分' : scoreValue ? '✓ 已得分' : '已保存，等待服务端确认'
   const savedScore = useMemo(() => {
     if (!log?.score_snapshot) return null
@@ -141,7 +143,7 @@ export const ExercisePage = memo(({ theme, onToggleTheme, onStartFocus }: Props)
         </div>
         {showVersions ? (
           <div className="plan-version-menu">
-            {x.planVersions.map((version: any) => (
+            {sortExercisePlanVersions(x.planVersions).map((version: any) => (
               <button
                 key={version.version}
                 type="button"
@@ -196,11 +198,11 @@ export const ExercisePage = memo(({ theme, onToggleTheme, onStartFocus }: Props)
             <label className="body-metric"><span>体重</span><span className="body-metric-input"><input
               type="number" inputMode="decimal" min="30" max="200" step=".1" placeholder="体重" value={weight}
               disabled={!canEditWeight} title="当天全天可录入；北京时间 06:00-09:00 计为按时称重" onPointerDown={event => requestCapacitorInputFocus(event.currentTarget)} onChange={event => setWeight(event.target.value)}
-            /><em>公斤</em></span><span className="body-metric-meta"><span>{weightScore}/5 分</span><span>{metricStatus(log?.weight, weightFact, weightScore)}</span></span></label>
+            /><em>公斤</em></span><span className="body-metric-meta"><span>{bodyPoints === 0 ? '不计分' : `${weightScore}/5 分`}</span><span>{metricStatus(log?.weight, weightFact, weightScore)}</span></span></label>
             <label className="body-metric"><span>体脂率</span><span className="body-metric-input"><input
               type="number" inputMode="decimal" min="3" max="75" step=".1" placeholder="体脂率" value={bodyFatRate}
               disabled={!canEditWeight} title="请输入 3-75% 之间的体脂率" onPointerDown={event => requestCapacitorInputFocus(event.currentTarget)} onChange={event => setBodyFatRate(event.target.value)}
-            /><em>%</em></span><span className="body-metric-meta"><span>{bodyFatScore}/5 分</span><span>{metricStatus(log?.body_fat_rate, bodyFatFact, bodyFatScore)}</span></span></label>
+            /><em>%</em></span><span className="body-metric-meta"><span>{bodyPoints === 0 ? '不计分' : `${bodyFatScore}/5 分`}</span><span>{metricStatus(log?.body_fat_rate, bodyFatFact, bodyFatScore)}</span></span></label>
             <button disabled={!canEditWeight} onClick={saveWeightAndDay}>保存</button>
           </div>
           {!isWeightWindow && isBeijingToday && (isBodyMetricLocked || log?.weight == null) && (
@@ -218,7 +220,7 @@ export const ExercisePage = memo(({ theme, onToggleTheme, onStartFocus }: Props)
             <div className="score-cats">
               {displayScoreCategories.map(c => {
                 const v = displayScore.cats[c]
-                return <div key={c}><span>{c}</span><i><b style={{ width: `${Math.round(v.s / v.m * 100)}%` }} /></i><em>{formatScore(v.s)}/{formatScore(v.m)}</em></div>
+                return <div key={c}><span>{c}</span><i><b style={{ width: `${v.m ? Math.round(v.s / v.m * 100) : 0}%` }} /></i><em>{formatScore(v.s)}/{formatScore(v.m)}</em></div>
               })}
             </div>
           </div>

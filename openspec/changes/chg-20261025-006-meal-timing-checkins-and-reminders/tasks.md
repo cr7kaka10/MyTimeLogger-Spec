@@ -6,7 +6,8 @@
 
 ## 2. 运动页展示
 
-- [ ] 2.1 展示 V5 餐次窗口、单项分值和新的饮食/训练分类上限；最多修改 `ui/src/components/Exercise/ExercisePanel.tsx`、`ui/src/pages/ExercisePage.tsx`、`ui/src/utils/exerciseAuthoritativeScore.ts` 三个文件、50 行。DoD：PC 与 Android 的 V5 展示均与服务端满分配置一致，身体记录为 0 分，V4 及更早版本显示不变。
+- [x] 2.1 展示 V5 餐次窗口、单项分值和新的饮食/训练分类上限；最多修改 `ui/src/components/Exercise/ExercisePanel.tsx`、`ui/src/pages/ExercisePage.tsx`、`ui/src/utils/exerciseAuthoritativeScore.ts` 三个文件、50 行。DoD：PC 与 Android 的 V5 展示均与服务端满分配置一致，身体记录为 0 分，V4 及更早版本显示不变。
+- [ ] 2.2 适配本地 V5 规则校验和即时评分投影；最多修改 `core/models/Database.ts`、`ui/src/hooks/useExercise.ts` 两个文件、50 行。DoD：客户端兼容 V5 旧三项与新六项规则；只有当日已同步的新规则打卡行存在时才启用餐次打卡；本地即时投影沿用当天服务端快照中的新旧政策分值。
 
 ## 3. Android 本地提醒
 
