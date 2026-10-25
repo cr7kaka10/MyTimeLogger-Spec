@@ -11,5 +11,10 @@ export default defineConfig({
       '@models': path.resolve(__dirname, '../core/models'),
     },
   },
+  server: {
+    fs: {
+      allow: [path.resolve(__dirname, '..')],
+    },
+  },
   optimizeDeps: { },
 })
