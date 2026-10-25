@@ -4025,6 +4025,17 @@ def get_exercise_state(
             (user["id"], date, active_plan),
         ).fetchone())
         plan_definition = _exercise_plan_definition(conn, user["id"], active_plan)
+        if active_plan == "v5":
+            policy = conn.execute("SELECT effective_date FROM server_exercise_policy_metadata WHERE policy_key='v5_meal_timing'").fetchone()
+            if policy:
+                current_policy = date >= str(policy["effective_date"])
+                plan_definition["policyEffectiveDate"] = str(policy["effective_date"])
+                plan_definition["dietScorePoints"] = ({"breakfast_on_time": 11, "lunch_on_time": 11, "dinner_on_time": 11,
+                    "protein_at_lunch_and_dinner": 6, "vegetables_at_lunch_and_dinner": 6,
+                    "controlled_staple_and_no_sugary_drink": 5} if current_policy else {key: 5 for key in (
+                    "protein_at_lunch_and_dinner", "vegetables_at_lunch_and_dinner", "controlled_staple_and_no_sugary_drink")})
+                plan_definition["trainingPoints"] = 50 if current_policy else None
+                plan_definition["bodyPoints"] = 0 if current_policy else None
         item_scores = [dict(row) for row in conn.execute(
             "SELECT * FROM server_exercise_item_scores WHERE user_id=? AND date=? AND plan_version=? ORDER BY item_key",
             (user["id"], date, active_plan),

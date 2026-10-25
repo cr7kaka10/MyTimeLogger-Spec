@@ -8,6 +8,10 @@ TZ = timezone(timedelta(hours=8))
 PLAN_VERSION = "v4"
 RULE_VERSION = "exercise-score-v4"
 DIET_RULES = ("no_snacks", "no_sugary_drinks", "no_refined_staples")
+V5_MEAL_RULES = ("breakfast_on_time", "lunch_on_time", "dinner_on_time")
+V5_DIET_POINTS = {"breakfast_on_time": 11, "lunch_on_time": 11, "dinner_on_time": 11,
+                  "protein_at_lunch_and_dinner": 6, "vegetables_at_lunch_and_dinner": 6,
+                  "controlled_staple_and_no_sugary_drink": 5}
 PLAN_POLICIES = {
     "v4": {"rule_version": RULE_VERSION, "diet_rules": DIET_RULES, "diet_penalty": -20, "effective_from": "2026-09-10"},
     "v5": {"rule_version": "exercise-score-v5", "diet_rules": (
@@ -46,11 +50,21 @@ class ExerciseV4Service:
     def _change(self, conn, user_id, table, record_id, operation="upsert"):
         self.record_change(conn, user_id, table, record_id, operation)
 
+    def _new_v5_policy(self, conn, date: str) -> bool:
+        if self.plan_version != "v5":
+            return False
+        row = conn.execute("SELECT effective_date FROM server_exercise_policy_metadata WHERE policy_key='v5_meal_timing'").fetchone()
+        return bool(row and date >= str(row["effective_date"]))
+
+    def _diet_rules_for_date(self, conn, date: str) -> tuple[str, ...]:
+        return self.diet_rules + V5_MEAL_RULES if self._new_v5_policy(conn, date) else self.diet_rules
+
     def _discard_invalid_diet_facts(self, conn, user_id: int, date: str) -> None:
-        placeholders = ",".join("?" for _ in self.diet_rules)
+        rules = self._diet_rules_for_date(conn, date)
+        placeholders = ",".join("?" for _ in rules)
         rows = conn.execute(f"""SELECT id FROM server_exercise_diet_checkins
             WHERE user_id=? AND date=? AND plan_version=? AND rule_key NOT IN ({placeholders})""",
-            (user_id, date, self.plan_version, *self.diet_rules)).fetchall()
+            (user_id, date, self.plan_version, *rules)).fetchall()
         for row in rows:
             conn.execute("DELETE FROM server_exercise_diet_checkins WHERE id=? AND user_id=?", (row["id"], user_id))
             self._change(conn, user_id, "server_exercise_diet_checkins", row["id"], "delete")
@@ -58,7 +72,7 @@ class ExerciseV4Service:
     def ensure_diet_rows(self, conn, user_id: int, date: str, now: datetime) -> None:
         self._discard_invalid_diet_facts(conn, user_id, date)
         stamp, cutoff = _now_text(now), _deadline(date).strftime("%Y-%m-%d %H:%M:%S")
-        for rule_key in self.diet_rules:
+        for rule_key in self._diet_rules_for_date(conn, date):
             row_id = f"diet:{user_id}:{date}:{self.plan_version}:{rule_key}"
             inserted = conn.execute("""INSERT OR IGNORE INTO server_exercise_diet_checkins
                 (id,user_id,date,plan_version,rule_key,status,deadline_at,created_at,updated_at)
@@ -189,17 +203,23 @@ class ExerciseV4Service:
         checkins = {str(row["item_key"]): int(row["status"] or 0) for row in conn.execute(
             "SELECT item_key,status FROM server_exercise_checkins WHERE user_id=? AND date=? AND plan_version=?", (user_id, date, self.plan_version))}
         facts = []
-        for item in conn.execute("""SELECT * FROM server_exercise_plan_items WHERE user_id=? AND plan_version=?
-            AND day_key=? AND variant='gym' AND is_active=1 ORDER BY sort_order""", (user_id, self.plan_version, day)):
+        new_policy = self._new_v5_policy(conn, date)
+        training_items = conn.execute("""SELECT * FROM server_exercise_plan_items WHERE user_id=? AND plan_version=?
+            AND day_key=? AND variant='gym' AND is_active=1 ORDER BY sort_order""", (user_id, self.plan_version, day)).fetchall()
+        raw_training_total = sum(float(json.loads(item["tags_json"] or "{}").get("scorePoints") or 0) for item in training_items)
+        training_scale = 50 / raw_training_total if new_policy and raw_training_total else 1
+        for item in training_items:
             tags = json.loads(item["tags_json"] or "{}")
-            maximum = float(tags.get("scorePoints") or 0)
+            maximum = float(tags.get("scorePoints") or 0) * training_scale
             key = f"ex-{date}-g-{item['sort_order']}"
             facts.append((key, "training", maximum if checkins.get(key) == 1 else 0, maximum, item["name"]))
-        placeholders = ",".join("?" for _ in self.diet_rules)
+        diet_rules = self._diet_rules_for_date(conn, date)
+        placeholders = ",".join("?" for _ in diet_rules)
         for row in conn.execute(f"""SELECT rule_key,status FROM server_exercise_diet_checkins
             WHERE user_id=? AND date=? AND plan_version=? AND rule_key IN ({placeholders})""",
-                                (user_id, date, self.plan_version, *self.diet_rules)):
-            facts.append((f"diet:{row['rule_key']}", "diet", 5 if row["status"] == "completed" else 0, 5, row["status"]))
+                                (user_id, date, self.plan_version, *diet_rules)):
+            maximum = V5_DIET_POINTS[row["rule_key"]] if new_policy else 5
+            facts.append((f"diet:{row['rule_key']}", "diet", maximum if row["status"] == "completed" else 0, maximum, row["status"]))
         log = conn.execute("""SELECT * FROM server_exercise_daily_logs WHERE user_id=? AND date=?
             AND plan_version=? AND exercise_type='daily'""", (user_id, date, self.plan_version)).fetchone()
         after_body_deadline = now.astimezone(TZ) >= _deadline(date, 9)
@@ -213,8 +233,9 @@ class ExerciseV4Service:
             return (5 if value is not None else 0, "有效身体记录")
         weight_points, weight_reason = body_points("body_weight", log["weight"] if log else None)
         fat_points, fat_reason = body_points("body_fat_rate", log["body_fat_rate"] if log else None)
-        facts.extend((("body:weight", "body", weight_points, 5, weight_reason),
-                      ("body:body_fat_rate", "body", fat_points, 5, fat_reason)))
+        body_maximum = 0 if new_policy else 5
+        facts.extend((("body:weight", "body", weight_points if body_maximum else 0, body_maximum, weight_reason),
+                      ("body:body_fat_rate", "body", fat_points if body_maximum else 0, body_maximum, fat_reason)))
         stamp, categories = _now_text(now), {scope: {"s": 0.0, "m": 0.0} for scope in SCOPES}
         for key, scope, earned, maximum, reason in facts:
             if scope not in SCOPES:
@@ -244,7 +265,7 @@ class ExerciseV4Service:
             for row in ignored:
                 self._change(conn, user_id, "server_exercise_item_scores", row["id"])
         total = round(sum(value["s"] for value in categories.values()), 2)
-        complete = all(categories[s]["m"] > 0 and categories[s]["s"] == categories[s]["m"] for s in SCOPES)
+        complete = any(value["m"] > 0 for value in categories.values()) and all(value["m"] == 0 or value["s"] == value["m"] for value in categories.values())
         snapshot = {"total": total, "cats": {"运动训练": categories["training"], "饮食约束": categories["diet"], "身体记录": categories["body"]}, "plan_version": self.plan_version}
         settlement_id = f"exercise-settlement:{user_id}:{self.plan_version}:{date}"
         settlement_values = (json.dumps(snapshot, ensure_ascii=False, sort_keys=True), total,
