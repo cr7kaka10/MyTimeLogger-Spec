@@ -32,6 +32,12 @@ def _deadline(date: str, hour: int = 0) -> datetime:
     return base.replace(hour=hour) if hour else base + timedelta(days=1)
 
 
+def _diet_deadline(date: str, rule_key: str) -> datetime:
+    day = datetime.strptime(date, "%Y-%m-%d").replace(tzinfo=TZ)
+    times = {"breakfast_on_time": (8, 30), "lunch_on_time": (13, 31), "dinner_on_time": (19, 1)}
+    return day.replace(hour=times[rule_key][0], minute=times[rule_key][1]) if rule_key in times else day + timedelta(days=1)
+
+
 def _now_text(now: datetime) -> str:
     return now.astimezone(TZ).strftime("%Y-%m-%d %H:%M:%S")
 
@@ -71,9 +77,10 @@ class ExerciseV4Service:
 
     def ensure_diet_rows(self, conn, user_id: int, date: str, now: datetime) -> None:
         self._discard_invalid_diet_facts(conn, user_id, date)
-        stamp, cutoff = _now_text(now), _deadline(date).strftime("%Y-%m-%d %H:%M:%S")
+        stamp = _now_text(now)
         for rule_key in self._diet_rules_for_date(conn, date):
             row_id = f"diet:{user_id}:{date}:{self.plan_version}:{rule_key}"
+            cutoff = _diet_deadline(date, rule_key).strftime("%Y-%m-%d %H:%M:%S")
             inserted = conn.execute("""INSERT OR IGNORE INTO server_exercise_diet_checkins
                 (id,user_id,date,plan_version,rule_key,status,deadline_at,created_at,updated_at)
                 VALUES (?,?,?,?,?,'pending',?,?,?)""",
@@ -83,7 +90,7 @@ class ExerciseV4Service:
 
     def set_diet(self, conn, user_id: int, date: str, rule_key: str, status: str | bool,
                  occurred_at: str | None, now: datetime) -> dict:
-        if rule_key not in self.diet_rules:
+        if rule_key not in self._diet_rules_for_date(conn, date):
             raise ValueError("unknown_diet_rule")
         if isinstance(status, bool):
             status = "completed" if status else "pending"
@@ -91,12 +98,15 @@ class ExerciseV4Service:
             raise ValueError("invalid_diet_status")
         self.ensure_diet_rows(conn, user_id, date, now)
         event_time = _dt(occurred_at) if occurred_at else now.astimezone(TZ)
-        if event_time >= _deadline(date):
+        deadline = _diet_deadline(date, rule_key)
+        if status == "completed" and (event_time < _deadline(date) - timedelta(days=1) or
+                event_time >= deadline or now.astimezone(TZ) >= deadline):
             raise ValueError("diet_deadline_passed")
         row = conn.execute("""SELECT * FROM server_exercise_diet_checkins
             WHERE user_id=? AND date=? AND plan_version=? AND rule_key=?""",
             (user_id, date, self.plan_version, rule_key)).fetchone()
-        if status == "pending" and now.astimezone(TZ) >= _deadline(date):
+        if (row["status"] == "failed" and status == "completed") or (status == "pending" and
+                now.astimezone(TZ) >= deadline):
             raise ValueError("diet_deadline_passed")
         stamp = _now_text(now)
         occurred_text = event_time.strftime("%Y-%m-%d %H:%M:%S") if status != "pending" else None
@@ -115,33 +125,36 @@ class ExerciseV4Service:
         return self.settle(conn, user_id, date, now)
 
     def close_diet(self, conn, user_id: int, date: str, now: datetime) -> int:
-        if now.astimezone(TZ) < _deadline(date):
-            return 0
         self.ensure_diet_rows(conn, user_id, date, now)
-        changed, stamp = 0, _now_text(now)
+        changed, stamp, new_policy = 0, _now_text(now), self._new_v5_policy(conn, date)
         rows = conn.execute("""SELECT * FROM server_exercise_diet_checkins
             WHERE user_id=? AND date=? AND plan_version=?""", (user_id, date, self.plan_version)).fetchall()
         for row in rows:
             if row["status"] != "pending":
                 continue
+            deadline = _diet_deadline(date, str(row["rule_key"]))
+            current = now.astimezone(TZ)
+            if current < deadline:
+                continue
             source = f"exercise-diet-penalty:{user_id}:{date}:{self.plan_version}:{row['rule_key']}"
-            penalty_source = source if self.diet_penalty < 0 else None
+            penalty = -20 if new_policy else self.diet_penalty
+            penalty_source = source if penalty < 0 else None
             row_changed = (row["status"], row["failure_reason"], row["penalty_source_id"]) != (
-                "failed", "not_completed_before_midnight", penalty_source,
+                "failed", "meal_window_passed", penalty_source,
             )
             if row_changed:
-                conn.execute("""UPDATE server_exercise_diet_checkins SET status='failed',failure_reason='not_completed_before_midnight',
+                conn.execute("""UPDATE server_exercise_diet_checkins SET status='failed',failure_reason='meal_window_passed',
                     penalty_source_id=?,updated_at=? WHERE id=? AND user_id=?""", (penalty_source, stamp, row["id"], user_id))
-            ledger_missing = self.diet_penalty < 0 and not conn.execute(
+            ledger_missing = penalty < 0 and not conn.execute(
                 "SELECT 1 FROM server_reward_ledger WHERE user_id=? AND id=?", (user_id, source)).fetchone()
             if ledger_missing:
-                self.wallet.append_ledger_in_txn(conn, user_id, self.diet_penalty, "exercise_diet_penalty", source,
+                self.wallet.append_ledger_in_txn(conn, user_id, penalty, "exercise_diet_penalty", source,
                     "饮食必做项逾期未完成", date, source, stamp)
                 self._change(conn, user_id, "server_reward_ledger", source)
             if row_changed:
                 self._change(conn, user_id, "server_exercise_diet_checkins", row["id"])
             changed += int(row_changed or ledger_missing)
-        if changed and self.diet_penalty < 0:
+        if changed and (new_policy or self.diet_penalty < 0):
             self.wallet.rebuild_wallet_snapshot_in_txn(conn, user_id, lambda: stamp)
             self._change(conn, user_id, "server_user_wallets", str(user_id))
         if changed:

@@ -688,14 +688,31 @@ async def _run_habit_auto_failure_schedule():
         await asyncio.sleep(max(1, (next_midnight - now).total_seconds()))
 
 
+def _settle_v5_meal_deadlines() -> int:
+    today, now, changed_users = _beijing_today(), _beijing_now(), set()
+    with store._transact() as conn:
+        policy = conn.execute("SELECT effective_date FROM server_exercise_policy_metadata WHERE policy_key='v5_meal_timing'").fetchone()
+        if not policy or today < str(policy["effective_date"]):
+            return 0
+        for row in conn.execute("SELECT user_id FROM server_exercise_plan_versions WHERE version='v5' AND is_active=1"):
+            user_id = int(row["user_id"])
+            if _exercise_active_plan(conn, user_id) == "v5" and _exercise_authoritative("v5").close_diet(conn, user_id, today, now):
+                changed_users.add(user_id)
+    for user_id in changed_users:
+        sync_hub._notify_clients(["exercise_diet_checkins", "exercise_item_scores", "exercise_settlements", "reward_ledger", "user_wallets"], user_id)
+    return len(changed_users)
+
+
 async def _run_exercise_settlement_schedule():
-    """服务启动补偿一次，随后在每个北京时间零点后锁定运动日。"""
+    """每分钟处理 V5 餐次截止；跨日时补偿并锁定历史运动评分。"""
     await asyncio.to_thread(_settle_completed_exercise_days)
+    await asyncio.to_thread(_settle_v5_meal_deadlines); settled_date = _beijing_today()
     while True:
-        now = datetime.now(timezone(timedelta(hours=8)))
-        next_midnight = (now + timedelta(days=1)).replace(hour=0, minute=0, second=1, microsecond=0)
-        await asyncio.sleep(max(1, (next_midnight - now).total_seconds()))
-        await asyncio.to_thread(_settle_completed_exercise_days)
+        await asyncio.sleep(60); await asyncio.to_thread(_settle_v5_meal_deadlines)
+        today = _beijing_today()
+        if today != settled_date:
+            await asyncio.to_thread(_settle_completed_exercise_days)
+            settled_date = today
 
 
 async def _run_body_metric_deadline_schedule():
