@@ -7,11 +7,17 @@ import org.junit.Test;
 public class SleepAutomationMediaRepositoryTest {
     @Test public void acceptsOnlyNewHuaweiJpegInsideWindow(){
         SleepAutomationMediaRepository.Baseline b=new SleepAutomationMediaRepository.Baseline(10,1000);
-        assertTrue(SleepAutomationMediaRepository.matches(b,11,"sporthealth-1-20260929-230705.jpg","image/jpeg",1100,2000));
-        assertFalse(SleepAutomationMediaRepository.matches(b,11,"camera.jpg","image/jpeg",1100,2000));
-        assertFalse(SleepAutomationMediaRepository.matches(b,10,"sporthealth-1-20260929-230705.jpg","image/jpeg",1100,2000));
-        assertFalse(SleepAutomationMediaRepository.matches(b,11,"sporthealth-1-20260929-230705.jpg","image/png",1100,2000));
-        assertFalse(SleepAutomationMediaRepository.matches(b,11,"sporthealth-1-20260929-230705.jpg","image/jpeg",900,2000));
+        assertTrue(SleepAutomationMediaRepository.matches(b,11,"sporthealth-1-20260929-230705.jpg","image/jpeg",1100,2000,"2026-09-29"));
+        assertFalse(SleepAutomationMediaRepository.matches(b,11,"camera.jpg","image/jpeg",1100,2000,"2026-09-29"));
+        assertFalse(SleepAutomationMediaRepository.matches(b,10,"sporthealth-1-20260929-230705.jpg","image/jpeg",1100,2000,"2026-09-29"));
+        assertFalse(SleepAutomationMediaRepository.matches(b,11,"sporthealth-1-20260929-230705.jpg","image/png",1100,2000,"2026-09-29"));
+        assertFalse(SleepAutomationMediaRepository.matches(b,11,"sporthealth-1-20260929-230705.jpg","image/jpeg",-1,2000,"2026-09-29"));
+        assertFalse(SleepAutomationMediaRepository.matches(b,11,"sporthealth-1-20260928-230705.jpg","image/jpeg",1100,2000,"2026-09-29"));
+    }
+    @Test public void rejectsTruncatedAndNonJpegStreams() throws Exception {
+        assertFalse(SleepAutomationMediaRepository.completeJpeg(new java.io.ByteArrayInputStream(new byte[]{1,2,3})));
+        assertFalse(SleepAutomationMediaRepository.completeJpeg(new java.io.ByteArrayInputStream(new byte[]{(byte)255,(byte)216,1,2})));
+        assertTrue(SleepAutomationMediaRepository.completeJpeg(new java.io.ByteArrayInputStream(new byte[]{(byte)255,(byte)216,1,(byte)255,(byte)217})));
     }
 
     @Test public void requiresPermissionSizeStabilityAndUniqueness(){

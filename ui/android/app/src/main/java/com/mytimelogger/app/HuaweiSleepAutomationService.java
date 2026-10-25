@@ -16,20 +16,21 @@ public final class HuaweiSleepAutomationService extends AccessibilityService {
     private static volatile HuaweiSleepAutomationService active;
     private volatile String step, failure;
     private volatile long stepStartedAt;
+    private volatile long saveStartedAt;
     private volatile boolean saveGesturePending;
     private volatile String windowActivity; private String lastEventKey; private long lastEventAt;
     static final class Snapshot {
-        final String step,failure,window;
-        Snapshot(String step,String failure,String window){this.step=step;this.failure=failure;this.window=window;}
+        final String step,failure,window;final long saveStartedAt;
+        Snapshot(String step,String failure,String window,long savedFrom){this.step=step;this.failure=failure;this.window=window;saveStartedAt=savedFrom;}
     }
-    static Snapshot snapshot(){HuaweiSleepAutomationService s=active;return s==null?new Snapshot(null,"accessibility_disconnected",null):new Snapshot(s.step,s.failure,s.windowActivity);}
+    static Snapshot snapshot(){HuaweiSleepAutomationService s=active;return s==null?new Snapshot(null,"accessibility_disconnected",null,0):new Snapshot(s.step,s.failure,s.windowActivity,s.saveStartedAt);}
 
     @Override protected void onServiceConnected() { active=this; failure=null; }
     static String send(String next) {
         HuaweiSleepAutomationService service=active;
         if(service==null) return "accessibility_disconnected";
         if(!HuaweiSleepSelectors.STEPS.contains(next)) return "invalid_step";
-        if("LAUNCH_HEALTH".equals(next)){Intent i=service.getPackageManager().getLaunchIntentForPackage(HuaweiSleepSelectors.PACKAGE);if(i==null)return "huawei_not_installed";service.windowActivity=null;service.failure=null;service.setStep("OPEN_SLEEP");i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK|Intent.FLAG_ACTIVITY_CLEAR_TOP|Intent.FLAG_ACTIVITY_SINGLE_TOP);try{service.startActivity(i);return "ok";}catch(Exception e){service.fail("launch_failed");return "launch_failed";}}
+        if("LAUNCH_HEALTH".equals(next)){Intent i=service.getPackageManager().getLaunchIntentForPackage(HuaweiSleepSelectors.PACKAGE);if(i==null)return "huawei_not_installed";service.windowActivity=null;service.failure=null;service.saveStartedAt=0;service.setStep("OPEN_SLEEP");i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK|Intent.FLAG_ACTIVITY_CLEAR_TOP|Intent.FLAG_ACTIVITY_SINGLE_TOP);try{service.startActivity(i);return "ok";}catch(Exception e){service.fail("launch_failed");return "launch_failed";}}
         service.failure=null; service.setStep(next); return "ok";
     }
     static void cancel(){HuaweiSleepAutomationService service=active;if(service!=null){service.step=null;service.failure="cancelled";service.windowActivity=null;}}
@@ -69,7 +70,7 @@ public final class HuaweiSleepAutomationService extends AccessibilityService {
         Path path=new Path();path.moveTo(point[0],point[1]);GestureDescription gesture=new GestureDescription.Builder().addStroke(new GestureDescription.StrokeDescription(path,0,120)).build();saveGesturePending=true;
         if(!dispatchGesture(gesture,new GestureResultCallback(){@Override public void onCompleted(GestureDescription g){saveGesturePending=false;if("SAVE_LOCAL".equals(step))setStep("SAVED");}@Override public void onCancelled(GestureDescription g){saveGesturePending=false;fail("click_failed");}},null)){saveGesturePending=false;fail("click_failed");}
     }
-    private void setStep(String next){step=next;stepStartedAt=SystemClock.elapsedRealtime();Log.i(TAG,"step="+next+" window="+windowActivity);if(!"SAVED".equals(next)){Handler h=new Handler(getMainLooper());h.postDelayed(()->pulse(next),500);h.postDelayed(()->{if(next.equals(step))fail("step_timeout");},15000);}}
+    private void setStep(String next){step=next;stepStartedAt=SystemClock.elapsedRealtime();if("SAVE_LOCAL".equals(next))saveStartedAt=System.currentTimeMillis();Log.i(TAG,"step="+next+" window="+windowActivity);if(!"SAVED".equals(next)){Handler h=new Handler(getMainLooper());h.postDelayed(()->pulse(next),500);h.postDelayed(()->{if(next.equals(step))fail("step_timeout");},15000);}}
     private void pulse(String expected){if(!expected.equals(step))return;Log.d(TAG,"pulse="+expected+" window="+windowActivity);AccessibilityEvent event=AccessibilityEvent.obtain(AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED);event.setPackageName(HuaweiSleepSelectors.PACKAGE);event.setClassName(windowActivity==null?"":windowActivity);onAccessibilityEvent(event);event.recycle();if(expected.equals(step))new Handler(getMainLooper()).postDelayed(()->pulse(expected),500);}
     private static void collectSemantic(AccessibilityNodeInfo node,String stage,List<AccessibilityNodeInfo> out){
         if(node==null)return;

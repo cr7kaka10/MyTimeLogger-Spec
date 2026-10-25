@@ -4533,7 +4533,7 @@ async def generate_report(request: Request, user: dict = Depends(get_current_use
     )
 
     # 查找当天的任务（如果有）
-    job = store.get_job_by_date(date, user_id=user["id"])
+    job = store.get_job_by_date(date, user_id=user["id"]) or store.get_failed_job_by_date(date, user_id=user["id"])
     image_path = job.get("image_path") if job else None
     request_id = uuid.uuid4().hex if force else (job.get("request_id") if job else uuid.uuid4().hex)
     structured_data = store.get_huawei_sleep_data(user["id"], date)

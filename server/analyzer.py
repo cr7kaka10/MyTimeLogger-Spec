@@ -18,10 +18,12 @@ from dataclasses import dataclass, asdict
 from datetime import datetime
 
 import httpx
-from openai import OpenAI
+from openai import APITimeoutError, OpenAI
 
 
 logger = logging.getLogger(__name__)
+OCR_CANDIDATE_TIMEOUT_SECONDS = 130.0
+OCR_TOTAL_BUDGET_SECONDS = 330.0
 
 NO_MAIN_SLEEP_STATE = "no_main_sleep"
 NO_MAIN_SLEEP_WARNING = "无睡眠，严重警告！"
@@ -71,16 +73,22 @@ def classify_provider_error(exc):
     signal = f"{code or ''} {type(exc).__name__} {str(exc)}".lower()
     if status == 402 or str(code) == "30001" or "insufficient" in signal and "balance" in signal:
         category, message = "insufficient_balance", "视觉模型账户余额不足，请充值或更换独立服务商"
+    elif isinstance(exc, (APITimeoutError, httpx.TimeoutException, TimeoutError)):
+        category, message = "timeout", "视觉模型响应超时，请稍后重试"
     elif status in (401, 403):
         category, message = "authentication", "视觉模型凭证无效或无权限，请更新 API Key"
     elif status == 429:
         category, message = "rate_limited", "视觉模型请求限流，请稍后重试或更换服务商"
     elif status == 404 or "model_not_found" in signal or "model not found" in signal:
         category, message = "model_unavailable", "视觉模型不可用，请检查模型名称或更换模型"
+    elif status == 400 and any(text in signal for text in ("vision", "image input", "image_url", "multimodal")):
+        category, message = "vision_unsupported", "当前模型不支持图片输入，请选择视觉模型"
+    elif str(exc) == "invalid_json":
+        category, message = "invalid_json", "视觉模型未返回有效 JSON"
     else:
         category, message = "provider_error", "视觉模型服务调用失败"
     return {"http_status": status, "provider_code": code, "category": category, "message": message,
-            "shared_failure": category in {"insufficient_balance", "authentication"}}
+            "shared_failure": category in {"insufficient_balance", "authentication", "rate_limited"}}
 
 
 def to_min(val):
@@ -493,7 +501,8 @@ class SleepAnalyzer:
     def _request_vision_json(self, prefix, prompt, img_b64, http_client):
         model = self.ai_cfg[f"{prefix}_model"]
         client = OpenAI(api_key=self.ai_cfg[f"{prefix}_api_key"],
-                        base_url=clean_url(self.ai_cfg[f"{prefix}_base_url"]), http_client=http_client)
+                        base_url=clean_url(self.ai_cfg[f"{prefix}_base_url"]), http_client=http_client,
+                        timeout=self._ocr_request_timeout, max_retries=0)
         response = client.chat.completions.create(
             model=model, temperature=0.1, messages=[{"role": "user", "content": [
                 {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}},
@@ -534,15 +543,21 @@ class SleepAnalyzer:
         base_prompt = self._load_prompt() + f"\n\n当前上下文年份为 {hint_year}，请组合完整 sleep_date。"
         reread_prompt = ("只重新读取原图中的四个时长字段并返回纯 JSON：total_sleep_min、"
                          "deep_sleep_min、light_sleep_min、rem_sleep_min。不要返回或推算其他字段。")
+        deadline = time.perf_counter() + OCR_TOTAL_BUDGET_SECONDS
         with httpx.Client(
             verify=False,
-            timeout=httpx.Timeout(60.0, connect=10.0),
+            timeout=httpx.Timeout(OCR_CANDIDATE_TIMEOUT_SECONDS, connect=10.0),
             limits=httpx.Limits(max_keepalive_connections=5, max_connections=10),
         ) as http_client:
             failed_domains = {}
             for attempt, (slot, prefix) in enumerate(candidates, start=1):
                 model = str(self.ai_cfg[f"{prefix}_model"])
                 started = time.perf_counter()
+                remaining = deadline - started
+                if remaining <= 0:
+                    self._record_ocr_audit(slot, model, "full", started, "budget_exhausted", "request")
+                    break
+                self._ocr_request_timeout = min(OCR_CANDIDATE_TIMEOUT_SECONDS, remaining)
                 fingerprint = provider_fingerprint(self.ai_cfg.get(f"{prefix}_base_url"), self.ai_cfg.get(f"{prefix}_api_key"))
                 if fingerprint in failed_domains:
                     detail = dict(failed_domains[fingerprint], provider_fingerprint=fingerprint)
@@ -567,13 +582,16 @@ class SleepAnalyzer:
                                            "valid" if is_valid else "validation_failed", "full", reason)
                     if not is_valid and reason.startswith("睡眠数据数学校验失败：夜间睡眠时长"):
                         reread_started = time.perf_counter()
-                        reread = self._request_vision_json(prefix, reread_prompt, img_b64, http_client)
-                        fields = ("total_sleep_min", "deep_sleep_min", "light_sleep_min", "rem_sleep_min")
-                        if all(field in reread for field in fields):
-                            sleep_data.update({field: reread[field] for field in fields})
-                        is_valid, reason = self.validate_data(sleep_data)
-                        self._record_ocr_audit(slot, model, "duration_reread", reread_started,
-                                               "valid" if is_valid else "validation_failed", "durations", reason)
+                        remaining = deadline - reread_started
+                        if remaining > 0:
+                            self._ocr_request_timeout = min(OCR_CANDIDATE_TIMEOUT_SECONDS, remaining)
+                            reread = self._request_vision_json(prefix, reread_prompt, img_b64, http_client)
+                            fields = ("total_sleep_min", "deep_sleep_min", "light_sleep_min", "rem_sleep_min")
+                            if all(field in reread for field in fields):
+                                sleep_data.update({field: reread[field] for field in fields})
+                            is_valid, reason = self.validate_data(sleep_data)
+                            self._record_ocr_audit(slot, model, "duration_reread", reread_started,
+                                                   "valid" if is_valid else "validation_failed", "durations", reason)
                     if is_valid:
                         if self.is_no_main_sleep(sleep_data):
                             sleep_data = self.normalize_no_main_sleep(sleep_data)

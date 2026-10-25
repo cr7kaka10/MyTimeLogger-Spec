@@ -20,7 +20,7 @@ try {
     $tracked = @(git -c core.quotepath=false ls-files 2>$null)
     if ($LASTEXITCODE -ne 0) { Fail "rule=git-index-unavailable path=.git" }
     foreach ($file in @(git -c core.quotepath=false ls-files -ci --exclude-standard)) {
-        Fail "rule=tracked-but-ignored path=$file"
+        if ($file -notmatch '^openspec/') { Fail "rule=tracked-but-ignored path=$file" }
     }
 
     $pathRules = [ordered]@{

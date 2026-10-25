@@ -1,4 +1,6 @@
 import json
+import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -29,6 +31,34 @@ def test_candidate_builder_skips_incomplete_slots_and_prefers_explicit_backup():
     cfg = _cfg() | {"vision_backup_2_base_url": "url", "vision_backup_2_model": "missing-key",
                     "backup_base_url": "legacy", "backup_api_key": "legacy-key", "backup_model": "legacy"}
     assert build_vision_candidates(cfg) == [("主模型", "vision"), ("备用模型 1", "vision_backup_1")]
+
+
+def test_ocr_request_has_explicit_timeout_and_no_sdk_retries(tmp_path, monkeypatch):
+    analyzer = _analyzer(tmp_path)
+    analyzer._ocr_request_timeout = 87.0
+    captured = {}
+    response = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(_data())))])
+    completions = SimpleNamespace(create=lambda **_kwargs: response)
+    monkeypatch.setattr("server.analyzer.OpenAI", lambda **kwargs: captured.update(kwargs) or
+                        SimpleNamespace(chat=SimpleNamespace(completions=completions)))
+    result = analyzer._request_vision_json("vision", "字段提取", "fake-base64", object())
+    assert result["sleep_score"] == 79
+    assert captured["timeout"] == 87.0 and captured["max_retries"] == 0
+
+
+def test_ocr_total_budget_stops_late_fallback(tmp_path, monkeypatch):
+    analyzer = _analyzer(tmp_path)
+    monkeypatch.setattr("server.analyzer.OCR_TOTAL_BUDGET_SECONDS", 0.1)
+    calls = []
+    def slow_request(prefix, *_args):
+        calls.append(prefix)
+        time.sleep(0.2)
+        raise TimeoutError()
+    monkeypatch.setattr(analyzer, "_request_vision_json", slow_request)
+    with pytest.raises(RuntimeError, match="睡眠OCR全部候选失败"):
+        analyzer._extract_sleep_data()
+    assert calls == ["vision"]
+    assert analyzer.ocr_audit[-1]["outcome"] == "budget_exhausted"
 
 
 def test_math_mismatch_rereads_only_durations_then_stops(tmp_path, monkeypatch):
@@ -88,6 +118,33 @@ def test_provider_error_classification_is_actionable_and_redacted(status, code, 
     result = classify_provider_error(ProviderFailure(status, code))
     assert result["category"] == category and result["http_status"] == status
     assert "secret" not in json.dumps(result, ensure_ascii=False)
+
+
+def test_timeout_invalid_json_and_nonvision_are_distinct_and_redacted():
+    timeout = classify_provider_error(TimeoutError("provider secret response"))
+    invalid = classify_provider_error(ValueError("invalid_json"))
+    nonvision = classify_provider_error(ProviderFailure(400, "unsupported", "model does not support vision"))
+    assert timeout["category"] == "timeout" and not timeout["shared_failure"]
+    assert invalid["category"] == "invalid_json" and not invalid["shared_failure"]
+    assert nonvision["category"] == "vision_unsupported" and not nonvision["shared_failure"]
+    assert "secret" not in json.dumps((timeout, invalid, nonvision), ensure_ascii=False)
+
+
+def test_timeout_tries_same_provider_alternate_model(tmp_path, monkeypatch):
+    analyzer = _analyzer(tmp_path)
+    analyzer.ai_cfg = _cfg() | {
+        "vision_backup_1_base_url": "https://main.invalid", "vision_backup_1_api_key": "main-secret",
+        "vision_backup_2_base_url": "https://independent.invalid", "vision_backup_2_api_key": "other-secret", "vision_backup_2_model": "other",
+    }
+    calls = []
+    def fake_request(prefix, *_args):
+        calls.append(prefix)
+        if prefix == "vision": raise TimeoutError("provider secret response")
+        return _data(210)
+    monkeypatch.setattr(analyzer, "_request_vision_json", fake_request)
+    result = analyzer._extract_sleep_data()
+    assert calls == ["vision", "vision_backup_1"] and result["extracted_by"] == "backup"
+    assert analyzer.ocr_audit[1]["outcome"] == "valid"
 
 
 def test_shared_balance_failure_skips_same_credential_but_tries_independent_provider(tmp_path, monkeypatch):

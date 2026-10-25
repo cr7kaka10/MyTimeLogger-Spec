@@ -26,6 +26,7 @@
             </intent-filter>
 
         </activity>
+        <activity android:name=".SleepCapturePreviewActivity" android:exported="false" android:label="睡眠图片预览" />
 
         <receiver android:name=".TimerWidgetProvider" android:exported="true">
             <intent-filter>

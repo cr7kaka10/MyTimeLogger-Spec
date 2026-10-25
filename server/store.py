@@ -589,6 +589,19 @@ class ServerSleepStore:
         finally:
             conn.close()
 
+    def get_failed_job_by_date(self, date, user_id):
+        """供同日重新分析复用原图；绝不跨用户或把失败任务当完成报告。"""
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                "SELECT * FROM server_sleep_jobs WHERE date=? AND user_id=? "
+                "AND status='error' AND image_path IS NOT NULL ORDER BY updated_at DESC LIMIT 1",
+                (date, user_id),
+            ).fetchone()
+            return self._row_to_dict(row) if row else None
+        finally:
+            conn.close()
+
     def get_done_job_by_image_hash(self, image_hash, user_id):
         """
         按同用户同图片 hash 查询最近完成 job。只返回 done，避免复用失败或运行中结果。

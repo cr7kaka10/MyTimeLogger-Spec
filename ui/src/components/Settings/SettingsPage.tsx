@@ -5,7 +5,7 @@ import { NumberSheet } from '../common/NumberSheet'
 import { LoggingSettings } from './LoggingSettings'
 import { NotificationSettings } from './NotificationSettings'
 import { SleepAutomationSettings, type SleepPermissions } from './SleepAutomationSettings'
-import { sleepAutomation } from '../../platform/sleepAutomation'
+import { sleepAutomation, type SleepAutomationStatus } from '../../platform/sleepAutomation'
 import { createCapacitorAppLifecycleService, installSleepAutomationStatusLifecycle } from '../../platform/lifecycle'
 import { AVAILABLE_AUDIO_FILES } from '../../utils/audio'
 import { getDatabase, syncNow } from '../../db'
@@ -191,7 +191,33 @@ export const SettingsPage = memo(({
   const sleepPermissions: SleepPermissions = { accessibility: nativeSleepPermissions.accessibility === true, notifications: nativeSleepPermissions.notifications === true, media: nativeSleepPermissions.media === true, battery: nativeSleepPermissions.battery === true }
   const refreshSleepStatus = useCallback(() => setSleepStatus(sleepAutomation.status()), [])
   const toggleSleepAutomation = useCallback((enabled: boolean) => { enabled ? sleepAutomation.enable() : sleepAutomation.disable(); refreshSleepStatus() }, [refreshSleepStatus])
-  const testSleepAutomation = useCallback(() => { sleepAutomation.test(); setSleepStatus(sleepAutomation.status()) }, [])
+  const pollSleepStatus = useCallback((done: (status: SleepAutomationStatus) => boolean) => {
+    let attempts = 0
+    const refresh = () => {
+      const next = sleepAutomation.status()
+      setSleepStatus(next)
+      if (!done(next) && attempts++ < 120) window.setTimeout(refresh, 1000)
+    }
+    window.setTimeout(refresh, 500)
+  }, [])
+  const testSleepAutomation = useCallback(() => {
+    const previousRun = sleepAutomation.status().captureTest?.runId
+    const result = sleepAutomation.test()
+    setSleepStatus(sleepAutomation.status())
+    if (result.ok) pollSleepStatus(status => Boolean(status.captureTest?.runId && status.captureTest.runId !== previousRun && status.captureTest.stage !== 'RUNNING'))
+  }, [pollSleepStatus])
+  const generateSleepReport = useCallback(() => {
+    const result = sleepAutomation.generateReport()
+    setSleepStatus({ ...sleepAutomation.status(), stage: result.ok ? 'PENDING' : 'FAILED', reason: result.ok ? '' : 'capture_required' })
+    if (result.ok) {
+      let sawProgress = false
+      pollSleepStatus(status => {
+        sawProgress ||= ['MEDIA', 'UPLOADED', 'POLLING'].includes(status.stage || '')
+        return sawProgress && ['SUCCESS', 'FAILED'].includes(status.stage || '')
+      })
+    }
+  }, [pollSleepStatus])
+  const previewSleepCapture = useCallback(() => { sleepAutomation.previewCapture(); setSleepStatus(sleepAutomation.status()) }, [])
   const stopSleepAutomation = useCallback(() => { sleepAutomation.cancel(); setSleepStatus(sleepAutomation.status()) }, [])
   const authorizeSleepAutomation = useCallback((permission: keyof SleepPermissions) => { sleepAutomation.authorize(permission) }, [])
   const updateSleepConsent = useCallback(async (value: boolean) => {
@@ -638,7 +664,7 @@ export const SettingsPage = memo(({
 
       {sleepStatus.available ? <SleepAutomationSettings status={sleepStatus} consented={settings.sleep_automation_consent === true} permissions={sleepPermissions}
         onConsent={value => { void updateSleepConsent(value) }} onToggle={toggleSleepAutomation} onAuthorize={authorizeSleepAutomation}
-        onTest={testSleepAutomation} onRetry={testSleepAutomation} onStop={stopSleepAutomation} />
+        onTest={testSleepAutomation} onPreview={previewSleepCapture} onGenerate={generateSleepReport} onStop={stopSleepAutomation} />
         : <section className={sectionClass}><div className="px-4 py-3 font-medium">睡眠图片自动分析</div><div className="border-t border-gray-50 px-4 py-3 text-sm text-gray-400">仅 Android 手机端可用；PC/Web 不会访问华为运动健康或本地图片。</div></section>}
 
       {/* 声音设置 */}

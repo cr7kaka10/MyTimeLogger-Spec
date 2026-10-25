@@ -8,7 +8,7 @@ from server.security_utils import hash_bearer_token, redact_mapping, redact_time
 from server.store import ServerSleepStore
 
 
-def _run_preflight_fixture(tmp_path, email, relative_path="tests/fixture.py"):
+def _run_preflight_fixture(tmp_path, email, relative_path="tests/fixture.py", ignore_rules=()):
     root = tmp_path / "repo"
     (root / "deploy").mkdir(parents=True)
     (root / "tests").mkdir()
@@ -17,8 +17,12 @@ def _run_preflight_fixture(tmp_path, email, relative_path="tests/fixture.py"):
     fixture = root / relative_path
     fixture.parent.mkdir(parents=True, exist_ok=True)
     fixture.write_text(f"USER = '{email}'\n", encoding="utf-8")
+    if ignore_rules:
+        (root / ".gitignore").write_text("\n".join(ignore_rules) + "\n", encoding="utf-8")
     subprocess.run(["git", "init", "--quiet", str(root)], check=True, capture_output=True, text=True)
     subprocess.run(["git", "-C", str(root), "add", "."], check=True, capture_output=True, text=True)
+    if ignore_rules:
+        subprocess.run(["git", "-C", str(root), "add", "-f", relative_path], check=True, capture_output=True, text=True)
     return subprocess.run(
         ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
          str(root / "deploy" / "security-preflight.ps1"), "-Environment", "testing",
@@ -43,6 +47,19 @@ def test_security_preflight_distinguishes_ui_contract_fixtures_from_runtime_data
     runtime_fixture = _run_preflight_fixture(tmp_path / "runtime", "owner@example.test", "tests/runtime/result.json")
     assert runtime_fixture.returncode != 0
     assert "rule=personal-runtime" in runtime_fixture.stdout
+
+
+def test_security_preflight_allows_ignored_openspec_but_rejects_other_ignored_files(tmp_path):
+    openspec_file = _run_preflight_fixture(
+        tmp_path / "openspec", "owner@example.test", "openspec/changes/example/tasks.md", ["/openspec/"]
+    )
+    assert openspec_file.returncode == 0, openspec_file.stdout + openspec_file.stderr
+
+    private_file = _run_preflight_fixture(
+        tmp_path / "private", "owner@example.test", "private/ignored.txt", ["/private/"]
+    )
+    assert private_file.returncode != 0
+    assert "rule=tracked-but-ignored" in private_file.stdout
 
 
 def test_session_token_is_stored_as_hash_and_can_be_revoked(tmp_path):

@@ -7,6 +7,7 @@ import org.junit.Test;
 public class SleepAutomationApiClientTest {
     @Test public void uploadContractAndFailuresAreStable()throws Exception{
         assertEquals("https://host/upload?analyze=true&full=true&date=2026-10-01",SleepAutomationApiClient.endpoint("https://host/","2026-10-01"));
+        assertEquals("https://host/generate_report",SleepAutomationApiClient.retryEndpoint("https://host/"));
         assertEquals("unauthorized",SleepAutomationApiClient.classify(401));assertEquals("server_error",SleepAutomationApiClient.classify(503));assertEquals("ok",SleepAutomationApiClient.classify(200));assertTrue(SleepAutomationApiClient.tooLarge(15L*1024L*1024L+1));
         String s=new String(Files.readAllBytes(Paths.get("src/main/java/com/mytimelogger/app/SleepAutomationApiClient.java")),"UTF-8");assertTrue(s.contains("openInputStream")&&s.contains("setChunkedStreamingMode")&&s.contains("Bearer "));assertFalse(s.contains("readAllBytes"));
     }
