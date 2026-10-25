@@ -7,6 +7,8 @@ import { installCapacitorKeyboard } from './platform/keyboard'
 import { createCapacitorNativeHttpService, setNativeHttpTransport } from './platform/fetch'
 import { createSecureCredentialsService, loadSecureCredentialView } from './platform/credentials'
 import { createCapacitorRemindersService } from './platform/reminders'
+import { reconcileMealReminders } from './platform/mealReminders'
+import { beijingDateHour } from './utils/exerciseDate'
 import { setTimerRemindersService } from './platform/timerReminders'
 import { setTimerDeviceRuntimeState } from './hooks/useTimer'
 import { createCapacitorAppLifecycleService, createCapacitorNetworkLifecycleService, installAndroidSyncLifecycle, installAndroidTimerWidgetLifecycle } from './platform/lifecycle'
@@ -18,18 +20,21 @@ let removeKeyboardListeners = () => {}
 let removeWidgetLifecycle = () => {}
 let removeSyncLifecycle = () => {}
 let removeSleepConfigSync = () => {}
+let removeMealReminderListener = () => {}
 
 export async function bootstrapApplication(loadCredentials: () => Promise<void> = async () => {}): Promise<void> {
   ;(globalThis as any).__MTL_EXTENDED_FOCUS_GROUPS__ = import.meta.env.VITE_EXTENDED_FOCUS_GROUPS !== 'false'
   const runtime = detectPlatformRuntime()
   removeKeyboardListeners(); removeKeyboardListeners = installCapacitorKeyboard(runtime)
   setNativeHttpTransport(createCapacitorNativeHttpService(runtime))
-  setTimerRemindersService(createCapacitorRemindersService(runtime))
+  const reminders = createCapacitorRemindersService(runtime)
+  setTimerRemindersService(reminders)
   const runtimeState = createDeviceRuntimeStateService(runtime)
   setTimerDeviceRuntimeState(runtimeState)
   removeWidgetLifecycle()
   removeSyncLifecycle(); removeSyncLifecycle = () => {}
   removeSleepConfigSync(); removeSleepConfigSync = () => {}
+  removeMealReminderListener(); removeMealReminderListener = () => {}
   const appLifecycle = createCapacitorAppLifecycleService(runtime)
   removeWidgetLifecycle = installAndroidTimerWidgetLifecycle(
     appLifecycle,
@@ -46,10 +51,19 @@ export async function bootstrapApplication(loadCredentials: () => Promise<void> 
   }
   try {
     await initDatabase()
+    const reconcileMeals = async () => {
+      const db = await getDatabase(), date = beijingDateHour().date, version = db.getActiveExercisePlanVersion()
+      const facts = version === 'v5' ? db.getExerciseDietCheckins(date, version) : []
+      await reconcileMealReminders(reminders, date, Object.fromEntries(facts.map((fact: any) => [fact.rule_key, fact.status === 'completed'])), version === 'v5')
+    }
+    const onExerciseStateChanged = () => { void reconcileMeals() }
+    window.addEventListener('mtl:exercise-state-changed', onExerciseStateChanged)
+    removeMealReminderListener = () => window.removeEventListener('mtl:exercise-state-changed', onExerciseStateChanged)
+    await reconcileMeals()
     removeSyncLifecycle = installAndroidSyncLifecycle(
       appLifecycle,
       createCapacitorNetworkLifecycleService(runtime),
-      reason => syncNow({ reason }),
+      reason => syncNow({ reason }).then(async result => { await reconcileMeals(); return result }),
     )
     await installNotificationRuntime(runtime, await getDatabase(), appLifecycle)
     if (runtime === 'capacitor-android') {
