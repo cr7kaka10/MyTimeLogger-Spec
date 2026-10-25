@@ -775,12 +775,29 @@ class SyncHub:
         if table == "exercise_diet_checkins":
             target_date = str(record.get("date") or _cst_today())[:10]
             plan_version, rule_key = str(record.get("plan_version") or "v4"), str(record.get("rule_key") or "")
-            # Deadline is a server-owned Beijing-time fact.  Populate it even
-            # for an older client that only sends the natural key and status.
-            record["deadline_at"] = (datetime.strptime(target_date, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d 00:00:00")
-            existing = conn.execute("""SELECT id FROM server_exercise_diet_checkins
+            cutoff = datetime.strptime(target_date, "%Y-%m-%d") + timedelta(days=1)
+            meal_windows = {"breakfast_on_time": ((0, 0), (8, 30)), "lunch_on_time": ((12, 0), (13, 31)), "dinner_on_time": ((18, 0), (19, 1))}
+            policy = conn.execute("SELECT effective_date FROM server_exercise_policy_metadata WHERE policy_key='v5_meal_timing'").fetchone() if plan_version == "v4" and rule_key in meal_windows else None
+            new_timed_rule = bool(policy and target_date >= str(policy["effective_date"]))
+            if new_timed_rule:
+                end = meal_windows[rule_key][1]
+                cutoff = cutoff.replace(hour=end[0], minute=end[1])
+                now = datetime.now(CST)
+                if record.get("status") == "completed":
+                    occurred = datetime.fromisoformat(str(record.get("occurred_at") or now.isoformat()).replace("Z", "+00:00"))
+                    occurred = occurred.replace(tzinfo=CST) if occurred.tzinfo is None else occurred.astimezone(CST)
+                    start = datetime.strptime(target_date, "%Y-%m-%d").replace(hour=meal_windows[rule_key][0][0], minute=meal_windows[rule_key][0][1], tzinfo=CST)
+                    if occurred.date().isoformat() != target_date or occurred < start or occurred >= cutoff.replace(tzinfo=CST) or now >= cutoff.replace(tzinfo=CST):
+                        raise ValueError("diet_deadline_passed")
+                if record.get("status") == "failed":
+                    raise ValueError("diet_failure_is_server_owned")
+            # Deadline is a server-owned Beijing-time fact, even for old clients.
+            record["deadline_at"] = cutoff.strftime("%Y-%m-%d %H:%M:%S")
+            existing = conn.execute("""SELECT id,status FROM server_exercise_diet_checkins
                 WHERE user_id=? AND date=? AND plan_version=? AND rule_key=?""",
                 (user_id, target_date, plan_version, rule_key)).fetchone()
+            if new_timed_rule and existing and existing["status"] == "failed" and record.get("status") != "failed":
+                raise ValueError("diet_failure_is_server_owned")
             record["id"] = existing["id"] if existing else f"diet:{user_id}:{target_date}:{plan_version}:{rule_key}"
             return record
         if table == "exercise_daily_logs":
