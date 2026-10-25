@@ -1,6 +1,7 @@
 // ui/src/components/common/TabBar.tsx
 // 底部导航栏组件 - 均分展示主要 tab
 import { memo, useCallback } from 'react'
+import { Settings } from 'lucide-react'
 import type { MainTab } from '../../types'
 import { TabIcon, type TabIconName } from './TabIcon'
 
@@ -18,6 +19,7 @@ const mainTabs: { id: TabIconName; label: string }[] = [
   { id: 'checklist', label: '清单' },
   { id: 'exercise', label: '运动' },
   { id: 'sleep', label: '睡眠' },
+  { id: 'settings', label: '设置' },
 ]
 
 export const TabBar = memo(({ activeTab, onChange }: TabBarProps) => {
@@ -36,7 +38,7 @@ export const TabBar = memo(({ activeTab, onChange }: TabBarProps) => {
               activeTab === tab.id ? 'text-blue-600' : 'text-gray-400'
             }`}
           >
-            <TabIcon name={tab.id} />
+            {tab.id === 'settings' ? <Settings aria-hidden="true" size={20} strokeWidth={1.8} /> : <TabIcon name={tab.id} />}
             <span>{tab.label}</span>
           </button>
         ))}

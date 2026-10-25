@@ -1,5 +1,4 @@
 import { memo } from 'react'
-import { Settings } from 'lucide-react'
 import type { MainTab } from '../../types'
 import { SyncStatusBar } from './SyncStatusBar'
 
@@ -26,9 +25,6 @@ export const PageQuickActions = memo(({ activeTab, balance, theme, onToggleTheme
     <nav aria-label="页面快捷操作" style={noDrag} className={`flex items-center justify-end ${compact ? 'gap-0.5' : 'gap-1 rounded-2xl border border-gray-100/80 bg-white/75 p-1 shadow-sm backdrop-blur dark:border-gray-700 dark:bg-gray-800/75'}`}>
       <SyncStatusBar />
       <button type="button" aria-label="明暗切换" title="明暗切换" style={noDrag} onClick={onToggleTheme} className={base}>{theme === 'dark' ? '☀️' : '🌙'}</button>
-      <button type="button" aria-label="设置" title="设置" style={noDrag} onClick={() => onNavigate('settings')} className={`${base} ${tone('settings')}`}>
-        <Settings size={compact ? 18 : 20} strokeWidth={2} aria-hidden="true" />
-      </button>
       <button type="button" aria-label="我的背包" title="我的背包" style={noDrag} onClick={() => onNavigate('backpack')} className={`${base} ${tone('backpack')}`}>🎒</button>
       <button type="button" aria-label="奖励商店" title="奖励商店" style={noDrag} onClick={() => onNavigate('rewards')} className={`${base} ${tone('rewards')}`}>🎁</button>
       {onOpenManagementPlanHistory && <button type="button" aria-label="管理方案" title="管理方案" style={noDrag} onClick={() => onOpenManagementPlanHistory()} className={base}>🧭</button>}
