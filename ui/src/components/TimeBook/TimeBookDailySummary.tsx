@@ -33,7 +33,8 @@ const summaryOrder = (item: DailySummaryItem) => item.key === 'sleep-upload' ? 1
           : item.key.startsWith('goal-') ? 60
             : item.key.startsWith('diet-') ? 70
               : item.key === 'evening-diary' ? 90
-                : item.key.startsWith('habit-') ? 100 : 80
+                : item.key.startsWith('habit-') ? 100
+                  : item.key.startsWith('task-') ? 110 : 80
 const sumMatches = (ledger: DailySummaryLedger[], source: string, token?: string) => {
   const rows = ledger.filter(entry => entry.source_type === source && (!token || String(entry.source_id || '').includes(token) || String(entry.description || '').includes(token)))
   return { amount: rows.length ? rows.reduce((sum, row) => sum + Number(row.amount || 0), 0) : null, ids: rows.map(row => String(row.id)) }
