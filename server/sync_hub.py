@@ -775,6 +775,13 @@ class SyncHub:
         if table == "exercise_diet_checkins":
             target_date = str(record.get("date") or _cst_today())[:10]
             plan_version, rule_key = str(record.get("plan_version") or "v4"), str(record.get("rule_key") or "")
+            if plan_version in {"v4", "v5"}:
+                try:
+                    from .domain.exercise_v4_service import is_exercise_rest_day
+                except ImportError:
+                    from domain.exercise_v4_service import is_exercise_rest_day
+                if is_exercise_rest_day(conn, user_id, plan_version, target_date):
+                    raise ValueError("diet_checkin_rest_day")
             cutoff = datetime.strptime(target_date, "%Y-%m-%d") + timedelta(days=1)
             meal_windows = {"breakfast_on_time": ((0, 0), (8, 30)), "lunch_on_time": ((12, 0), (13, 31)), "dinner_on_time": ((18, 0), (19, 1))}
             policy = conn.execute("SELECT effective_date FROM server_exercise_policy_metadata WHERE policy_key='v5_meal_timing'").fetchone() if plan_version == "v4" and rule_key in meal_windows else None

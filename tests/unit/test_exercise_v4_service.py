@@ -412,3 +412,45 @@ def test_v4_startup_compensation_notifies_only_for_real_changes(tmp_db_path, mon
     assert first == 1 and second == 0
     assert len(notifications) == 1
     assert after == before
+
+
+def test_v5_monday_rest_exemption_starts_on_oct_26_and_preserves_older_dates(tmp_db_path):
+    store, _ = _setup(tmp_db_path)
+    service = ExerciseV4Service(store.reward_wallet_service, lambda *args: None, "v5")
+    before, after = "2026-10-19", "2026-10-26"
+    with store._transact() as conn:
+        service.ensure_diet_rows(conn, 1, before, datetime(2026, 10, 19, 8, tzinfo=BJ))
+        old_rows = conn.execute("SELECT COUNT(*) FROM server_exercise_diet_checkins WHERE user_id=1 AND date=?", (before,)).fetchone()[0]
+        old_source = f"exercise-diet-penalty:1:{before}:v5:{service.diet_rules[0]}"
+        service.wallet.append_ledger_in_txn(conn, 1, -20, "exercise_diet_penalty", old_source, "历史扣款", before, old_source, f"{before} 08:00:00")
+        service.wallet.rebuild_wallet_snapshot_in_txn(conn, 1, lambda: f"{before} 08:00:00")
+        service.ensure_diet_rows(conn, 1, before, datetime(2026, 10, 19, 9, tzinfo=BJ))
+        old_penalties = conn.execute("SELECT COUNT(*) FROM server_reward_ledger WHERE user_id=1 AND id=?", (old_source,)).fetchone()[0]
+        old_balance = conn.execute("SELECT balance FROM server_user_wallets WHERE user_id=1").fetchone()[0]
+        score = service.settle(conn, 1, after, datetime(2026, 10, 26, 8, tzinfo=BJ))
+        new_rows = conn.execute("SELECT COUNT(*) FROM server_exercise_diet_checkins WHERE user_id=1 AND date=?", (after,)).fetchone()[0]
+    assert old_rows == len(service.diet_rules) and (old_penalties, old_balance) == (1, -20)
+    assert new_rows == 0 and score["cats"]["饮食约束"] == {"s": 0.0, "m": 0.0}
+    with store._transact() as conn, pytest.raises(ValueError, match="unknown_diet_rule"):
+        service.set_diet(conn, 1, after, service.diet_rules[0], True, f"{after} 08:00:00", datetime(2026, 10, 26, 8, tzinfo=BJ))
+    with store._transact() as conn, pytest.raises(ValueError, match="diet_checkin_rest_day"):
+        server_module.sync_hub._prepare_exercise_record(conn, "exercise_diet_checkins",
+            {"date": after, "plan_version": "v5", "rule_key": service.diet_rules[0], "status": "pending"}, 1)
+
+
+def test_rest_day_clears_only_effective_date_auto_diet_penalty(tmp_db_path):
+    store, _ = _setup(tmp_db_path)
+    service = ExerciseV4Service(store.reward_wallet_service, lambda *args: None, "v5")
+    date, rule = "2026-10-26", "protein_at_lunch_and_dinner"
+    source = f"exercise-diet-penalty:1:{date}:v5:{rule}"
+    with store._transact() as conn:
+        conn.execute("""INSERT INTO server_exercise_diet_checkins
+            (id,user_id,date,plan_version,rule_key,status,deadline_at,created_at,updated_at,failure_reason,penalty_source_id)
+            VALUES (?,?,?,'v5',?,'failed',?,?,?,'meal_window_passed',?)""",
+            (f"diet:1:{date}:v5:{rule}", 1, date, rule, f"{date} 24:00:00", date, date, source))
+        service.wallet.append_ledger_in_txn(conn, 1, -20, "exercise_diet_penalty", source, "旧自动扣款", date, source, f"{date} 00:01:00")
+        service.wallet.rebuild_wallet_snapshot_in_txn(conn, 1, lambda: f"{date} 00:01:00")
+        service.ensure_diet_rows(conn, 1, date, datetime(2026, 10, 26, 8, tzinfo=BJ))
+        assert conn.execute("SELECT COUNT(*) FROM server_exercise_diet_checkins WHERE user_id=1 AND date=?", (date,)).fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM server_reward_ledger WHERE user_id=1 AND source_type='exercise_diet_penalty'").fetchone()[0] == 0
+        assert conn.execute("SELECT balance FROM server_user_wallets WHERE user_id=1").fetchone()[0] == 0
