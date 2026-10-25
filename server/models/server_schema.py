@@ -1989,6 +1989,9 @@ def ensure_server_schema(conn: sqlite3.Connection):
         FOREIGN KEY (user_id) REFERENCES users(id), FOREIGN KEY (flash_card_id) REFERENCES server_flash_cards(id))""")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_flash_processing_logs_user_card ON server_flash_processing_logs(user_id, flash_card_id, started_at DESC)")
 
+    conn.execute("""CREATE TABLE IF NOT EXISTS server_exercise_policy_metadata (
+        policy_key TEXT PRIMARY KEY, effective_date TEXT NOT NULL, created_at TEXT NOT NULL)""")
+
     # 学习模型兼容字段：客户端已有这些配置字段，服务端旧库需幂等补齐。
     _ensure_columns(conn, "server_learning_objectives", {
         "duration": "INTEGER", "baseline": "TEXT", "target_description": "TEXT",

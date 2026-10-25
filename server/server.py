@@ -359,6 +359,29 @@ def _repair_v4_diet_rule_keys_on_startup() -> int:
     return repaired
 
 
+def _migrate_v5_meal_rules_on_startup() -> int:
+    rules = [("breakfast_on_time", "08:30 前", "按时吃早饭"), ("lunch_on_time", "12:00–13:30", "按时吃午饭"), ("dinner_on_time", "18:00–19:00", "按时吃晚饭")]
+    with store._transact() as conn:
+        plans = conn.execute("SELECT user_id,version FROM server_exercise_plan_versions WHERE lower(version)='v5'").fetchall()
+        if not plans:
+            return 0
+        today = beijing_now().date()
+        conn.execute("INSERT OR IGNORE INTO server_exercise_policy_metadata VALUES('v5_meal_timing',?,?)",
+                     ((today + timedelta(days=1)).isoformat(), today.strftime("%Y-%m-%d %H:%M:%S")))
+        created = 0
+        for plan in plans:
+            user_id, version = int(plan["user_id"]), str(plan["version"])
+            order = int(conn.execute("SELECT COALESCE(MAX(sort_order),0) FROM server_exercise_plan_diet_rules WHERE user_id=? AND plan_version=?", (user_id, version)).fetchone()[0])
+            for key, time_text, content in rules:
+                row_id = f"{version}:{key}"
+                inserted = conn.execute("INSERT OR IGNORE INTO server_exercise_plan_diet_rules(id,user_id,plan_version,rule_key,sort_order,time,content,note,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                    (row_id, user_id, version, key, order + 1, time_text, content, "超时失败并扣20金币", today.strftime("%Y-%m-%d %H:%M:%S"), today.strftime("%Y-%m-%d %H:%M:%S")))
+                if inserted.rowcount:
+                    _exercise_write_change(conn, user_id, "exercise_plan_diet_rule", row_id, {"id": row_id, "user_id": user_id, "plan_version": version, "rule_key": key, "sort_order": order + 1, "time": time_text, "content": content, "note": "超时失败并扣20金币"})
+                    order += 1; created += 1
+        return created
+
+
 def _retire_legacy_noon_bedtime_penalties_on_startup() -> dict:
     """幂等撤销已废弃 noon 规则的精确历史流水。"""
     result = store.sleep_reward_service.rollback_bedtime_coins()
@@ -828,6 +851,10 @@ async def lifespan(app: FastAPI):
         _repair_v4_diet_rule_keys_on_startup()
     except Exception as e:
         logger.error(f"❌ 服务端启动 V4 饮食规则修复失败: {e}")
+    try:
+        _migrate_v5_meal_rules_on_startup()
+    except Exception as e:
+        logger.error(f"❌ 服务端启动 V5 三餐规则迁移失败: {e}")
     try:
         _retire_legacy_noon_bedtime_penalties_on_startup()
     except Exception as e:
