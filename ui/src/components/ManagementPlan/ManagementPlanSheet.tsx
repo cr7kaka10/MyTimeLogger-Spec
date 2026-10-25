@@ -5,16 +5,16 @@ import { ManagementPlanMindmap, type MindmapNavigation } from './ManagementPlanM
 import { ManagementPlanHistory } from './ManagementPlanHistory'
 import { ManagementPlanText } from './ManagementPlanText'
 import { useBehaviorAuditLog } from '../../hooks/useBehaviorAuditLog'
-import type { MainTab } from '../../types'
+import type { Goal, MainTab } from '../../types'
 
-interface Props { runtime: ManagementPlanRuntime; onClose: () => void; onNavigate?: (intent: MindmapNavigation) => void; initialRequest?: string; initialDraft?: ManagementPlanDraft | null; open?: boolean; mode?: 'draft' | 'history' }
+interface Props { runtime: ManagementPlanRuntime; goals: Goal[]; onClose: () => void; onNavigate?: (intent: MindmapNavigation) => void; initialRequest?: string; initialDraft?: ManagementPlanDraft | null; open?: boolean; mode?: 'draft' | 'history' }
 
 const actionLabels: Record<string, string> = { create: '新增', update: '调整', bind: '绑定', keep: '保留', disable: '停用' }
 const sourceLabels: Record<string, string> = { checklist_task: '任务', habit: '习惯', learning_task: '学习任务', goal: '目标', exercise_checkin: '运动打卡' }
 const periodLabels: Record<string, string> = { daily: '每日', weekly: '每周', monthly: '每月', per_session: '每次' }
 const inventoryLabel = (mode: string, limit?: number | null) => mode === 'unlimited' ? '不限量' : `${periodLabels[mode] || mode}${limit ? ` ${limit} 个` : ''}`
 
-export function ManagementPlanSheet({ runtime, onClose, onNavigate, initialRequest = '', initialDraft = null, open = true, mode = 'draft' }: Props) {
+export function ManagementPlanSheet({ runtime, goals, onClose, onNavigate, initialRequest = '', initialDraft = null, open = true, mode = 'draft' }: Props) {
   const plan = useManagementPlan(runtime)
   const versions = useManagementPlanVersions(runtime)
   const [requestText, setRequestText] = useState(initialRequest)
@@ -28,6 +28,7 @@ export function ManagementPlanSheet({ runtime, onClose, onNavigate, initialReque
   const [fullscreenError, setFullscreenError] = useState('')
   const generatedRequestRef = useRef('')
   const sheetRef = useRef<HTMLDivElement>(null)
+  const contentScrollRef = useRef<HTMLDivElement>(null)
   const items = useMemo<ManagementPlanItem[]>(() => editedPayload?.items || plan.draft?.payload?.items || [], [editedPayload, plan.draft])
   const draftMode = plan.draft?.payload?.mode || 'proposal'
   const isReview = draftMode === 'review'
@@ -35,6 +36,10 @@ export function ManagementPlanSheet({ runtime, onClose, onNavigate, initialReque
   const impactByKey = useMemo(() => new Map((plan.preview?.impact || []).map(item => [item.logical_key, item])), [plan.preview])
   const busy = ['generating', 'previewing', 'applying'].includes(plan.state)
   const audit = useBehaviorAuditLog(runtime, mode === 'history' && !showGenerator && historyView === 'behavior')
+
+  useEffect(() => {
+    if (mode === 'history' && !showGenerator && historyView === 'text') contentScrollRef.current?.scrollTo({ top: 0 })
+  }, [historyView, mode, showGenerator])
 
   useEffect(() => {
     if (mode !== 'draft') return
@@ -102,13 +107,13 @@ export function ManagementPlanSheet({ runtime, onClose, onNavigate, initialReque
           </div>
         </header>
         {fullscreenError && <p className="px-5 py-2 text-xs text-amber-700" role="status">{fullscreenError}</p>}
-        <div className="min-h-0 flex-1 overflow-y-auto p-5">
+        <div ref={contentScrollRef} className="min-h-0 flex-1 overflow-y-auto p-5">
           {historyMode ? (
             <div className="space-y-4">
               <div className="flex flex-wrap gap-2 border-b pb-3"><button type="button" onClick={() => setShowGenerator(true)} className="rounded-lg bg-blue-600 px-3 py-1.5 text-sm font-medium text-white">生成整体方案</button><button type="button" aria-pressed={historyView === 'mindmap'} onClick={() => setHistoryView('mindmap')} className="rounded-lg border px-3 py-1.5 text-sm data-[active=true]:bg-blue-600" data-active={historyView === 'mindmap'}>当前导图</button><button type="button" aria-pressed={historyView === 'versions'} onClick={() => setHistoryView('versions')} className="rounded-lg border px-3 py-1.5 text-sm data-[active=true]:bg-blue-600" data-active={historyView === 'versions'}>版本历史</button><button type="button" aria-pressed={historyView === 'behavior'} onClick={() => setHistoryView('behavior')} className="rounded-lg border px-3 py-1.5 text-sm data-[active=true]:bg-blue-600" data-active={historyView === 'behavior'}>行为日志</button><button type="button" aria-pressed={historyView === 'text'} onClick={() => setHistoryView('text')} className="rounded-lg border px-3 py-1.5 text-sm data-[active=true]:bg-blue-600" data-active={historyView === 'text'}>文字版</button></div>
               {historyView === 'mindmap' ? (
                 <ManagementPlanMindmap runtime={runtime} onNavigate={intent => { onNavigate?.(intent); onClose() }} />
-              ) : historyView === 'behavior' ? <section className="space-y-3" aria-label="行为日志"><input type="date" value={audit.date} onChange={event => audit.setDate(event.target.value)} className="rounded-lg border px-3 py-2 text-sm" />{audit.error ? <button type="button" onClick={audit.reload} className="rounded-lg border border-red-300 px-3 py-2 text-sm text-red-700">重试：{audit.error}</button> : null}{audit.loading && !audit.events.length ? <p className="text-sm text-gray-500">正在读取行为日志…</p> : audit.events.length ? <div className="space-y-2">{audit.events.map(event => <div key={event.event_id} className="rounded-lg border p-3 text-sm"><div className="flex justify-between gap-2"><strong>{event.summary || '执行了系统操作'}</strong><span>{event.occurred_at.slice(11)}</span></div><p className="mt-1 text-xs text-gray-600 dark:text-gray-300">{event.detail}</p><p className="mt-1 text-[11px] text-gray-400">{event.page_label} · {event.action}</p></div>)}</div> : <p className="text-sm text-gray-500">该日期暂无行为日志。</p>}{audit.cursor ? <button type="button" disabled={audit.loading} onClick={audit.loadMore} className="rounded-lg border px-3 py-2 text-sm">加载更多</button> : null}</section> : historyView === 'text' ? <ManagementPlanText /> : (
+              ) : historyView === 'behavior' ? <section className="space-y-3" aria-label="行为日志"><input type="date" value={audit.date} onChange={event => audit.setDate(event.target.value)} className="rounded-lg border px-3 py-2 text-sm" />{audit.error ? <button type="button" onClick={audit.reload} className="rounded-lg border border-red-300 px-3 py-2 text-sm text-red-700">重试：{audit.error}</button> : null}{audit.loading && !audit.events.length ? <p className="text-sm text-gray-500">正在读取行为日志…</p> : audit.events.length ? <div className="space-y-2">{audit.events.map(event => <div key={event.event_id} className="rounded-lg border p-3 text-sm"><div className="flex justify-between gap-2"><strong>{event.summary || '执行了系统操作'}</strong><span>{event.occurred_at.slice(11)}</span></div><p className="mt-1 text-xs text-gray-600 dark:text-gray-300">{event.detail}</p><p className="mt-1 text-[11px] text-gray-400">{event.page_label} · {event.action}</p></div>)}</div> : <p className="text-sm text-gray-500">该日期暂无行为日志。</p>}{audit.cursor ? <button type="button" disabled={audit.loading} onClick={audit.loadMore} className="rounded-lg border px-3 py-2 text-sm">加载更多</button> : null}</section> : historyView === 'text' ? <ManagementPlanText goals={goals} /> : (
                 <>
                   <ManagementPlanHistory runtime={runtime} onSelect={revision => void selectRevision(revision)} />
                   {historyError && <p className="rounded-lg bg-red-50 p-3 text-sm text-red-700 dark:bg-red-950/30 dark:text-red-300" role="alert">{historyError}</p>}

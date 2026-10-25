@@ -464,7 +464,7 @@ const AppSession = ({ initialAuthenticated, onAccountActivated }: { initialAuthe
       )}
 
       {showLedger && <LedgerSheet {...ledgerHook} onClose={() => setShowLedger(false)} />}
-      <ManagementPlanSheet open={showManagementPlan} mode={managementPlanMode} runtime={{ serverUrl: settings.selectedEnvironmentProfile.serverUrl, authToken: settings.selectedEnvironmentProfile.authToken }} initialRequest={managementPlanRequest} initialDraft={managementPlanDraft} onNavigate={handleMindmapNavigate} onClose={() => setShowManagementPlan(false)} />
+      <ManagementPlanSheet open={showManagementPlan} mode={managementPlanMode} goals={goals.goals} runtime={{ serverUrl: settings.selectedEnvironmentProfile.serverUrl, authToken: settings.selectedEnvironmentProfile.authToken }} initialRequest={managementPlanRequest} initialDraft={managementPlanDraft} onNavigate={handleMindmapNavigate} onClose={() => setShowManagementPlan(false)} />
       {explosionPos && <CoinExplosion x={explosionPos.x} y={explosionPos.y} onComplete={() => setExplosionPos(null)} />}
       {showOnboarding && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4 backdrop-blur-sm">
