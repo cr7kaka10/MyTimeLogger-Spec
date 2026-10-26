@@ -19,13 +19,30 @@ assert(pending[0].status === 'pending' && pending[1].status === 'pending', 'slee
 const overdue = buildDailySummary({ ...base, diary: { report_status: 0 }, nowMs: afterNine })
 assert(overdue[0].status === 'overdue' && overdue[1].status === 'overdue', 'sleep items must become overdue at 09:00')
 const uploaded = buildDailySummary({ ...base, diary: { image_uploaded_at: '2026-10-03 08:59:00', source: 'screenshot_ocr', sync_status: 'success', report_status: 1 }, nowMs: afterNine })
-assert(uploaded[0].status === 'completed' && uploaded[1].status === 'overdue', 'upload must not imply full report completion')
+assert(uploaded.find(item => item.key === 'sleep-upload')?.status === 'completed' && uploaded.find(item => item.key === 'sleep-report')?.status === 'overdue', 'upload must not imply full report completion')
 const lateUpload = buildDailySummary({ ...base, diary: { image_uploaded_at: '2026-10-03 16:29:10', source: 'screenshot_ocr', sync_status: 'success', report_status: 2, full_report_state: 'generated', report_completed_at: '2026-10-03 16:30:14' }, nowMs: Date.parse('2026-10-03T16:31:00+08:00') })
-assert(lateUpload[0].status === 'failed' && lateUpload[0].actualTime === '16:29', 'late upload must remain failed with first upload time')
-assert(lateUpload[1].status === 'failed' && lateUpload[1].actualTime === '16:30', 'late report must remain failed with completion time')
+assert(lateUpload.find(item => item.key === 'sleep-upload')?.status === 'failed' && lateUpload.find(item => item.key === 'sleep-upload')?.actualTime === '16:29', 'late upload must remain failed with first upload time')
+assert(lateUpload.find(item => item.key === 'sleep-report')?.status === 'failed' && lateUpload.find(item => item.key === 'sleep-report')?.actualTime === '16:30', 'late report must remain failed with completion time')
 const complete = buildDailySummary({ ...base, diary: { image_uploaded_at: '2026-10-03 08:58:00', source: 'screenshot_ocr', sync_status: 'success', report_status: 2, full_report_state: 'generated', report_completed_at: '2026-10-03 08:59:00', morning_diary: '晨记', evening_diary: '晚记' }, nowMs: afterNine })
 assert(['sleep-upload', 'sleep-report', 'morning-diary', 'evening-diary'].every(key => complete.find(item => item.key === key)?.status === 'completed'), 'sleep and diary facts must complete independently')
 assert(['diet-no_snacks', 'diet-no_sugary_drinks', 'diet-no_refined_staples'].map(key => complete.find(item => item.key === key)?.status).join(',') === 'completed,failed,pending', 'V4 diet facts must preserve authoritative states')
+const v5Rules = [
+  ['protein_at_lunch_and_dinner', '午晚餐保证蛋白质'], ['vegetables_at_lunch_and_dinner', '午晚餐至少2拳蔬菜'],
+  ['controlled_staple_and_no_sugary_drink', '控制主食且不喝含糖饮料'], ['breakfast_on_time', '按时吃早餐'],
+  ['lunch_on_time', '按时吃午饭'], ['dinner_on_time', '按时吃晚饭'],
+]
+const v5Plan = { diet: v5Rules.map(([ruleKey, content]) => ({ ruleKey, content, time: ruleKey === 'breakfast_on_time' ? '08:30 前' : '' })),
+  exercisePlan: { 周一: { gym: [], rain: [] }, 周二: { gym: [{}], rain: [] } } } as any
+const v5Base = { ...base, date: '2026-10-27', planVersion: 'v5', planDefinition: v5Plan, planReady: true, diary: null, ledger: [],
+  dietCheckins: Object.fromEntries(v5Rules.map(([key], index) => [key, { status: index === 0 ? 'completed' : index === 1 ? 'failed' : 'pending' }])) }
+const v5Items = buildDailySummary(v5Base).filter(item => item.key.startsWith('diet-'))
+assert(v5Items.length === 6 && v5Rules.every(([key]) => v5Items.some(item => item.key === `diet-${key}`)), 'V5 summary must include all six current plan rules')
+assert(v5Items.find(item => item.key === 'diet-breakfast_on_time')?.label === '08:30 前 按时吃早餐', 'V5 summary must use the exercise plan label')
+assert(v5Rules.every(([key], index) => v5Items.find(item => item.key === `diet-${key}`)?.status === (index === 0 ? 'completed' : index === 1 ? 'failed' : 'pending')), 'V5 summary must use the selected-date facts')
+const historical = buildDailySummary({ ...v5Base, dietCheckins: Object.fromEntries(v5Rules.slice(0, 3).map(([key]) => [key, { status: 'completed' }])) })
+assert(historical.filter(item => item.key.startsWith('diet-') && item.status === 'plan_only').length === 3, 'historical meal rules must be plan-only')
+assert(!buildDailySummary({ ...v5Base, date: '2026-10-26' }).some(item => item.key.startsWith('diet-')), 'V5 rest day must not show diet tasks')
+assert(!buildDailySummary({ ...v5Base, planReady: false }).some(item => item.key.startsWith('diet-')), 'incomplete V5 plan must not fall back to three rules')
 assert(buildDailySummary({ ...base, planVersion: 'v3', diary: null }).every(item => !item.key.startsWith('diet-')), 'non-V4 dates must not fabricate diet items')
 assert(complete.some(item => item.key === 'body-metrics' && item.actualAmount === -50), 'body metrics and actual penalty must render')
 assert(complete.some(item => item.key === 'goal-g1' && item.ruleAmount === -15), 'active daily goals must render with rule amount')
