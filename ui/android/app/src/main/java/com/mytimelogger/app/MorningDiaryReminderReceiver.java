@@ -15,8 +15,9 @@ public final class MorningDiaryReminderReceiver extends BroadcastReceiver {
     static void scheduleInitial(Context c,long now){scheduleAt(c,MorningDiarySchedule.nextInitial(now));}
     static void scheduleAt(Context c,long at){AlarmManager a=(AlarmManager)c.getSystemService(Context.ALARM_SERVICE);PendingIntent p=pending(c);if(Build.VERSION.SDK_INT<31||a.canScheduleExactAlarms())a.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP,at,p);else a.setWindow(AlarmManager.RTC_WAKEUP,at,60_000,p);}
     static String today(long now){SimpleDateFormat f=new SimpleDateFormat("yyyy-MM-dd",Locale.ROOT);f.setTimeZone(SleepAutomationScheduler.BEIJING);return f.format(new Date(now));}
+    static boolean shouldRemind(String state){return !MorningDiaryStore.WRITTEN.equals(state);}
     @Override public void onReceive(Context c,Intent i){if(i==null||!ACTION.equals(i.getAction()))return;long now=System.currentTimeMillis();if(!MorningDiarySchedule.inWindow(now)){scheduleInitial(c,now);return;}
-        String state=MorningDiaryStore.today(c,today(now));if(MorningDiaryStore.WRITTEN.equals(state))NotificationManagerCompat.from(c).cancel(NOTIFICATION);else notifyMissing(c,UNKNOWN.equals(state));
+        String state=MorningDiaryStore.today(c,today(now));if(!shouldRemind(state))NotificationManagerCompat.from(c).cancel(NOTIFICATION);else notifyMissing(c,UNKNOWN.equals(state));
         scheduleAt(c,MorningDiarySchedule.nextCheck(now));
     }
     private static final String UNKNOWN=MorningDiaryStore.UNKNOWN;
