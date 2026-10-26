@@ -27,13 +27,17 @@ final class SleepAutomationNotificationFactory {
     static void showCaptureResult(Context c,boolean success,String reason){
         showMessage(c,captureResultTitle(success),captureResultText(success,reason));
     }
+    static void showUnlockReminder(Context c){showMessage(c,"请解锁手机","请在 08:40 前解锁，随后将自动开始睡眠分析。",835);}
     private static String reasonText(String reason){return reason==null||reason.isEmpty()?"未知":reason.substring(0,Math.min(48,reason.length()));}
     private static void showMessage(Context c,String title,String text){
+        showMessage(c,title,text,(int)(System.currentTimeMillis()&0x7fffffff));
+    }
+    private static void showMessage(Context c,String title,String text,int id){
         try{
             if(Build.VERSION.SDK_INT>=26){NotificationChannel channel=new NotificationChannel(RESULT_CHANNEL,"睡眠报告结果",NotificationManager.IMPORTANCE_HIGH);channel.setDescription("今日睡眠报告生成成功或失败时提醒");c.getSystemService(NotificationManager.class).createNotificationChannel(channel);}
             Notification.Builder b=Build.VERSION.SDK_INT>=26?new Notification.Builder(c,RESULT_CHANNEL):new Notification.Builder(c);
             Notification result=b.setSmallIcon(android.R.drawable.stat_notify_sync).setContentTitle(title).setContentText(text).setAutoCancel(true).setCategory(Notification.CATEGORY_STATUS).setPriority(Notification.PRIORITY_HIGH).build();
-            NotificationManagerCompat.from(c).notify((int)(System.currentTimeMillis()&0x7fffffff),result);
+            NotificationManagerCompat.from(c).notify(id,result);
         }catch(SecurityException ignored){}
     }
     private SleepAutomationNotificationFactory(){}
