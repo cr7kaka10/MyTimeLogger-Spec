@@ -64,6 +64,7 @@ export const formatSyncFailure = (result: SyncNowResult): string =>
 export interface UseTimeBookReturn {
   sessions: SessionRecord[]
   selectedDate: string
+  summaryLoadedDate: string
   setSelectedDate: (d: string) => void
   resetToToday: () => void
   availableDates: string[]
@@ -125,6 +126,10 @@ const beijingDateTime = () => new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia
 
 export const useTimeBook = (isActive = true, runtime?: ManagementPlanRuntime): UseTimeBookReturn => {
   const [selectedDate, setSelectedDate] = useState(() => formatBeijingDate())
+  const [summaryLoadedDate, setSummaryLoadedDate] = useState('')
+  const activeDateRef = useRef(selectedDate)
+  activeDateRef.current = selectedDate
+  const loadGenerationRef = useRef(0)
   const [sessions, setSessions] = useState<SessionRecord[]>([])
   const [availableDates, setAvailableDates] = useState<string[]>([])
   const [categories, setCategories] = useState<Array<{ id: number; name: string; icon?: string; color?: string }>>([])
@@ -143,7 +148,9 @@ export const useTimeBook = (isActive = true, runtime?: ManagementPlanRuntime): U
   const syncPromise = useRef<Promise<void> | null>(null)
 
   const loadLocal = useCallback(async () => {
+    const generation = ++loadGenerationRef.current
     const db = await getDatabase()
+    if (activeDateRef.current !== selectedDate || generation !== loadGenerationRef.current) return
     setSessions(db.getSessionsByDate(selectedDate) as any[])
     setAvailableDates(db.getAvailableDates() ?? [])
     setCategories(db.getCategories().map((c: any) => ({ id: c.id, name: c.name, icon: c.icon, color: c.color })))
@@ -184,6 +191,7 @@ export const useTimeBook = (isActive = true, runtime?: ManagementPlanRuntime): U
       return at && name && (status === 1 || status === -1) ? [{ id: `exercise-checkin-${checkin.id}`, at, kind: 'checkin' as const, checkinSource: 'exercise' as const, checkinName: name, checkinStatus: status === 1 ? 'success' as const : 'failure' as const }] : []
     })
     setCheckinEntries([...habitEntries, ...exerciseEntries])
+    setSummaryLoadedDate(selectedDate)
   }, [selectedDate])
 
   const flashRequest = useCallback(async (path: string, init: RequestInit = {}) => {
@@ -299,6 +307,7 @@ export const useTimeBook = (isActive = true, runtime?: ManagementPlanRuntime): U
   }, [])
 
   const changeSelectedDate = useCallback((date: string) => {
+    setSummaryLoadedDate('')
     setSelectedDate(date)
     syncAfterDateSwitch('timebook', date)
       .then(result => {
@@ -407,10 +416,10 @@ export const useTimeBook = (isActive = true, runtime?: ManagementPlanRuntime): U
 
   return useMemo(
     () => ({
-      sessions, selectedDate, setSelectedDate: changeSelectedDate, resetToToday, availableDates, markedDates, categories,
+      sessions, selectedDate, summaryLoadedDate, setSelectedDate: changeSelectedDate, resetToToday, availableDates, markedDates, categories,
       deleteSession, updateSession, saveSession, todaySummary, diary, dailyGoals, dailySummaryLedger, dailyHabits, saveDiary, sleepStatusMap, syncError,
       flashCards, timelineEntries, flashError, taskRecommendations, taskSubmissions, createRecommendedTask, ignoreRecommendedTask, submitFlashClassificationFeedback, loadFlashProcessingLogs, correctFlashPolish, loadFlashSkillHistory, recordFlashCard, saveFlashCard, deleteFlashCard,
     }),
-    [sessions, selectedDate, changeSelectedDate, resetToToday, availableDates, markedDates, categories, deleteSession, updateSession, saveSession, todaySummary, diary, dailyGoals, dailySummaryLedger, dailyHabits, saveDiary, sleepStatusMap, syncError, flashCards, timelineEntries, flashError, taskRecommendations, taskSubmissions, createRecommendedTask, ignoreRecommendedTask, submitFlashClassificationFeedback, loadFlashProcessingLogs, correctFlashPolish, loadFlashSkillHistory, recordFlashCard, saveFlashCard, deleteFlashCard],
+    [sessions, selectedDate, summaryLoadedDate, changeSelectedDate, resetToToday, availableDates, markedDates, categories, deleteSession, updateSession, saveSession, todaySummary, diary, dailyGoals, dailySummaryLedger, dailyHabits, saveDiary, sleepStatusMap, syncError, flashCards, timelineEntries, flashError, taskRecommendations, taskSubmissions, createRecommendedTask, ignoreRecommendedTask, submitFlashClassificationFeedback, loadFlashProcessingLogs, correctFlashPolish, loadFlashSkillHistory, recordFlashCard, saveFlashCard, deleteFlashCard],
   )
 }
