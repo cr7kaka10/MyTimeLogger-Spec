@@ -1,4 +1,4 @@
-import { useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { MainTab, SourceRewardType, TaskItem } from '../../types'
 import type { UseTimeBookReturn } from '../../hooks/useTimeBook'
 import { SourceRewardSummary } from '../Rewards/SourceRewardSummary'
@@ -21,7 +21,6 @@ const SLEEP_LEDGER_RULES: Array<[string, string, number | undefined]> = [
   ['sleep_deep_penalty', '深睡时长达标', undefined], ['sleep_no_sleep_penalty', '存在有效主睡眠', undefined],
   ['sleep_settlement_reward', '睡眠评分奖励', undefined], ['sleep_completion_reward', '睡眠指标全完成奖励', undefined],
 ]
-const failed = (value: unknown) => /fail|error|失败/i.test(String(value || ''))
 const timeMs = (value?: string | null) => value ? Date.parse(/[zZ]|[+-]\d\d:\d\d$/.test(value) ? value : `${value.replace(' ', 'T')}+08:00`) : Number.NaN
 const clock = (value?: string | null) => value?.match(/\d{2}:\d{2}/)?.[0]
 const signed = (value: number) => value > 0 ? `+${value}` : String(value)
@@ -55,11 +54,11 @@ export function buildDailySummary({ date, diary, planVersion, planDefinition, pl
   const bodyActual = sumMatches(ledger, 'body_metric_deadline_penalty')
   const bodyComplete = bodyMetrics?.weight != null && bodyMetrics?.body_fat_rate != null
   const items: DailySummaryItem[] = [
-    { key: 'sleep-upload', label: '09:00 前上传睡眠图片', status: timedStatus(diary?.image_uploaded_at, failed(diary?.sync_status)), tab: 'sleep', consequence: 'sleep_risk', actualTime: clock(diary?.image_uploaded_at), sourceIds: [] },
-    { key: 'sleep-report', label: '09:00 前完成完整睡眠报告', status: timedStatus(diary?.report_completed_at, failed(diary?.sync_status) || diary?.full_report_state === 'insufficient_time_records'), tab: 'sleep', consequence: 'sleep_risk', actualTime: clock(diary?.report_completed_at), sourceIds: [] },
+    { key: 'sleep-upload', label: '09:00 前上传睡眠图片', status: timedStatus(diary?.image_uploaded_at), tab: 'sleep', consequence: 'sleep_risk', actualTime: clock(diary?.image_uploaded_at), sourceIds: [] },
+    { key: 'sleep-report', label: '09:00 前完成完整睡眠报告', status: timedStatus(diary?.report_completed_at, diary?.full_report_state === 'insufficient_time_records'), tab: 'sleep', consequence: 'sleep_risk', actualTime: clock(diary?.report_completed_at), sourceIds: [] },
     { key: 'body-metrics', label: '09:00 前填写体重和体脂率', status: bodyActual.amount != null && bodyActual.amount < 0 ? 'failed' : bodyComplete ? timedStatus(bodyMetrics?.updated_at || undefined) : timedStatus(), tab: 'exercise', consequence: 'penalty', ruleAmount: -50, actualAmount: bodyActual.amount, sourceIds: bodyActual.ids },
-    { key: 'morning-diary', label: '晨间日记', status: diary?.morning_diary?.trim() ? 'completed' : failed(diary?.morning_diary_reward_status) ? 'failed' : 'pending', tab: 'sleep', target: 'morning-diary', consequence: 'reward_only', actualAmount: diary?.morning_diary_reward_status ? Number(diary.morning_diary_reward_amount || 0) : null, sourceIds: [] },
-    { key: 'evening-diary', label: '晚间日记', status: diary?.evening_diary?.trim() ? 'completed' : failed(diary?.evening_diary_reward_status) ? 'failed' : 'pending', tab: 'sleep', target: 'evening-diary', consequence: 'reward_only', actualAmount: diary?.evening_diary_reward_status ? Number(diary.evening_diary_reward_amount || 0) : null, sourceIds: [] },
+    { key: 'morning-diary', label: '晨间日记', status: diary?.morning_diary?.trim() ? 'completed' : 'pending', tab: 'sleep', target: 'morning-diary', consequence: 'reward_only', actualAmount: diary?.morning_diary_reward_status ? Number(diary.morning_diary_reward_amount || 0) : null, sourceIds: [] },
+    { key: 'evening-diary', label: '晚间日记', status: diary?.evening_diary?.trim() ? 'completed' : 'pending', tab: 'sleep', target: 'evening-diary', consequence: 'reward_only', actualAmount: diary?.evening_diary_reward_status ? Number(diary.evening_diary_reward_amount || 0) : null, sourceIds: [] },
   ]
   if (!summaryReady) items.length = 0
   else if (!exerciseReady) items.splice(2, 1)
@@ -98,7 +97,9 @@ const statusView: Record<DailySummaryStatus, [string, string]> = {
 }
 
 export function TimeBookDailySummary(props: Parameters<typeof buildDailySummary>[0] & { onNavigate: (intent: DailySummaryNavigationIntent) => void }) {
-  const nonce = useRef(0), items = buildDailySummary(props)
+  const nonce = useRef(0), [nowMs, setNowMs] = useState(() => Date.now())
+  useEffect(() => { const timer = window.setInterval(() => setNowMs(Date.now()), 30_000); return () => window.clearInterval(timer) }, [])
+  const items = buildDailySummary({ ...props, nowMs: props.nowMs ?? nowMs })
   const dayPlan = props.planDefinition?.exercisePlan[planDayForDate(props.date)]
   const restDay = props.planVersion === 'v5' && dayPlan && !dayPlan.gym.length && !dayPlan.rain.length
   const unique = new Map((props.ledger || []).map(row => [String(row.id), row]))
@@ -108,6 +109,7 @@ export function TimeBookDailySummary(props: Parameters<typeof buildDailySummary>
     <h3 className="mb-1 truncate text-xs font-bold text-slate-700 dark:text-slate-200">每日摘要</h3>
     <p className="mb-2 text-[10px] text-slate-500">{props.summaryReady === false ? '正在读取所选日期摘要…' : `奖励 ${coins(rewards)} · 处罚 ${coins(penalties)} · 净额 ${coins(rewards + penalties)}`}</p>
     {props.exerciseReady === false && <p className="mb-2 text-[10px] text-slate-500">正在读取运动状态…</p>}
+    {props.diary?.sync_status === 'error' && <p className="mb-2 text-[10px] text-amber-600">睡眠数据同步失败，以下显示本机状态</p>}
     {props.planVersion === 'v5' && !props.planReady && <p className="mb-2 text-[10px] text-amber-600">{props.exerciseStatus === 'error' ? '第五版饮食计划同步失败，请到运动模块重试' : '第五版饮食计划同步中…'}</p>}
     {restDay && <p className="mb-2 text-[10px] text-slate-500">今日运动休息 · 饮食约束豁免</p>}
     <div className="space-y-1.5">{items.map(item => { const [label, tone] = statusView[item.status]; return <button key={item.key} type="button" onClick={() => props.onNavigate({ tab: item.tab, date: props.date, target: item.target, nonce: ++nonce.current })} className={`grid w-full min-w-0 grid-cols-[1fr_auto] items-center gap-2 rounded-lg border px-2 py-2 text-left text-[11px] ${tone}`}><span className="min-w-0"><span className="block break-words leading-4">{item.label}{item.ruleAmount != null ? `（规则 ${coins(item.ruleAmount)}）` : ''}</span>{(item.subLabel || !item.rewardSource) && <span className="block text-[10px] opacity-80">{item.subLabel ?? `实际 ${item.actualAmount == null ? '未结算' : coins(item.actualAmount)}${item.actualTime ? ` · ${item.actualTime}` : ''}`}</span>}{item.rewardSource && <SourceRewardSummary {...item.rewardSource} compact displayOnly compactSummary />}</span><span aria-label={label} className="whitespace-nowrap font-semibold">{label}</span></button> })}</div>
