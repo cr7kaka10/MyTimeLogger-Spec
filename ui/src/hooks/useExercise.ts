@@ -6,6 +6,8 @@ import type {ExercisePlanDefinition} from '@models/ExercisePlanSampleDataInitial
 import type {ExerciseScoreSettlement} from '../types'
 export type ExerciseState={status:number;completed_time?:string|null;note?:string|null;locked_at?:string|null;lock_reason?:string|null;earned_points?:number;max_points?:number;difficulty?:string;score_reason?:string|null;score_rule_version?:string;score_fact_status?:string}
 type DietStatus='pending'|'completed'|'failed'
+const V5_RULE_KEYS=['breakfast_on_time','lunch_on_time','dinner_on_time','protein_at_lunch_and_dinner','vegetables_at_lunch_and_dinner','controlled_staple_and_no_sugary_drink']
+const hasLatestV5Plan=(definition:ExercisePlanDefinition|null)=>Boolean(definition?.dietRulesValid&&definition.diet.length===6&&V5_RULE_KEYS.every(key=>definition.diet.some(rule=>rule.ruleKey===key)))
 const dietPoints=(status:DietStatus,ruleKey:string,newPolicy:boolean)=>status==='completed'?(newPolicy?(({breakfast_on_time:11,lunch_on_time:11,dinner_on_time:11,protein_at_lunch_and_dinner:6,vegetables_at_lunch_and_dinner:6,controlled_staple_and_no_sugary_drink:5} as Record<string,number>)[ruleKey]||5):5):0
 const projectDietSettlement=(current:ExerciseScoreSettlement|null,date:string,previous:DietStatus,next:DietStatus,planVersion:AuthoritativePlanVersion,ruleKey:string):ExerciseScoreSettlement=>{
  const score=projectAuthoritativeScore(current?.score_snapshot,planVersion),newPolicy=planVersion==='v5'&&score.cats['饮食约束'].m===50,maximum=newPolicy?50:15
@@ -20,12 +22,14 @@ export function useExercise(date:string){
  const authorityGeneration=useRef(0)
  const [authority,setAuthority]=useState<{key:string;status:'loading'|'ready'|'error'}>({key:'',status:'loading'})
  const [authorityRetry,setAuthorityRetry]=useState<{key:string;nonce:number}>({key:'',nonce:0})
+ const [loadedDate,setLoadedDate]=useState('')
  const authorityKey=`${date}:${planVersion}`
  const authorityStatus=authority.key===authorityKey?authority.status:'loading'
+ const planReady=Boolean(planDefinition)&&(planVersion!=='v5'||hasLatestV5Plan(planDefinition))
  const retryAuthority=useCallback(()=>setAuthorityRetry(value=>({key:authorityKey,nonce:value.nonce+1})),[authorityKey])
  const load=useCallback(async()=>{const db=await getDatabase();if(activeDateRef.current!==date)return;const version=db.getActiveExercisePlanVersion();db.discardInvalidV4DietCheckins(date,version);const definition=db.getExercisePlanDefinition(version),scores=Object.fromEntries(db.getExerciseItemScores(date,version).map((x:any)=>[x.item_key,x]));const loadedDiet=Object.fromEntries(db.getExerciseDietCheckins(date,version).map((x:any)=>[x.rule_key,x]));const projectionPrefix=`${date}:${version}:`;const projections=Object.entries(dietProjectionRef.current).filter(([key])=>key.startsWith(projectionPrefix));for(const [projectionKey,fact] of projections){const ruleKey=projectionKey.slice(projectionPrefix.length);const incoming=(loadedDiet as Record<string,any>)[ruleKey];if(!incoming||String(incoming.updated_at||'')<String(fact.updated_at||''))(loadedDiet as Record<string,any>)[ruleKey]=fact}setPlanVersionState(version);setPlanDefinition(definition);setPlanVersions(db.getExercisePlanVersions().filter((x:any)=>x.version!=='scoring-v3'));setLocked(db.isExerciseDateLocked(date));setLog(db.getExerciseDailyLog(date,version)||null);setSettlement(db.getExerciseSettlement(date,version)||null);setItemScores(scores);setDietCheckins(loadedDiet);setDeadlineFacts(db.getExerciseDeadlineFacts(date,version));setHistory(db.getExerciseDailyLogs(8,version));setWeek(db.getExerciseWeekNum());setCheckins(Object.fromEntries(db.getExerciseCheckins(date,version).map((x:any)=>{const score=scores[x.item_key];return [x.item_key,{status:Number(x.status),completed_time:x.completed_time,note:x.note,locked_at:x.locked_at,lock_reason:x.lock_reason,earned_points:score?.earned_points,max_points:score?.max_points,difficulty:score?.difficulty,score_reason:score?.score_reason,score_rule_version:score?.score_rule_version,score_fact_status:score?.status}]})));window.dispatchEvent(new Event('mtl:exercise-state-changed'))},[date])
  useEffect(()=>{dietProjectionRef.current={};setLog(null);setSettlement(null);setItemScores({});setCheckins({});setDietCheckins({});setDeadlineFacts([]);setLocked(false);setPlanDefinition(null)},[date])
- useEffect(()=>{void load()},[load])
+ useEffect(()=>{let cancelled=false;void load().then(()=>{if(!cancelled)setLoadedDate(date)});return()=>{cancelled=true}},[date,load])
  useEffect(()=>{
   if(planVersion==='v0')return
   const key=`${date}:${planVersion}`,generation=++authorityGeneration.current
@@ -33,9 +37,9 @@ export function useExercise(date:string){
   setAuthority({key,status:'loading'})
   void syncAfterDateSwitch('exercise',date,{planVersion,force:authorityRetry.key===key}).then(async result=>{
    if(cancelled||generation!==authorityGeneration.current)return
-   if(!result.ok){setAuthority({key,status:'error'});return}
+   if(!result.ok&&planVersion==='v5'&&!hasLatestV5Plan((await getDatabase()).getExercisePlanDefinition('v5')))await syncNow({reason:'exercise-v5-plan-refresh'})
    await load()
-   if(!cancelled&&generation===authorityGeneration.current)setAuthority({key,status:'ready'})
+   if(!cancelled&&generation===authorityGeneration.current){const complete=planVersion!=='v5'||hasLatestV5Plan((await getDatabase()).getExercisePlanDefinition('v5'));setAuthority({key,status:result.ok&&complete?'ready':'error'})}
   }).catch(()=>{if(!cancelled&&generation===authorityGeneration.current)setAuthority({key,status:'error'})})
   return()=>{cancelled=true}
  },[date,planVersion,authorityRetry,load])
@@ -46,5 +50,5 @@ export function useExercise(date:string){
  const resetDay=useCallback(async()=>{if(locked)return;(await getDatabase()).resetExerciseCheckins(date,planVersion);await load()},[date,load,locked,planVersion])
  const newWeek=useCallback(async()=>{const db=await getDatabase();db.resetExerciseCheckins(undefined,planVersion);db.setExerciseWeekNum(weekNum+1);await load()},[weekNum,load,planVersion])
  const setActivePlanVersion=useCallback(async(version:string)=>{try {const result=(await getDatabase()).setActiveExercisePlanVersion(version);if(!result.ok){setVersionError(result.error==='exercise_plan_version_incomplete'?`${version} 计划数据同步中，计划内容尚未完整。`:'切换运动版本失败，请重试。');return false}setVersionError(null);setPlanVersionState(version);setAuthority({key:`${date}:${version}`,status:'loading'});await load();return true}catch{setVersionError('切换运动版本失败，请重试。');return false}},[date,load])
- return{log,settlement,itemScores,checkins,dietCheckins,deadlineFacts,history,weekNum,planVersion,planVersions,planDefinition,locked,syncError,versionError,authorityStatus,retryAuthority,setActivePlanVersion,setState,setDietState,setVariant,saveDay,resetDay,newWeek}
+ return{log,settlement,itemScores,checkins,dietCheckins,deadlineFacts,history,weekNum,planVersion,planVersions,planDefinition,locked,syncError,versionError,authorityStatus,planReady,loadedDate,retryAuthority,setActivePlanVersion,setState,setDietState,setVariant,saveDay,resetDay,newWeek}
 }

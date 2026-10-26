@@ -22,7 +22,7 @@ export function ExercisePanel({ day, date, rain, setRain, states, setState, diet
   const [dbItems, setDbItems] = useState<DbItem[]>([])
   const plan = planDefinition.exercisePlan[day]
   const variant = rain ? 'rain' : 'gym'
-  const isRestDay = plan ? date >= REST_DAY_DIET_EXEMPTION_FROM && plan.gym.length === 0 && plan.rain.length === 0 : false
+  const isRestDay = plan ? (planVersion === 'v5' || date >= REST_DAY_DIET_EXEMPTION_FROM) && plan.gym.length === 0 && plan.rain.length === 0 : false
 
   useEffect(() => {
     if (!plan) { setDbItems([]); return }
@@ -36,23 +36,22 @@ export function ExercisePanel({ day, date, rain, setRain, states, setState, diet
   if (!plan) return null
   const sections: string[] = [...new Set(dbItems.map(item => String(item.s)).filter(Boolean))]
   const authoritativePlan = isAuthoritativeExercisePlan(planVersion)
-  const scoring = planDefinition as any, mealKeys = ['breakfast_on_time', 'lunch_on_time', 'dinner_on_time']
-  const currentPolicy = planVersion === 'v5' && mealKeys.some(key => dietCheckins[key])
-  const dietRules = planDefinition.diet.filter(rule => currentPolicy || !mealKeys.includes(rule.ruleKey || ''))
-  const dietPoints = scoring.dietScorePoints || {}, mealPoints: Record<string, number> = { breakfast_on_time: 11, lunch_on_time: 11, dinner_on_time: 11,
+  const latestV5 = planVersion === 'v5'
+  const dietRules = planDefinition.diet
+  const mealPoints: Record<string, number> = { breakfast_on_time: 11, lunch_on_time: 11, dinner_on_time: 11,
     protein_at_lunch_and_dinner: 6, vegetables_at_lunch_and_dinner: 6, controlled_staple_and_no_sugary_drink: 5 }
-  const pointsForDietRule = (key: string) => currentPolicy ? Number(dietPoints[key] ?? mealPoints[key] ?? 5) : 5
+  const pointsForDietRule = (key: string) => latestV5 ? mealPoints[key] ?? 5 : 5
   const dietMaximum = dietRules.reduce((sum, rule) => sum + pointsForDietRule(rule.ruleKey || ''), 0)
   const points = authoritativePlan
     ? dbItems.map(item => Number((item as any).scorePoints || 0))
     : exerciseItemPoints(dbItems, planDefinition.exercisePoints)
   return <>{authoritativePlan && !isRestDay && <><div className="ex-section">饮食约束 · {dietMaximum}分</div><div className="ex-card">{dietRules.map(rule => {
-    const key = rule.ruleKey?.trim() || '', invalid = !planDefinition.dietRulesValid || !key, fact = dietCheckins[key], status = fact?.status || 'pending', completed = status === 'completed', failed = status === 'failed'
+    const key = rule.ruleKey?.trim() || '', fact = dietCheckins[key], invalid = !planDefinition.dietRulesValid || !key || (latestV5 && !fact), status = fact?.status || 'pending', completed = status === 'completed', failed = status === 'failed'
     const maximum = pointsForDietRule(key), overdue=failed&&['not_completed_before_midnight','meal_window_passed'].includes(fact?.failure_reason)
     return <button type="button" key={key || rule.content} aria-pressed={completed} disabled={locked || invalid} className={`diet-check-row ${completed ? 'done' : failed ? 'failed' : ''}`} onClick={() => { if (!invalid) void setDietState(key,completed||failed?'pending':'completed') }} onContextMenu={event => { if (locked||invalid) return;event.preventDefault();void setDietState(key,'failed') }}>
-      <i className={`ex-box ${completed ? 'done' : failed ? 'skip' : ''}`}>{completed ? '✓' : failed ? '✗' : ''}</i><strong className={completed ? 'struck' : ''}>{rule.time ? `${rule.time} ${rule.content}` : rule.content}</strong><small>{invalid ? '规则配置修复中，暂不可打卡' : `${completed ? `${maximum}/${maximum}分` : `0/${maximum}分`} · ${overdue ? '超时失败，扣20金币' : failed ? '已标记失败' : `截止 ${rule.time || '24:00'}`}`}</small>
+      <i className={`ex-box ${completed ? 'done' : failed ? 'skip' : ''}`}>{completed ? '✓' : failed ? '✗' : ''}</i><strong className={completed ? 'struck' : ''}>{rule.time ? `${rule.time} ${rule.content}` : rule.content}</strong><small>{latestV5 && !fact ? `0/${maximum}分 · 该日仅展示计划` : invalid ? '规则配置修复中，暂不可打卡' : `${completed ? `${maximum}/${maximum}分` : `0/${maximum}分`} · ${overdue ? '超时失败，扣20金币' : failed ? '已标记失败' : `截止 ${rule.time || '24:00'}`}`}</small>
     </button>
-  })}</div></>}<div className="ex-section">{dbItems.length ? `运动计划 · ${currentPolicy ? scoring.trainingPoints ?? 50 : 75}分` : '今日休息 · 不计训练分'}</div><div className="ex-plan-head">
+  })}</div></>}<div className="ex-section">{dbItems.length ? `运动计划 · ${latestV5 ? 50 : 75}分` : '今日休息 · 不计训练分'}</div><div className="ex-plan-head">
     <strong style={{ color: plan.color, borderLeftColor: plan.color }}>{plan.label}</strong>
     {plan.rain.length > 0 && <button className={rain ? 'active' : ''} onClick={() => setRain(!rain)}>{rain ? '☔ 雨天方案' : '☀️ 健身房方案'}</button>}
   </div>{sections.filter(section => dbItems.some(item => item.s === section)).map(section => <section key={section}><div className="ex-mini">

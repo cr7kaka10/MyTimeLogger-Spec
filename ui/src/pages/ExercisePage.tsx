@@ -6,7 +6,7 @@ import {
 import { useExercise } from '../hooks/useExercise'
 import { beijingDateHour, dateForTab, todayTab, weekOfYear } from '../utils/exerciseDate'
 import { calcScore, formatScore } from '../utils/exerciseScore'
-import { isAuthoritativeExercisePlan, projectAuthoritativeScore } from '../utils/exerciseAuthoritativeScore'
+import { isAuthoritativeExercisePlan, projectAuthoritativeScore, projectV5ScoreView } from '../utils/exerciseAuthoritativeScore'
 import { sortExercisePlanVersions } from '../utils/exercisePlanVersionOrder'
 import { ExercisePanel } from '../components/Exercise/ExercisePanel'
 import { ExerciseHistory } from '../components/Exercise/ExerciseHistory'
@@ -57,6 +57,7 @@ export const ExercisePage = memo(({ theme, onToggleTheme, onStartFocus }: Props)
   const def = x.planDefinition || EMPTY_PLAN_DEFINITION
   const score = useMemo(() => calcScore(day, date, rain, x.checkins, def), [day, date, rain, x.checkins, def])
   const plan = def.exercisePlan[day]
+  const isRestPlanDay = Boolean(plan && plan.gym.length === 0 && plan.rain.length === 0)
   const sched = day === '六' ? def.restSchedule : day === '日' ? [...def.restSchedule, def.sundayExtra] : def.weekdaySchedule
   const total = sched.length + (plan ? plan[rain ? 'rain' : 'gym'].length : 0)
   const done = Object.entries(x.checkins).filter(([k, v]) =>
@@ -90,7 +91,11 @@ export const ExercisePage = memo(({ theme, onToggleTheme, onStartFocus }: Props)
     if (!authoritative || !x.settlement?.score_snapshot) return null
     try { return typeof x.settlement.score_snapshot === 'string' ? JSON.parse(x.settlement.score_snapshot) : x.settlement.score_snapshot } catch { return null }
   }, [authoritative, x.settlement?.score_snapshot])
-  const displayScore = authoritative ? projectAuthoritativeScore(authoritativeScore, x.planVersion as 'v4' | 'v5') : (isPastDate && savedScore ? savedScore : score)
+  const actualScore = authoritative ? projectAuthoritativeScore(authoritativeScore, x.planVersion as 'v4' | 'v5') : null
+  const v5ScoreView = projectV5ScoreView(authoritativeScore)
+  const hasCurrentV5Score = x.planVersion === 'v5' && v5ScoreView.current
+  const historicalV5Score = x.planVersion === 'v5' ? v5ScoreView.historicalScore : null
+  const displayScore = x.planVersion === 'v5' ? v5ScoreView.planScore : authoritative ? actualScore! : (isPastDate && savedScore ? savedScore : score)
   const bodyPoints = x.planVersion === 'v5' && displayScore.cats['身体记录']?.m === 0 ? 0 : (def as any).bodyPoints
   const displayScoreCategories = useMemo(() => {
     const cats = displayScore.cats || {}
@@ -184,15 +189,16 @@ export const ExercisePage = memo(({ theme, onToggleTheme, onStartFocus }: Props)
           <button onClick={() => switchDay(todayTab())}>今</button>
         </div>
       </header>
-      {!x.planDefinition || x.authorityStatus !== 'ready' ? (
+      {!x.planReady || x.planDefinition?.version !== x.planVersion || x.loadedDate !== date || (!['v0', 'v5'].includes(x.planVersion) && x.authorityStatus !== 'ready') ? (
         <main>
           <section className="record-card">
-            <label>{x.authorityStatus === 'error' ? '运动数据同步失败' : '运动计划加载中'}</label>
-            <p>{x.authorityStatus === 'error' ? '无法确认所选日期的饮食规则和分值，请重试。' : '正在获取所选日期的运动规则和评分。'}</p>
+            <label>{x.authorityStatus === 'error' ? '运动计划同步失败' : '运动计划加载中'}</label>
+            <p>{x.authorityStatus === 'error' ? '无法取得完整的第五版计划，请重试。' : '正在获取第五版最新计划和所选日期记录。'}</p>
             {x.authorityStatus === 'error' && <button type="button" onClick={x.retryAuthority}>重试</button>}
           </section>
         </main>
       ) : <main>
+        {x.planVersion === 'v5' && x.authorityStatus === 'error' && <p className="sync-warning">所选日期记录同步失败，当前展示已缓存的第五版计划。<button type="button" onClick={x.retryAuthority}>重试同步</button></p>}
         <section className="record-card">
           <label>{x.locked ? '历史评分已固定' : '今日数据记录'}</label>
           <div id="exercise-body-metrics" className="body-metrics">
@@ -213,15 +219,17 @@ export const ExercisePage = memo(({ theme, onToggleTheme, onStartFocus }: Props)
           {log && <p>✓ {log.weight == null ? '体重未填' : `${log.weight}公斤`} · {log.body_fat_rate == null ? '体脂率未填' : `${log.body_fat_rate}%`} | 打卡{log.completed_items}/{log.total_items}项({Math.round(log.completed_items / (log.total_items || 1) * 100)}%) | {log.date}</p>}
         </section>
         <section className="score-card">
-          <label>今日评分</label>
+          <label>{x.planVersion === 'v5' ? '第五版最新计划 · 评分' : '今日评分'}</label>
+          {x.planVersion === 'v5' && !hasCurrentV5Score && <p>{isRestPlanDay ? '休息日不计分；下方为第五版计划满分。' : '该日未按新版结算；下方为当前计划满分，实得分不计入新版进度条。'}</p>}
+          {historicalV5Score && <p>历史实际结算：{formatScore(historicalV5Score.total)}分（训练 {formatScore(historicalV5Score.cats['运动训练'].s)}/{formatScore(historicalV5Score.cats['运动训练'].m)}，饮食 {formatScore(historicalV5Score.cats['饮食约束'].s)}/{formatScore(historicalV5Score.cats['饮食约束'].m)}，身体 {formatScore(historicalV5Score.cats['身体记录'].s)}/{formatScore(historicalV5Score.cats['身体记录'].m)}）。</p>}
           <div className="score-body">
             <div className="score-ring" style={{ background: `conic-gradient(${displayScore.total >= 85 ? '#3ab85a' : displayScore.total >= 65 ? '#e8a63a' : displayScore.total >= 45 ? '#e8523a' : '#a3a1b0'} ${displayScore.total * 3.6}deg,var(--border) 0)` }}>
-              <span><b>{formatScore(displayScore.total)}</b><small>/ 100分</small></span>
+              <span><b>{x.planVersion === 'v5' && !hasCurrentV5Score ? '—' : formatScore(displayScore.total)}</b><small>/ 100分</small></span>
             </div>
             <div className="score-cats">
               {displayScoreCategories.map(c => {
                 const v = displayScore.cats[c]
-                return <div key={c}><span>{c}</span><i><b style={{ width: `${v.m ? Math.round(v.s / v.m * 100) : 0}%` }} /></i><em>{formatScore(v.s)}/{formatScore(v.m)}</em></div>
+                return <div key={c}><span>{c}</span><i><b style={{ width: `${v.m ? Math.round(v.s / v.m * 100) : 0}%` }} /></i><em>{x.planVersion === 'v5' && !hasCurrentV5Score ? '—' : formatScore(v.s)}/{formatScore(v.m)}</em></div>
               })}
             </div>
           </div>
