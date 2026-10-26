@@ -20,8 +20,11 @@ final class SleepAutomationNotificationFactory {
     static String resultTitle(boolean success){return success?"今日睡眠报告生成成功":"今日睡眠报告生成失败";}
     static String resultText(boolean success,String reason){return success?"今日睡眠报告已生成":"报告未生成；原因："+reasonText(reason);}
     static void showResult(Context c,boolean success,String reason){
-        showMessage(c,resultTitle(success),resultText(success,reason));
+        showMessage(c,resultTitle(success),resultText(success,reason),842);
     }
+    static String statusUnknownTitle(){return "睡眠报告状态暂不可确认";}
+    static String statusUnknownText(String reason){return "请稍后检查睡眠页；原因："+reasonText(reason);}
+    static void showStatusUnknown(Context c,String reason){showMessage(c,statusUnknownTitle(),statusUnknownText(reason),842);}
     static String captureResultTitle(boolean success){return success?"睡眠图片采集成功":"睡眠图片采集失败";}
     static String captureResultText(boolean success,String reason){return success?"今日采集图片已保存":"图片未保存；原因："+reasonText(reason);}
     static void showCaptureResult(Context c,boolean success,String reason){
