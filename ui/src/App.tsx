@@ -295,6 +295,10 @@ const AppSession = ({ initialAuthenticated, onAccountActivated }: { initialAuthe
   }, [handleNavigate, habits.setSelectedDate, sleep.setSelectedDate])
 
   const handleOpenSleepFromSettings = useCallback(() => handleNavigate('sleep'), [handleNavigate])
+  const handleSleepReportReady = useCallback(() => {
+    sleep.setSelectedDate(new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(new Date()))
+    handleNavigate('sleep')
+  }, [handleNavigate, sleep.setSelectedDate])
   const handleOpenCategoryManager = useCallback(() => setShowCategoryManager(true), [])
   const handleCloseCategoryManager = useCallback(() => setShowCategoryManager(false), [])
 
@@ -381,7 +385,7 @@ const AppSession = ({ initialAuthenticated, onAccountActivated }: { initialAuthe
     if (activeTab === 'settings') return (
       showCategoryManager
         ? <CategoryManager onClose={handleCloseCategoryManager} />
-        : <SettingsPage {...settings} onOpenSleep={handleOpenSleepFromSettings} onOpenCategoryManager={handleOpenCategoryManager} onSignedOut={() => setAuthenticated(false)} />
+        : <SettingsPage {...settings} onOpenSleep={handleOpenSleepFromSettings} onSleepReportReady={handleSleepReportReady} onOpenCategoryManager={handleOpenCategoryManager} onSignedOut={() => setAuthenticated(false)} />
     )
     if (activeTab === 'goals') return <GoalsPage {...goals} balance={timer.balance} activeSection="goals" onSectionChange={handleHabitSectionChange} categories={timeBook.categories} />
     if (activeTab === 'rewards') return <RewardsPage {...rewards} activeSection="rewards" onSectionChange={handleHabitSectionChange} ledgerHook={ledgerHook} />

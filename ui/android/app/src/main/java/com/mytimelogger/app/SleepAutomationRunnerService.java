@@ -17,7 +17,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 public final class SleepAutomationRunnerService extends Service {
     static final String CHANNEL = "sleep_automation", EXTRA_STAGE = "stage";
-    static final String AUTOMATION_REVISION = "sleep-auto-20261025.1", TEST_ACTION = "sleep.test", CAPTURE_ONLY_ACTION = "sleep.capture_only", GENERATE_REPORT_ACTION = "sleep.generate_report";
+    static final String AUTOMATION_REVISION = "sleep-auto-20261026.1", TEST_ACTION = "sleep.test", CAPTURE_ONLY_ACTION = "sleep.capture_only", GENERATE_REPORT_ACTION = "sleep.generate_report", ONE_CLICK_ACTION = "sleep.one_click";
     static final int MAX_AUTO_RETRIES = 3, MAX_AUTO_ATTEMPTS = MAX_AUTO_RETRIES + 1;
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
     private final AtomicBoolean captureInProgress = new AtomicBoolean();
@@ -118,11 +118,11 @@ public final class SleepAutomationRunnerService extends Service {
             if(!captureInProgress.compareAndSet(false,true))return START_NOT_STICKY;
             startForeground(840,notification("PENDING"));worker.execute(()->{try{generateReportFromProbe();}finally{captureInProgress.set(false);}});return START_NOT_STICKY;
         }
-        if(CAPTURE_ONLY_ACTION.equals(action)){
+        if(CAPTURE_ONLY_ACTION.equals(action)||ONE_CLICK_ACTION.equals(action)){
             if(!captureInProgress.compareAndSet(false,true))return START_NOT_STICKY;
             SleepCaptureProbeStore probes=new SleepCaptureProbeStore(this);SleepCaptureProbeStore.Snapshot run=probes.start(today());String blocked=gate(true);
             if(!"ok".equals(blocked)){probes.finish(run,"FAILED",blocked,"",0,0,0);captureInProgress.set(false);startForeground(840,notification("FAILED:"+blocked));stopSelf(id);}
-            else {startForeground(840,notification("PENDING"));worker.execute(()->captureOnly(probes,run));}
+            else {startForeground(840,notification("PENDING"));boolean oneClick=ONE_CLICK_ACTION.equals(action);worker.execute(()->captureOnly(probes,run,oneClick));}
             return START_NOT_STICKY;
         }
         new SleepAutomationStateStore(this).recordStartSource(startSource(action));
@@ -142,13 +142,13 @@ public final class SleepAutomationRunnerService extends Service {
         states.save(new SleepAutomationSnapshot("FAILED",date,"","",attempt,outcome.code,System.currentTimeMillis()));scheduleRetry(outcome.code);stopSelf();
     }
 
-    private void captureOnly(SleepCaptureProbeStore probes,SleepCaptureProbeStore.Snapshot run){
+    private void captureOnly(SleepCaptureProbeStore probes,SleepCaptureProbeStore.Snapshot run,boolean oneClick){
         try{
             CaptureOutcome result=captureImage(run.date);
             if("ok".equals(result.code)){
                 probes.finish(run,"SAVED","",result.candidate.uri,System.currentTimeMillis(),result.image.width,result.image.height);
                 startForeground(840,notification("MEDIA"));
-                SleepAutomationNotificationFactory.showCaptureResult(this,true,"");
+                if(oneClick)generateReportFromProbe();else SleepAutomationNotificationFactory.showCaptureResult(this,true,"");
             }else{
                 probes.finish(run,"FAILED",result.code,"",0,0,0);keepNotification=true;startForeground(840,notification("FAILED:"+result.code));SleepAutomationNotificationFactory.showCaptureResult(this,false,result.code);
             }

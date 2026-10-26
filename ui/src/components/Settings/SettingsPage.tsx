@@ -20,6 +20,7 @@ import { beijingDateOffset, isAllowedStatisticsStartDate } from '../../utils/sta
 
 interface SettingsPageProps extends UseSettingsReturn {
   onOpenSleep: () => void
+  onSleepReportReady: () => void
   onOpenCategoryManager: () => void
   onSignedOut: () => void
 }
@@ -162,6 +163,7 @@ ServiceRow.displayName = 'ServiceRow'
 
 export const SettingsPage = memo(({
   settings, updateSetting,
+  onSleepReportReady,
   onOpenCategoryManager, exportConfig, importConfig,
   activeEnvironment, selectedEnvironment, selectedEnvironmentProfile, clearActiveSession, logoutActiveSession, verifyActiveSession, onSignedOut,
 }: SettingsPageProps) => {
@@ -191,12 +193,12 @@ export const SettingsPage = memo(({
   const sleepPermissions: SleepPermissions = { accessibility: nativeSleepPermissions.accessibility === true, notifications: nativeSleepPermissions.notifications === true, media: nativeSleepPermissions.media === true, battery: nativeSleepPermissions.battery === true }
   const refreshSleepStatus = useCallback(() => setSleepStatus(sleepAutomation.status()), [])
   const toggleSleepAutomation = useCallback((enabled: boolean) => { enabled ? sleepAutomation.enable() : sleepAutomation.disable(); refreshSleepStatus() }, [refreshSleepStatus])
-  const pollSleepStatus = useCallback((done: (status: SleepAutomationStatus) => boolean) => {
+  const pollSleepStatus = useCallback((done: (status: SleepAutomationStatus) => boolean, maxAttempts = 120) => {
     let attempts = 0
     const refresh = () => {
       const next = sleepAutomation.status()
       setSleepStatus(next)
-      if (!done(next) && attempts++ < 120) window.setTimeout(refresh, 1000)
+      if (!done(next) && attempts++ < maxAttempts) window.setTimeout(refresh, 1000)
     }
     window.setTimeout(refresh, 500)
   }, [])
@@ -217,8 +219,20 @@ export const SettingsPage = memo(({
       })
     }
   }, [pollSleepStatus])
+  const runOneClickSleepAutomation = useCallback(() => {
+    let sawReportProgress = false
+    const previousRunId = sleepAutomation.status().captureTest?.runId
+    const result = sleepAutomation.oneClick()
+    setSleepStatus({ ...sleepAutomation.status(), stage: result.ok ? 'PENDING' : 'FAILED', reason: result.ok ? '' : 'automation_rejected' })
+    if (result.ok) pollSleepStatus(status => {
+      sawReportProgress ||= ['MEDIA', 'UPLOADED', 'POLLING'].includes(status.stage || '')
+      const captureFailed = Boolean(status.captureTest?.runId && status.captureTest.runId !== previousRunId && status.captureTest.stage === 'FAILED')
+      const done = captureFailed || (sawReportProgress && ['SUCCESS', 'FAILED'].includes(status.stage || ''))
+      if (sawReportProgress && status.stage === 'SUCCESS') onSleepReportReady()
+      return done
+    }, 1800)
+  }, [onSleepReportReady, pollSleepStatus])
   const previewSleepCapture = useCallback(() => { sleepAutomation.previewCapture(); setSleepStatus(sleepAutomation.status()) }, [])
-  const stopSleepAutomation = useCallback(() => { sleepAutomation.cancel(); setSleepStatus(sleepAutomation.status()) }, [])
   const authorizeSleepAutomation = useCallback((permission: keyof SleepPermissions) => { sleepAutomation.authorize(permission) }, [])
   const updateSleepConsent = useCallback(async (value: boolean) => {
     if (!value) {
@@ -664,7 +678,7 @@ export const SettingsPage = memo(({
 
       {sleepStatus.available ? <SleepAutomationSettings status={sleepStatus} consented={settings.sleep_automation_consent === true} permissions={sleepPermissions}
         onConsent={value => { void updateSleepConsent(value) }} onToggle={toggleSleepAutomation} onAuthorize={authorizeSleepAutomation}
-        onTest={testSleepAutomation} onPreview={previewSleepCapture} onGenerate={generateSleepReport} onStop={stopSleepAutomation} />
+        onTest={testSleepAutomation} onPreview={previewSleepCapture} onGenerate={generateSleepReport} onOneClick={runOneClickSleepAutomation} />
         : <section className={sectionClass}><div className="px-4 py-3 font-medium">睡眠图片自动分析</div><div className="border-t border-gray-50 px-4 py-3 text-sm text-gray-400">仅 Android 手机端可用；PC/Web 不会访问华为运动健康或本地图片。</div></section>}
 
       {/* 声音设置 */}

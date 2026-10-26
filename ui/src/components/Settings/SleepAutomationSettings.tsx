@@ -7,14 +7,15 @@ export const canEnableSleepAutomation = (consented: boolean, permissions: SleepP
 export const canGenerateSleepReport = (status: SleepAutomationStatus, today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(new Date())) => status.captureTest?.stage === 'SAVED' && status.captureTest.date === today
 const safeText = (value: unknown) => typeof value === 'string' && !/(https?:|content:|file:|bearer|token|@|[{}])/i.test(value) ? value.slice(0, 80) : '已隐藏'
 
-export function SleepAutomationSettings({ status, consented, permissions, onConsent, onToggle, onAuthorize, onTest, onPreview, onGenerate, onStop }: {
+export function SleepAutomationSettings({ status, consented, permissions, onConsent, onToggle, onAuthorize, onTest, onPreview, onGenerate, onOneClick }: {
   status: SleepAutomationStatus; consented: boolean; permissions: SleepPermissions
   onConsent(value: boolean): void; onToggle(value: boolean): void; onAuthorize(key: SleepPermission): void
-  onTest(): void; onPreview(): void; onGenerate(): void; onStop(): void
+  onTest(): void; onPreview(): void; onGenerate(): void; onOneClick(): void
 }) {
   const ready = canEnableSleepAutomation(consented, permissions)
   const missing = (Object.keys(labels) as SleepPermission[]).filter(key => !permissions[key]).map(key => labels[key])
   const canGenerate = canGenerateSleepReport(status)
+  const workflowBusy = status.captureTest?.stage === 'RUNNING' || ['PENDING', 'MEDIA', 'UPLOADED', 'POLLING'].includes(status.stage || '')
   const history = (status.history || []).filter(value => value && typeof value === 'object').slice(-7).reverse() as Array<Record<string, unknown>>
   return <section className="overflow-hidden rounded-xl border border-orange-100 bg-white">
     <div role="alert" className="bg-orange-50 px-4 py-3 text-sm text-orange-800">每天 08:40 将控制华为运动健康、保存睡眠图片并上传生成睡眠报告；仅在你解锁手机后执行。</div>
@@ -29,7 +30,7 @@ export function SleepAutomationSettings({ status, consented, permissions, onCons
     {status.captureTest && <div className="px-4 py-2 text-xs text-gray-600">图片采集测试：{status.captureTest.stage === 'SAVED' ? '图片已保存' : safeText(status.captureTest.stage)} · {safeText(status.captureTest.reason)}
       {status.captureTest.stage === 'SAVED' && <> · {safeText(status.captureTest.savedAt)} · {status.captureTest.width}×{status.captureTest.height}<button type="button" className="ml-2 text-blue-600" onClick={onPreview}>查看本次图片</button></>}
     </div>}
-    <div className="flex gap-2 px-4 py-2"><button type="button" disabled={!consented} onClick={onTest}>立即测试图片采集</button><button type="button" disabled={!canGenerate} onClick={onGenerate}>生成今日报告</button><button type="button" onClick={onStop}>停止</button></div>
+    <div className="flex gap-2 px-4 py-2"><button type="button" disabled={!consented || workflowBusy} onClick={onTest}>图片采集</button><button type="button" disabled={!canGenerate || workflowBusy} onClick={onGenerate}>今日睡眠报告</button><button type="button" disabled={!consented || workflowBusy} onClick={onOneClick}>一键自动化</button></div>
     {history.length > 0 && <div className="border-t border-gray-50 px-4 py-2 text-xs">最近七次运行{history.map((run, index) => <div data-run={index} key={index}>{safeText(run.stage)} · {safeText(run.result)} · {safeText(run.reason)}</div>)}</div>}
     <div className="px-4 py-2 text-xs text-gray-400">自动化失败时，可手动保存睡眠图片后到睡眠分析页上传。</div>
   </section>

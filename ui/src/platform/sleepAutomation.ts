@@ -2,7 +2,7 @@ export type SleepAutomationError = 'unavailable' | 'native_error' | 'rejected' |
 export type SleepAutomationResult = { ok: boolean, error?: SleepAutomationError }
 export type SleepCaptureTest = { runId: string, date: string, stage: string, reason: string, savedAt: string, width: number, height: number }
 export type SleepAutomationStatus = { available: boolean, enabled: boolean, configured?: boolean, stage?: string, reason?: string, captureStep?: string, captureWindow?: string, captureTest?: SleepCaptureTest, mediaSelected?: boolean, requestIdPresent?: boolean, nextRunAt?: string, history?: unknown[], error?: SleepAutomationError }
-type NativeSleepAutomation = { status(): string, enable(): boolean, disable(): void, test(): boolean, retry(): boolean, generateReport(): boolean, previewCapture(): boolean, cancel(): void, configure(url: string, token: string, userId: string): boolean, authorize(permission: string): boolean, clearConfiguration(): void }
+type NativeSleepAutomation = { status(): string, enable(): boolean, disable(): void, test(): boolean, retry(): boolean, generateReport(): boolean, oneClick?(): boolean, previewCapture(): boolean, cancel(): void, configure(url: string, token: string, userId: string): boolean, authorize(permission: string): boolean, clearConfiguration(): void }
 type Host = { MTLSleepAutomation?: NativeSleepAutomation }
 
 export function createSleepAutomation(host: Host = globalThis as unknown as Host) {
@@ -25,6 +25,7 @@ export function createSleepAutomation(host: Host = globalThis as unknown as Host
     test: () => action(native && (() => native.test())),
     retry: () => action(native && (() => native.retry())),
     generateReport: () => action(native && (() => native.generateReport())),
+    oneClick: () => action(native?.oneClick ? () => native.oneClick!() : undefined),
     previewCapture: () => action(native && (() => native.previewCapture())),
     cancel: () => action(native && (() => { native.cancel(); return true })),
     configure: (url: string, token: string, userId: string) => action(native && (() => native.configure(url, token, userId))),
