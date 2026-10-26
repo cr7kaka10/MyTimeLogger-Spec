@@ -61,7 +61,7 @@ const FlashCardEditor = ({ value, onSave, onCancel }: { value: FlashCard; onSave
 }
 
 export const TimeBookPage = memo(({
-  sessions, selectedDate, setSelectedDate, todaySummary, diary, dailyGoals, dailySummaryLedger, dailyHabits, checklistTasks, onNavigate, onSummaryNavigate, syncError,
+  sessions, selectedDate, summaryLoadedDate, setSelectedDate, todaySummary, diary, dailyGoals, dailySummaryLedger, dailyHabits, checklistTasks, onNavigate, onSummaryNavigate, syncError,
   markedDates, categories, saveSession, deleteSession,
   timelineEntries, flashError, taskRecommendations, taskSubmissions, createRecommendedTask, ignoreRecommendedTask, submitFlashClassificationFeedback, loadFlashProcessingLogs, correctFlashPolish, loadFlashSkillHistory, deleteFlashCard,
 }: TimeBookPageProps) => {
@@ -74,6 +74,8 @@ export const TimeBookPage = memo(({
   const [deleteError, setDeleteError] = useState('')
   const [deleting, setDeleting] = useState(false)
   const exercise = useExercise(selectedDate)
+  const summaryReady = summaryLoadedDate === selectedDate
+  const exerciseReady = exercise.loadedDate === selectedDate
   const confirmDelete = async () => { if (!deletingFlash) return; setDeleting(true); setDeleteError(''); try { await deleteFlashCard(deletingFlash.id); setDeletingFlash(null) } catch (cause: any) { setDeleteError(String(cause?.message || '删除闪念失败')) } finally { setDeleting(false) } }
 
   const totalMinutes = useMemo(() => todaySummary.reduce((sum, item) => sum + item.minutes, 0), [todaySummary])
@@ -140,7 +142,7 @@ export const TimeBookPage = memo(({
       {syncError && <div className="mx-6 text-[10px] text-amber-600">本地记录已显示 · {syncError}</div>}
 
       <div className="mx-3 grid min-w-0 grid-cols-[42%_minmax(0,58%)] gap-0 lg:mx-6 lg:grid-cols-[minmax(250px,320px)_minmax(0,1fr)] lg:gap-4">
-        <TimeBookDailySummary date={selectedDate} diary={diary} planVersion={exercise.planVersion} dietRulesValid={exercise.planDefinition?.dietRulesValid} dietCheckins={exercise.dietCheckins} bodyMetrics={exercise.log} dailyGoals={dailyGoals} ledger={dailySummaryLedger} dailyHabits={dailyHabits} checklistTasks={checklistTasks} onNavigate={onSummaryNavigate} />
+        <TimeBookDailySummary date={selectedDate} diary={summaryReady ? diary : null} planVersion={exerciseReady ? exercise.planVersion : 'v0'} planDefinition={exerciseReady ? exercise.planDefinition : null} planReady={exerciseReady && exercise.planReady} exerciseStatus={exercise.authorityStatus} exerciseReady={exerciseReady} summaryReady={summaryReady} dietRulesValid={exerciseReady && exercise.planDefinition?.dietRulesValid} dietCheckins={exerciseReady ? exercise.dietCheckins : {}} bodyMetrics={exerciseReady ? exercise.log : null} dailyGoals={summaryReady ? dailyGoals : []} ledger={summaryReady ? dailySummaryLedger : []} dailyHabits={summaryReady ? dailyHabits : []} checklistTasks={summaryReady ? checklistTasks : []} onNavigate={onSummaryNavigate} />
         <div className="min-w-0">{timelineEntries.length === 0 ? (
           <EmptyState icon="📭" title="这一天还没有记录" description="开始专注后，时间会自动流进这里。" actionLabel="开始专注" onAction={handleStart} />
         ) : (
