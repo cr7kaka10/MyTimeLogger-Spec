@@ -8,6 +8,8 @@ import { sessionBusinessDate } from '@core/SessionBusinessDate'
 import { platformFetch } from '../platform/fetch'
 import type { ManagementPlanRuntime } from './useManagementPlan'
 import { useChecklistTaskSubmission, type ChecklistTaskSubmission } from './useChecklistTaskSubmission'
+import { useEventRefresh } from './useEventRefresh'
+import { LOCAL_HABITS_UPDATED } from './useLocalHabitMutation'
 
 const resolveEditDurationSeconds = (startTime: string, endTime: string): number => {
   const start = parseBeijingDateTimeMs(startTime)
@@ -132,6 +134,7 @@ export const useTimeBook = (isActive = true, runtime?: ManagementPlanRuntime): U
   const [dailyHabits, setDailyHabits] = useState<UseTimeBookReturn['dailyHabits']>([])
   const [sleepStatusMap, setSleepStatusMap] = useState<Record<string, number>>({})
   const [refreshTrigger, setRefreshTrigger] = useState(0)
+  const sourceRefresh = useEventRefresh(['sync-pull-complete', 'balance-updated', LOCAL_HABITS_UPDATED])
   const [syncError, setSyncError] = useState('')
   const [flashCards, setFlashCards] = useState<FlashCard[]>([])
   const [flashError, setFlashError] = useState('')
@@ -201,7 +204,7 @@ export const useTimeBook = (isActive = true, runtime?: ManagementPlanRuntime): U
 
   useEffect(() => {
     void loadLocal()
-  }, [loadLocal, refreshTrigger])
+  }, [loadLocal, refreshTrigger, sourceRefresh])
 
   useEffect(() => { void loadFlashCards() }, [loadFlashCards])
 
