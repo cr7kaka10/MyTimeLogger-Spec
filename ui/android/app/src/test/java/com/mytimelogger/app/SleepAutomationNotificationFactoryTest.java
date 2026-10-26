@@ -16,4 +16,8 @@ public class SleepAutomationNotificationFactoryTest {
         assertTrue(SleepAutomationNotificationFactory.captureResultTitle(false).contains("图片采集失败"));
         assertTrue(SleepAutomationNotificationFactory.captureResultText(false,"capture_timeout").contains("图片未保存"));
     }
+    @Test public void unknownReportStateDoesNotClaimGenerationFailed(){
+        assertEquals("睡眠报告状态暂不可确认",SleepAutomationNotificationFactory.statusUnknownTitle());
+        assertFalse(SleepAutomationNotificationFactory.statusUnknownText("network_error").contains("报告未生成"));
+    }
 }

@@ -18,6 +18,13 @@ public class SleepAutomationRunnerServiceTest {
         assertTrue(s.contains("SleepAutomationAccessibility.isEnabled(this)"));
         assertFalse(s.contains("enabled.contains(getPackageName()"));
     }
+    @Test public void finalFailureChecksDateReportBeforeShowingFailure() throws Exception {
+        String s=new String(Files.readAllBytes(Paths.get("src/main/java/com/mytimelogger/app/SleepAutomationRunnerService.java")),"UTF-8");
+        String notify=s.substring(s.indexOf("private void notifyFinalResult("),s.indexOf("private void notifyFailure("));
+        assertTrue(notify.contains("reportStateToday()")&&notify.contains("showStatusUnknown"));
+        assertTrue(notify.indexOf("reportStateToday()")<notify.indexOf("showResult(this,success,reason)"));
+        assertTrue(s.contains("dateReportState(api.statusByDate(today()"));
+    }
     @Test public void missingBlankAndUnknownStagesNormalizeToPending(){
         assertEquals("PENDING",SleepAutomationRunnerService.normalizeStage(null));
         assertEquals("PENDING",SleepAutomationRunnerService.normalizeStage("  "));
