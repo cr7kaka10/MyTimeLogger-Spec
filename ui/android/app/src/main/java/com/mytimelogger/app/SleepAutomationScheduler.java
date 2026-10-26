@@ -16,7 +16,6 @@ final class SleepAutomationScheduler {
         return next.getTimeInMillis();
     }
 
-    static long next840(long nowMs) { return nextWindowStart(nowMs); }
     static long windowEnd(long startMs) { return startMs + WINDOW_MS; }
     static boolean withinUnlockWindow(long nowMs, long startMs) {
         return startMs > 0 && nowMs >= startMs && nowMs <= windowEnd(startMs);
