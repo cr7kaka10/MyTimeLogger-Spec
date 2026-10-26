@@ -4884,8 +4884,13 @@ async def create_goal(request: Request, user: dict = Depends(get_current_user_op
     operator = body.get("operator", ">=")
     penalty_coins = body.get("penalty_coins")
 
-    if not title or metric not in {"duration", "count"} or period not in {"daily", "weekly", "monthly", "per_session"}:
+    if not title or metric not in {"duration", "count"} or period not in {"daily", "weekly", "monthly", "per_session", "custom_weekdays"}:
         raise HTTPException(status_code=400, detail="title, metric, and period are invalid")
+    weekdays = body.get("weekdays", [])
+    if not isinstance(weekdays, list) or any(type(day) is not int or day < 1 or day > 7 for day in weekdays) or len(set(weekdays)) != len(weekdays):
+        raise HTTPException(status_code=400, detail="weekdays must be unique integers from 1 to 7")
+    if period == "custom_weekdays" and not weekdays:
+        raise HTTPException(status_code=400, detail="custom weekday goals require at least one weekday")
     if operator not in {">=", "<="} or target_value is None or reward_coins is None:
         raise HTTPException(status_code=400, detail="title, metric, target_value, period, and reward_coins are required")
     if category_ids is None:
@@ -4897,7 +4902,8 @@ async def create_goal(request: Request, user: dict = Depends(get_current_user_op
             raise ValueError
         gid = store.create_goal(
             user["id"], title.strip(), category_id, metric, float(target_value), period,
-            float(reward_coins), operator=operator, penalty_coins=penalty_coins, category_ids=category_ids
+            float(reward_coins), operator=operator, penalty_coins=penalty_coins, category_ids=category_ids,
+            weekdays=weekdays,
         )
     except (TypeError, ValueError):
         raise HTTPException(status_code=400, detail="目标数值必须有效且奖励/惩罚不可为负")
@@ -4922,8 +4928,13 @@ async def update_goal(goal_id: str, request: Request, user: dict = Depends(get_c
             raise HTTPException(status_code=400, detail="分类必须为不重复的列表")
     if "metric" in body and body["metric"] not in {"duration", "count"}:
         raise HTTPException(status_code=400, detail="metric is invalid")
-    if "period" in body and body["period"] not in {"daily", "weekly", "monthly", "per_session"}:
+    if "period" in body and body["period"] not in {"daily", "weekly", "monthly", "per_session", "custom_weekdays"}:
         raise HTTPException(status_code=400, detail="period is invalid")
+    weekdays = body.get("weekdays")
+    if weekdays is not None and (not isinstance(weekdays, list) or any(type(day) is not int or day < 1 or day > 7 for day in weekdays) or len(set(weekdays)) != len(weekdays)):
+        raise HTTPException(status_code=400, detail="weekdays must be unique integers from 1 to 7")
+    if body.get("period") == "custom_weekdays" and not weekdays:
+        raise HTTPException(status_code=400, detail="custom weekday goals require at least one weekday")
     if "operator" in body and body["operator"] not in {">=", "<="}:
         raise HTTPException(status_code=400, detail="operator is invalid")
     success = store.update_goal(user["id"], goal_id, **body)

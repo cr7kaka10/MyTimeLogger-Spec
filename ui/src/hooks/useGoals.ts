@@ -7,7 +7,7 @@ import { useEventRefresh } from './useEventRefresh'
 
 export interface UseGoalsReturn {
   goals: Goal[]
-  progressMap: Record<number | string, { current: number; target: number; percent: number }>
+  progressMap: Record<number | string, { current: number; target: number; percent: number; isRestDay?: boolean }>
   historyMap: Record<number | string, Record<string, number>>
   addGoal: (g: Omit<Goal, 'id'>) => Promise<void>
   updateGoal: (id: number | string, g: Omit<Goal, 'id'>) => Promise<void>
@@ -16,7 +16,7 @@ export interface UseGoalsReturn {
 
 export const useGoals = (): UseGoalsReturn => {
   const [goals, setGoals] = useState<Goal[]>([])
-  const [progressMap, setProgressMap] = useState<Record<number | string, { current: number; target: number; percent: number }>>({})
+  const [progressMap, setProgressMap] = useState<Record<number | string, { current: number; target: number; percent: number; isRestDay?: boolean }>>({})
   const [historyMap, setHistoryMap] = useState<Record<number | string, Record<string, number>>>({})
   const [refreshTrigger, setRefreshTrigger] = useState(0)
   const eventRefresh = useEventRefresh(['balance-updated', 'sync-pull-complete'])
@@ -26,7 +26,7 @@ export const useGoals = (): UseGoalsReturn => {
       const allGoals = db.getGoals() as Goal[]
       setGoals(allGoals)
 
-      const pMap: Record<number | string, { current: number; target: number; percent: number }> = {}
+      const pMap: Record<number | string, { current: number; target: number; percent: number; isRestDay?: boolean }> = {}
       const hMap: Record<number | string, Record<string, number>> = {}
 
       allGoals.forEach(g => {

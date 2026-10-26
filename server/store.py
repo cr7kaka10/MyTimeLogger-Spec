@@ -1245,6 +1245,10 @@ class ServerSleepStore:
                 bindings.setdefault(binding["goal_id"], []).append(binding["category_id"])
             for goal in goals:
                 goal["category_ids"] = bindings.get(goal["id"], [goal["category_id"]] if goal["category_id"] is not None else [])
+                try:
+                    goal["weekdays"] = json.loads(goal["weekdays"]) if goal.get("weekdays") else []
+                except (TypeError, ValueError):
+                    goal["weekdays"] = []
             return goals
         finally:
             conn.close()
@@ -1290,7 +1294,7 @@ class ServerSleepStore:
             )
             self._record_server_change(conn, user_id, "server_goal_category_bindings", binding_id, "upsert", {"id": binding_id})
 
-    def create_goal(self, user_id, title, category_id, metric, target_value, period, reward_coins, reward_id=None, operator='>=', penalty_coins=None, category_ids=None):
+    def create_goal(self, user_id, title, category_id, metric, target_value, period, reward_coins, reward_id=None, operator='>=', penalty_coins=None, category_ids=None, weekdays=None):
         with self._transact() as conn:
             if penalty_coins is None:
                 penalty_coins = reward_coins
@@ -1304,10 +1308,13 @@ class ServerSleepStore:
             conn.execute(
                 """
                 INSERT INTO server_goals
-                (id, user_id, title, category_id, metric, target_value, period, operator, reward_coins, reward_id, penalty_coins, is_active, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+                (id, user_id, title, category_id, metric, target_value, period, weekdays, weekdays_effective_from, operator, reward_coins, reward_id, penalty_coins, is_active, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
                 """,
-                (goal_id, user_id, title, category_id, metric, target_value, period, operator, reward_coins, None, penalty_coins, now_ts, now_ts)
+                (goal_id, user_id, title, category_id, metric, target_value, period,
+                 json.dumps(weekdays or []) if period == "custom_weekdays" else None,
+                 now_ts[:10] if period == "custom_weekdays" else None,
+                 operator, reward_coins, None, penalty_coins, now_ts, now_ts)
             )
             self._record_server_change(conn, user_id, "server_goals", goal_id, "upsert", {"id": goal_id})
             self._replace_goal_category_bindings_in_txn(conn, user_id, goal_id, selected_category_ids, now_ts)
@@ -1323,12 +1330,27 @@ class ServerSleepStore:
     def update_goal(self, user_id, goal_id, **kwargs):
         category_ids = kwargs.pop("category_ids", UNSET)
         kwargs.pop("reward_id", None)
-        allowed = {"title", "category_id", "metric", "target_value", "period", "operator", "reward_coins", "penalty_coins"}
+        allowed = {"title", "category_id", "metric", "target_value", "period", "weekdays", "operator", "reward_coins", "penalty_coins"}
         kwargs = {key: value for key, value in kwargs.items() if key in allowed}
         with self._transact() as conn:
-            row = conn.execute("SELECT 1 FROM server_goals WHERE id=? AND user_id=?", (goal_id, user_id)).fetchone()
+            row = conn.execute("SELECT period, weekdays FROM server_goals WHERE id=? AND user_id=?", (goal_id, user_id)).fetchone()
             if not row:
                 return False
+            if isinstance(kwargs.get("weekdays"), (list, tuple)):
+                kwargs["weekdays"] = json.dumps(kwargs["weekdays"])
+            if "period" in kwargs or "weekdays" in kwargs:
+                try:
+                    previous_days = json.loads(row["weekdays"] or "[]")
+                except (TypeError, ValueError):
+                    previous_days = []
+                next_days = kwargs.get("weekdays", row["weekdays"])
+                try:
+                    if isinstance(next_days, str):
+                        next_days = json.loads(next_days or "[]")
+                except (TypeError, ValueError):
+                    next_days = []
+                if kwargs.get("period", row["period"]) != row["period"] or next_days != previous_days:
+                    kwargs["weekdays_effective_from"] = now_str()[:10]
             if category_ids is not UNSET:
                 selected_category_ids = self._validate_goal_category_ids_in_txn(conn, user_id, category_ids)
                 kwargs["category_id"] = selected_category_ids[0] if selected_category_ids else None
@@ -1420,6 +1442,7 @@ class ServerSleepStore:
                 reward_coins = g['reward_coins']
                 penalty_coins = g['penalty_coins'] if g['penalty_coins'] is not None else reward_coins
                 created_at_goal = g['created_at'] or '2000-01-01 00:00:00'
+                schedule_effective_from = g['weekdays_effective_from'] or ''
 
                 def _issue_goal(claim_id, is_met, val, target_val, operator_str, date_str, fail_if_not_met=False):
                     if not is_statistics_date_eligible(str(date_str)[:10], statistics_start):
@@ -1501,6 +1524,8 @@ class ServerSleepStore:
                     for s in sessions:
                         if s["start_time"] < created_at_goal:
                             continue
+                        if schedule_effective_from and s["end_time"][:10] < schedule_effective_from:
+                            continue
                         is_met = (s["net_duration_minutes"] >= target) if operator == '>=' else (s["net_duration_minutes"] <= target)
                         _issue_goal(
                             f"goal_{g_id}_session_{s['id']}",
@@ -1508,10 +1533,20 @@ class ServerSleepStore:
                             fail_if_not_met=True
                         )
 
-                elif period in {'daily', 'weekly', 'monthly'}:
-                    effective_start = max(created_at_goal[:10], last_reset_str[:10])
-                    for start, end in self._completed_goal_windows(period, effective_start, today):
+                elif period in {'daily', 'custom_weekdays', 'weekly', 'monthly'}:
+                    effective_start = max(created_at_goal[:10], last_reset_str[:10], schedule_effective_from or created_at_goal[:10])
+                    settlement_period = 'daily' if period == 'custom_weekdays' else period
+                    try:
+                        weekdays = json.loads(g['weekdays'] or '[]') if period == 'custom_weekdays' else []
+                    except (TypeError, ValueError):
+                        weekdays = []
+                    weekdays = {day for day in weekdays if type(day) is int and 1 <= day <= 7}
+                    if period == 'custom_weekdays' and not weekdays:
+                        continue
+                    for start, end in self._completed_goal_windows(settlement_period, effective_start, today):
                         start_str, end_str = start.isoformat(), end.isoformat()
+                        if period == 'custom_weekdays' and start.isoweekday() not in weekdays:
+                            continue
                         if start_str < statistics_start:
                             continue
                         # 日目标归属当日，周/月目标归属完整周期的最后一天。
@@ -1530,7 +1565,7 @@ class ServerSleepStore:
 
                         is_met = (val >= target) if operator == '>=' else (val <= target)
                         claim_id = (
-                            f"goal_{g_id}_{end_str.replace('-', '')}" if period == "daily"
+                            f"goal_{g_id}_{end_str.replace('-', '')}" if period in {"daily", "custom_weekdays"}
                             else f"goal_{g_id}_{start.strftime('%Y%m%d')}_{end.strftime('%Y%m%d')}"
                         )
                         if rebuild_dates and any(start_str <= value <= end_str for value in rebuild_dates):

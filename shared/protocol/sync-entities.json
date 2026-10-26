@@ -75,7 +75,7 @@
       "direction": "pull_only",
       "outbox": false,
       "deletePolicy": "no_delete",
-      "projectionFields": ["morning_diary_reward_status", "morning_diary_reward_amount", "morning_diary_reward_reason", "morning_diary_reward_rule_version", "evening_diary_reward_status", "evening_diary_reward_amount", "evening_diary_reward_reason", "evening_diary_reward_rule_version"],
+      "projectionFields": ["morning_diary_reward_status", "morning_diary_reward_amount", "morning_diary_reward_reason", "morning_diary_reward_rule_version", "evening_diary_reward_status", "evening_diary_reward_amount", "evening_diary_reward_reason", "evening_diary_reward_rule_version", "weekdays", "weekdays_effective_from"],
       "serverFields": ["user_id", "server_version"]
     },
     {

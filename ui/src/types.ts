@@ -58,6 +58,8 @@ export interface Goal {
   metric: string
   target_value: number
   period: string
+  weekdays?: number[]
+  weekdays_effective_from?: string
   reward_coins: number
   penalty_coins: number
   operator: string
@@ -389,7 +391,9 @@ export interface GoalFormData {
   category_ids: number[]
   metric: 'duration' | 'count'
   target_value: number
-  period: 'daily' | 'weekly' | 'monthly' | 'per_session'
+  period: 'daily' | 'weekly' | 'monthly' | 'per_session' | 'custom_weekdays'
+  weekdays?: number[]
+  weekdays_effective_from?: string
   operator: '>=' | '<='
   reward_coins: number
   penalty_coins: number

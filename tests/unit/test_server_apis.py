@@ -823,6 +823,7 @@ def test_goal_reward_backpack_commands_are_versioned_idempotent_and_account_scop
     assert len([item for item in backpack if item["title"] == "任务解锁"]) == 1
     assert client.post(f"/api/rewards/use_item/{unlocked['id']}", headers=headers).status_code == 200
     assert client.post(f"/api/rewards/use_item/{unlocked['id']}", headers=headers).status_code == 200
+
     used = next(item for item in client.get("/api/rewards/backpack", headers=headers).json()["backpack"] if item["id"] == unlocked["id"])
     assert used["is_used"] is True and used["used_at"]
 
@@ -875,6 +876,25 @@ def test_goal_reward_backpack_commands_are_versioned_idempotent_and_account_scop
     assert client.post("/api/rewards", headers=second_headers, json={
         "title": "越权解锁", "price": 0, "unlock_task_id": f"goal_{goal.json()['goal_id']}",
     }).status_code == 400
+
+
+def test_custom_weekday_goal_api_roundtrips_and_rejects_invalid_days(client_with_db, monkeypatch):
+    client, _store = client_with_db
+    headers = _login_headers(client, "custom_weekday_owner")
+    monkeypatch.setattr("server.store.now_str", lambda: "2026-09-02 09:00:00")
+    payload = {"title": "每周目标", "metric": "duration", "target_value": 270, "period": "custom_weekdays", "weekdays": [2, 3, 4, 5, 6, 7], "reward_coins": 3, "penalty_coins": 2}
+    created = client.post("/api/goals", headers=headers, json=payload)
+    assert created.status_code == 200
+    goal_id = created.json()["goal_id"]
+    goal = next(item for item in client.get("/api/goals", headers=headers).json()["goals"] if item["id"] == goal_id)
+    assert goal["weekdays"] == [2, 3, 4, 5, 6, 7]
+    assert goal["weekdays_effective_from"] == "2026-09-02"
+    updated = client.put(f"/api/goals/{goal_id}", headers=headers, json={**payload, "weekdays": [1, 2, 3]})
+    assert updated.status_code == 200
+    changed = next(item for item in client.get("/api/goals", headers=headers).json()["goals"] if item["id"] == goal_id)
+    assert changed["weekdays"] == [1, 2, 3]
+    assert client.post("/api/goals", headers=headers, json={**payload, "weekdays": []}).status_code == 400
+    assert client.post("/api/goals", headers=headers, json={**payload, "weekdays": [8]}).status_code == 400
 
 
 def test_sleep_serves_mobile_sleep_page_and_root_is_not_sleep_entry(client_with_db):

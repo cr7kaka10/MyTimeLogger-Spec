@@ -22,6 +22,12 @@ const V5_LEGACY_DIET_RULE_KEYS = ['protein_at_lunch_and_dinner', 'vegetables_at_
 const V5_MEAL_RULE_KEYS = ['breakfast_on_time', 'lunch_on_time', 'dinner_on_time']
 const V5_DIET_RULE_KEYS = [...V5_LEGACY_DIET_RULE_KEYS, ...V5_MEAL_RULE_KEYS]
 const AUTHORITATIVE_DIET_RULE_KEYS: Record<string, string[]> = { v4: V4_DIET_RULE_KEYS, v5: V5_DIET_RULE_KEYS }
+const parseGoalWeekdays = (value: unknown): number[] | undefined => {
+  try {
+    const days = typeof value === 'string' ? JSON.parse(value) : value
+    return Array.isArray(days) ? days.map(Number).filter(day => Number.isInteger(day) && day >= 1 && day <= 7) : undefined
+  } catch { return undefined }
+}
 
 // system_config 表 key 名常量
 export const SYSTEM_CONFIG_KEYS = {
@@ -107,6 +113,8 @@ export interface Goal {
   id: number | string; title: string; category_id: number | null
   category_ids?: number[]
   metric: string; target_value: number; period: string
+  weekdays?: number[]
+  weekdays_effective_from?: string
   reward_coins: number; reward_id?: number | string; operator: string
   penalty_coins: number; is_active: number; created_at?: string
   updated_at?: string; pushed_at?: string | null
@@ -1483,6 +1491,7 @@ export class Database {
     }
     return goals.map(goal => ({
       ...goal,
+      weekdays: parseGoalWeekdays((goal as any).weekdays),
       category_ids: byGoal.get(String(goal.id)) ?? (goal.category_id == null ? [] : [goal.category_id]),
     }))
   }
@@ -1490,10 +1499,11 @@ export class Database {
   addGoal(g: Omit<Goal, 'id'>): number {
     const now = this._now()
     this._run(
-      `INSERT INTO goals (title, category_id, metric, target_value, period, reward_coins, reward_id, operator, penalty_coins, is_active, created_at, updated_at)
-       VALUES (?,?,?,?,?,?,?,?,?,1,?,?)`,
+      `INSERT INTO goals (title, category_id, metric, target_value, period, reward_coins, reward_id, operator, penalty_coins, weekdays, is_active, created_at, updated_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,1,?,?)`,
       [g.title, g.category_id, g.metric, g.target_value, g.period,
-       g.reward_coins, g.reward_id ?? null, g.operator ?? '>=', g.penalty_coins ?? g.reward_coins, now, now],
+       g.reward_coins, g.reward_id ?? null, g.operator ?? '>=', g.penalty_coins ?? g.reward_coins,
+       g.weekdays ? JSON.stringify(g.weekdays) : null, now, now],
     )
     const id = (this._get('SELECT last_insert_rowid() as id') as any).id as number
     this._afterWrite('goals', id)
@@ -1505,7 +1515,10 @@ export class Database {
     const sets: string[] = ['updated_at = ?']
     const vals: any[] = [now]
     for (const [k, v] of Object.entries(fields)) {
-      if (v !== undefined && k !== 'id') { sets.push(`${k} = ?`); vals.push(v) }
+      if (v !== undefined && k !== 'id') {
+        sets.push(`${k} = ?`)
+        vals.push(k === 'weekdays' && Array.isArray(v) ? JSON.stringify(v) : v)
+      }
     }
     vals.push(id)
     this._run(`UPDATE goals SET ${sets.join(', ')} WHERE id = ?`, vals)
@@ -2100,7 +2113,7 @@ export class Database {
     this._run(`UPDATE ${table} SET pushed_at = ? WHERE id = ?`, [serverTime, id])
   }
 
-  getGoalProgress(goal: Goal): { current: number; target: number; percent: number } {
+  getGoalProgress(goal: Goal): { current: number; target: number; percent: number; isRestDay?: boolean } {
     const today = this._beijingNow()
     let startStr = ''
     let endStr = ''
@@ -2113,7 +2126,7 @@ export class Database {
       return `${year}-${month}-${day}`
     }
 
-    if (period === 'daily') {
+    if (period === 'daily' || period === 'custom_weekdays') {
       startStr = formatYYYYMMDD(today)
       endStr = startStr
     } else if (period === 'weekly') {
@@ -2131,6 +2144,10 @@ export class Database {
       const end = new Date(today.getFullYear(), today.getMonth() + 1, 0)
       endStr = formatYYYYMMDD(end)
     }
+
+    const weekday = today.getDay() || 7
+    const isRestDay = period === 'custom_weekdays' && !(goal.weekdays ?? []).includes(weekday)
+    if (isRestDay) return { current: 0, target: goal.target_value, percent: 0, isRestDay: true }
 
     const categoryIds = goal.category_ids?.length
       ? goal.category_ids
@@ -2153,7 +2170,7 @@ export class Database {
     const target = goal.target_value
     const percent = target > 0 ? Math.min(100, Math.round((current / target) * 100)) : 0
 
-    return { current, target, percent }
+    return { current, target, percent, ...(period === 'custom_weekdays' ? { isRestDay: false } : {}) }
   }
 
   getGoalProgressForDate(goal: Goal, date: string): { current: number; target: number; percent: number } {

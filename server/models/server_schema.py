@@ -460,7 +460,9 @@ def ensure_server_schema(conn: sqlite3.Connection):
             category_id INTEGER,                  -- 关联分类ID
             metric TEXT NOT NULL,                 -- 度量类型（duration/count）
             target_value REAL NOT NULL,           -- 目标值
-            period TEXT NOT NULL,                 -- 周期（daily/weekly/monthly/per_session）
+            period TEXT NOT NULL,                 -- 周期（daily/weekly/monthly/per_session/custom_weekdays）
+            weekdays TEXT,                         -- 自定义执行星期JSON数组(周一=1..周日=7)
+            weekdays_effective_from TEXT,          -- 当前排期生效日期(北京时间)
             operator TEXT DEFAULT '>=',           -- 判断运算符
             reward_coins REAL NOT NULL,           -- 达标奖励金币数
             reward_id TEXT,                       -- 关联奖励商品ID
@@ -475,6 +477,7 @@ def ensure_server_schema(conn: sqlite3.Connection):
         )
         """
     )
+    _ensure_columns(conn, "server_goals", {"weekdays": "TEXT", "weekdays_effective_from": "TEXT"})
 
     # 11. 金币收支流水表
     conn.execute(

@@ -110,7 +110,9 @@ export const DDL_STATEMENTS: string[] = [
     category_id INTEGER,                          -- 关联分类ID
     metric TEXT NOT NULL,                         -- 指标类型
     target_value REAL NOT NULL,                   -- 目标数值
-    period TEXT NOT NULL,                         -- 目标周期(daily/weekly/monthly)
+    period TEXT NOT NULL,                         -- 目标周期(daily/weekly/monthly/per_session/custom_weekdays)
+    weekdays TEXT,                                 -- 自定义执行星期JSON数组(周一=1..周日=7)
+    weekdays_effective_from TEXT,                 -- 当前排期生效日期(北京时间)
     reward_coins REAL DEFAULT 0,                  -- 达成奖励金币数
     reward_id TEXT DEFAULT NULL,                  -- 关联绑定的奖品ID
     operator TEXT DEFAULT '>=',                   -- 判定符号(>= / <=)
@@ -842,6 +844,8 @@ function applyCompatibilityMigrations(db: SqlDB): void {
   runIgnoreError(db, "ALTER TABLE reward_ledger ADD COLUMN occurred_at TEXT")
   runIgnoreError(db, "ALTER TABLE reward_ledger ADD COLUMN expires_at TEXT")
   runIgnoreError(db, "ALTER TABLE external_rewards ADD COLUMN updated_at TEXT")
+  runIgnoreError(db, "ALTER TABLE goals ADD COLUMN weekdays TEXT")
+  runIgnoreError(db, "ALTER TABLE goals ADD COLUMN weekdays_effective_from TEXT")
   runIgnoreError(db, "ALTER TABLE rewards ADD COLUMN unlock_source_type TEXT")
   runIgnoreError(db, "ALTER TABLE rewards ADD COLUMN unlock_source_id TEXT")
   runIgnoreError(db, "ALTER TABLE rewards ADD COLUMN inventory_mode TEXT NOT NULL DEFAULT 'unlimited'")

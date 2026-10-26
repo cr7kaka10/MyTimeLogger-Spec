@@ -3,10 +3,25 @@ from server.store import ServerSleepStore
 
 def _goal(conn, goal_id, period, created_at):
     conn.execute(
+        """INSERT INTO server_system_config (user_id,key,value,value_type,updated_at)
+           VALUES (1,'statistics_start_date',?,'string',?)
+           ON CONFLICT(user_id,key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at""",
+        (created_at[:10], created_at),
+    )
+    conn.execute(
         """INSERT INTO server_goals
            (id,user_id,title,metric,target_value,period,operator,reward_coins,penalty_coins,is_active,created_at,updated_at)
            VALUES (?,1,?,'duration',1,?,'>=',3,2,1,?,?)""",
         (goal_id, goal_id, period, created_at, created_at),
+    )
+
+
+def _custom_goal(conn, goal_id, weekdays, effective_from):
+    conn.execute(
+        """INSERT INTO server_goals
+           (id,user_id,title,metric,target_value,period,weekdays,weekdays_effective_from,operator,reward_coins,penalty_coins,is_active,created_at,updated_at)
+           VALUES (?,1,?,'duration',1,'custom_weekdays',?,?,'>=',3,2,1,?,?)""",
+        (goal_id, goal_id, weekdays, effective_from, effective_from + ' 00:00:00', effective_from + ' 00:00:00'),
     )
 
 
@@ -103,6 +118,7 @@ def test_historical_manual_session_rebuilds_goal_fact_and_wallet(tmp_db_path, mo
     store = ServerSleepStore(db_path=tmp_db_path)
     with store._transact() as conn:
         conn.execute("INSERT INTO users VALUES (1,'u','x','2026-08-01 00:00:00')")
+        conn.execute("INSERT INTO server_system_config (user_id,key,value,value_type,updated_at) VALUES (1,'statistics_start_date','2026-08-01','string','2026-08-01 00:00:00')")
         conn.execute(
             """INSERT INTO server_goals
                (id,user_id,title,metric,target_value,period,operator,reward_coins,penalty_coins,is_active,created_at,updated_at)
@@ -140,3 +156,30 @@ def test_goal_period_fact_diagnostic_is_read_only_and_uses_period_end_date(tmp_d
         {'target_date': '2026-08-03', 'claim_ids': [], 'ledger_ids': [], 'ledger_count': 0, 'ledger_amount': 0, 'has_server_fact': False},
         {'target_date': '2026-08-04', 'claim_ids': ['goal_daily_20260804'], 'ledger_ids': ['ledger_1_goal_penalty_goal_daily_20260804_2026-08-04'], 'ledger_count': 1, 'ledger_amount': -2.0, 'has_server_fact': True},
     ]
+
+
+def test_custom_weekdays_skip_monday_settle_selected_days_and_remain_idempotent(tmp_db_path, monkeypatch):
+    monkeypatch.setattr('server.store.now_str', lambda: '2026-09-08 09:00:00')
+    store = ServerSleepStore(db_path=tmp_db_path)
+    with store._transact() as conn:
+        conn.execute("INSERT INTO users VALUES (1,'u','x','2026-09-01 00:00:00')")
+        _custom_goal(conn, 'custom', '[2,3,4,5,6,7]', '2026-09-01')
+        conn.execute("INSERT INTO server_study_sessions (id,user_id,start_time,end_time,net_duration_minutes,date,updated_at) VALUES ('tue',1,'2026-09-01 08:00:00','2026-09-01 09:00:00',2,'2026-09-01','2026-09-01 09:00:00')")
+    first = store.auto_settle_goals(1)
+    assert store.auto_settle_goals(1) == []
+    with store._connect() as conn:
+        rows = conn.execute("SELECT target_date,amount FROM server_reward_ledger WHERE user_id=1 ORDER BY target_date").fetchall()
+    assert [tuple(row) for row in rows] == [('2026-09-01', 3.0), ('2026-09-02', -2.0), ('2026-09-03', -2.0), ('2026-09-04', -2.0), ('2026-09-05', -2.0), ('2026-09-06', -2.0)]
+    assert len(first) == 6
+
+
+def test_custom_weekday_change_does_not_settle_dates_before_effective_date(tmp_db_path, monkeypatch):
+    monkeypatch.setattr('server.store.now_str', lambda: '2026-09-07 09:00:00')
+    store = ServerSleepStore(db_path=tmp_db_path)
+    with store._transact() as conn:
+        conn.execute("INSERT INTO users VALUES (1,'u','x','2026-09-01 00:00:00')")
+        _custom_goal(conn, 'custom', '[1,2,3,4,5,6,7]', '2026-09-03')
+    store.auto_settle_goals(1)
+    with store._connect() as conn:
+        dates = [row['target_date'] for row in conn.execute("SELECT target_date FROM server_reward_ledger WHERE user_id=1 ORDER BY target_date")]
+    assert dates == ['2026-09-03', '2026-09-04', '2026-09-05', '2026-09-06']
