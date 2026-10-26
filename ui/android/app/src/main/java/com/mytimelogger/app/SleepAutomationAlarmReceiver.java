@@ -26,7 +26,7 @@ public final class SleepAutomationAlarmReceiver extends BroadcastReceiver {
 
     static void scheduleNext(Context context, long nowMs) {
         AlarmManager alarms = (AlarmManager) context.getSystemService(Context.ALARM_SERVICE);
-        long at = SleepAutomationScheduler.next840(nowMs);
+        long at = SleepAutomationScheduler.nextWindowStart(nowMs);
         if (Build.VERSION.SDK_INT < 31 || alarms.canScheduleExactAlarms())
             alarms.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, pending(context));
         else alarms.setWindow(AlarmManager.RTC_WAKEUP, at, SleepAutomationScheduler.WINDOW_MS, pending(context));
