@@ -18,6 +18,7 @@ public final class SleepAutomationRescheduleReceiver extends BroadcastReceiver {
 
     @Override public void onReceive(Context context, Intent ignored) {
         SharedPreferences prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        MorningDiaryReminderReceiver.scheduleInitial(context,System.currentTimeMillis());
         long next = SleepAutomationScheduler.next840(System.currentTimeMillis());
         if (!shouldSchedule(prefs.getBoolean(ENABLED, false), prefs.getLong(NEXT, 0), next)) return;
         SleepAutomationAlarmReceiver.scheduleNext(context, System.currentTimeMillis());

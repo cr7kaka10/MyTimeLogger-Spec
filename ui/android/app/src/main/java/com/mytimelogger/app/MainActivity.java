@@ -16,6 +16,7 @@ public class MainActivity extends BridgeActivity {
 
     @Override protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        MorningDiaryReminderReceiver.scheduleInitial(this,System.currentTimeMillis());
         applySystemBars(getResources().getConfiguration());
         if (bridge == null) return;
         bridge.getWebView().setBackgroundColor(Color.WHITE);

@@ -66,6 +66,7 @@
                 <action android:name="android.app.action.SCHEDULE_EXACT_ALARM_PERMISSION_STATE_CHANGED" />
             </intent-filter>
         </receiver>
+        <receiver android:name=".MorningDiaryReminderReceiver" android:exported="false" />
         <receiver android:name=".TimerWidgetBootReceiver" android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
