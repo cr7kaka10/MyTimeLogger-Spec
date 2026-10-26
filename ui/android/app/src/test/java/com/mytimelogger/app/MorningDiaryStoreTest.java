@@ -13,6 +13,8 @@ public class MorningDiaryStoreTest {
         java.util.Calendar c=java.util.Calendar.getInstance(SleepAutomationScheduler.BEIJING);c.clear();c.set(2026,9,26,8,50);
         long start=c.getTimeInMillis();assertTrue(MorningDiarySchedule.inWindow(start));
         assertEquals(start+MorningDiarySchedule.INTERVAL_MS,MorningDiarySchedule.nextCheck(start));
+        assertEquals(start+MorningDiarySchedule.INTERVAL_MS,MorningDiarySchedule.nextInitial(start+30_000));
+        assertEquals(start+MorningDiarySchedule.INTERVAL_MS*4,MorningDiarySchedule.nextCheck(start+MorningDiarySchedule.INTERVAL_MS*3+30_000));
         assertFalse(MorningDiarySchedule.inWindow(start+MorningDiarySchedule.INTERVAL_MS*5));
         assertEquals(start+MorningDiarySchedule.INTERVAL_MS*4,MorningDiarySchedule.nextCheck(start+MorningDiarySchedule.INTERVAL_MS*3));
         java.util.Calendar tomorrow=(java.util.Calendar)c.clone();tomorrow.add(java.util.Calendar.DAY_OF_MONTH,1);tomorrow.set(java.util.Calendar.HOUR_OF_DAY,8);tomorrow.set(java.util.Calendar.MINUTE,50);tomorrow.set(java.util.Calendar.SECOND,0);tomorrow.set(java.util.Calendar.MILLISECOND,0);
