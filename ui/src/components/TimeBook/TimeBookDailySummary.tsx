@@ -79,8 +79,11 @@ export function buildDailySummary({ date, diary, planVersion, planDefinition, pl
   }
   if (summaryReady) for (const goal of dailyGoals.filter(goal => goal.period === 'daily')) {
     const met = goal.operator === '<=' ? goal.current <= goal.target : goal.current >= goal.target
-    const actual = sumMatches(ledger, met ? 'goal_reward' : 'goal_penalty', String(goal.id))
-    items.push({ key: `goal-${goal.id}`, label: goal.title, status: actual.amount != null ? actual.amount >= 0 ? 'completed' : 'failed' : met ? 'completed' : 'pending', tab: 'timebook', consequence: met ? 'reward_only' : 'penalty', ruleAmount: met ? goal.rewardCoins : -Math.abs(goal.penaltyCoins), actualAmount: actual.amount, sourceIds: actual.ids })
+    const claimId = `goal_${goal.id}_${date.replace(/-/g, '')}`
+    const rows = ledger.filter(entry => (entry.source_type === 'goal_reward' || entry.source_type === 'goal_penalty') && String(entry.source_id || '') === claimId)
+    const actualAmount = rows.length ? rows.reduce((sum, entry) => sum + Number(entry.amount || 0), 0) : null
+    const succeeded = actualAmount != null ? actualAmount >= 0 : met
+    items.push({ key: `goal-${goal.id}`, label: goal.title, status: actualAmount != null ? succeeded ? 'completed' : 'failed' : met ? 'completed' : 'pending', tab: 'timebook', consequence: succeeded ? 'reward_only' : 'penalty', ruleAmount: succeeded ? goal.rewardCoins : -Math.abs(goal.penaltyCoins), actualAmount, sourceIds: rows.map(row => String(row.id)) })
   }
   if (summaryReady) for (const [source, label, ruleAmount] of SLEEP_LEDGER_RULES) {
     const actual = sumMatches(ledger, source)
