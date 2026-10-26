@@ -407,7 +407,7 @@ const AppSession = ({ initialAuthenticated, onAccountActivated }: { initialAuthe
         onNavigate={handleNavigate}
       />
     )
-    }, [activeTab, goals, habits, backpack, ledgerHook, showCategoryManager, handleHabitSectionChange, handleNavigate, handleNavigateToSleep, handleSummaryNavigate, handleStartExerciseFocus, handleStartLearningFocus, rewards, settings, sleep, sleepFocusIntent, timeBook, timer, handleOpenSleepFromSettings, handleOpenCategoryManager, handleCloseCategoryManager, openManagementPlan, openManagementPlanDraft, timerAiFocusRequest])
+    }, [activeTab, goals, habits, checklist.tasks, backpack, ledgerHook, showCategoryManager, handleHabitSectionChange, handleNavigate, handleNavigateToSleep, handleSummaryNavigate, handleStartExerciseFocus, handleStartLearningFocus, rewards, settings, sleep, sleepFocusIntent, timeBook, timer, handleOpenSleepFromSettings, handleOpenCategoryManager, handleCloseCategoryManager, openManagementPlan, openManagementPlanDraft, timerAiFocusRequest])
 
   const hasSavedToken = Boolean(settings.selectedEnvironmentProfile.authToken)
   const waitingForSavedToken = hasSavedToken && settings.connectionStatus === 'checking'
