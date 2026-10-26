@@ -77,8 +77,6 @@ export const ExercisePage = memo(({ theme, onToggleTheme, onStartFocus }: Props)
   const authoritative = isAuthoritativeExercisePlan(x.planVersion)
   const weightScore = authoritative ? Number(x.itemScores['body:weight']?.earned_points || 0) : log?.weight == null ? 0 : 5
   const bodyFatScore = authoritative ? Number(x.itemScores['body:body_fat_rate']?.earned_points || 0) : log?.body_fat_rate == null ? 0 : 5
-  const hasMealPolicy = x.planVersion === 'v5' && ['breakfast_on_time', 'lunch_on_time', 'dinner_on_time'].some(key => x.dietCheckins[key])
-  const bodyPoints = (def as any).bodyPoints ?? (hasMealPolicy ? 0 : undefined)
   const metricStatus = (value: unknown, fact: any, scoreValue: number) => value == null ? '尚未保存' : fact?.status === 'failed' ? '已补录，截止后不得分' : scoreValue ? '✓ 已得分' : '已保存，等待服务端确认'
   const savedScore = useMemo(() => {
     if (!log?.score_snapshot) return null
@@ -93,6 +91,7 @@ export const ExercisePage = memo(({ theme, onToggleTheme, onStartFocus }: Props)
     try { return typeof x.settlement.score_snapshot === 'string' ? JSON.parse(x.settlement.score_snapshot) : x.settlement.score_snapshot } catch { return null }
   }, [authoritative, x.settlement?.score_snapshot])
   const displayScore = authoritative ? projectAuthoritativeScore(authoritativeScore, x.planVersion as 'v4' | 'v5') : (isPastDate && savedScore ? savedScore : score)
+  const bodyPoints = x.planVersion === 'v5' && displayScore.cats['身体记录']?.m === 0 ? 0 : (def as any).bodyPoints
   const displayScoreCategories = useMemo(() => {
     const cats = displayScore.cats || {}
     const ordered = (def.categoryOrder || []).filter(c => cats[c])
@@ -185,11 +184,12 @@ export const ExercisePage = memo(({ theme, onToggleTheme, onStartFocus }: Props)
           <button onClick={() => switchDay(todayTab())}>今</button>
         </div>
       </header>
-      {!x.planDefinition ? (
+      {!x.planDefinition || x.authorityStatus !== 'ready' ? (
         <main>
           <section className="record-card">
-            <label>运动计划加载中</label>
-            <p>正在从数据库读取运动计划定义。</p>
+            <label>{x.authorityStatus === 'error' ? '运动数据同步失败' : '运动计划加载中'}</label>
+            <p>{x.authorityStatus === 'error' ? '无法确认所选日期的饮食规则和分值，请重试。' : '正在获取所选日期的运动规则和评分。'}</p>
+            {x.authorityStatus === 'error' && <button type="button" onClick={x.retryAuthority}>重试</button>}
           </section>
         </main>
       ) : <main>

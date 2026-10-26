@@ -140,22 +140,34 @@ const createSyncRunId = (): string => {
   return `sync-${Date.now()}-${Math.random().toString(16).slice(2)}`
 }
 
-export async function syncAfterDateSwitch(module: DateSwitchSyncModule, date: string): Promise<SyncNowResult> {
+export async function syncAfterDateSwitch(module: DateSwitchSyncModule, date: string, options: { planVersion?: string; force?: boolean } = {}): Promise<SyncNowResult> {
   const state = dateSwitchSyncState[module]
-  const key = `${module}:${date}`
+  const key = `${activeAccountStorageKey}:${module}:${date}:${options.planVersion || ''}`
   const now = Date.now()
-  if (state.promise && state.key === key) return state.promise
-  if (state.key === key && now - state.at < 1500) {
+  if (!options.force && state.promise && state.key === key) return state.promise
+  if (!options.force && module !== 'exercise' && state.key === key && now - state.at < 1500) {
     return { ok: true, merged: 0, diagnostics: { skipped: true, reason: 'date_switch_dedupe' } }
   }
   state.key = key
   state.at = now
-  state.promise = syncNow({
-    reason: module === 'checklist' ? 'checklist-date-switch' : `${module}-date-switch`,
-  }).finally(() => {
-    state.promise = null
+  const promise = (async (): Promise<SyncNowResult> => {
+    if (module === 'exercise' && options.planVersion === 'v5') {
+      await getDatabase()
+      const client = getCurrentTimerClient()
+      if (!client?.get) return { ok: false, merged: 0, error: 'exercise_state_client_not_ready' }
+      const response = await client.get('/api/exercise/state', {
+        date, ...(options.planVersion ? { plan_version: options.planVersion } : {}),
+      })
+      if (!response?.ok || (options.planVersion && response.data?.plan_version !== options.planVersion)) {
+        return { ok: false, merged: 0, error: response?.error || 'exercise_state_fetch_failed' }
+      }
+    }
+    return syncNow({ reason: module === 'checklist' ? 'checklist-date-switch' : `${module}-date-switch` })
+  })().catch(() => ({ ok: false, merged: 0, error: module === 'exercise' ? 'exercise_state_fetch_failed' : 'date_switch_sync_failed' })).finally(() => {
+    if (state.promise === promise) state.promise = null
   })
-  return state.promise
+  state.promise = promise
+  return promise
 }
 
 const requireElectronApi = () => {
