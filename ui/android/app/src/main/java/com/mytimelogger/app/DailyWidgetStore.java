@@ -85,7 +85,7 @@ final class DailyWidgetStore {
             SharedPreferences.Editor editor = values.edit().putString("snapshot", snapshot.toString());
             if (sameAccount) {
                 editor.putString("pending", rebasePending(readObject("pending"), today(), runtime.generation).toString());
-            } else editor.remove("pending").remove("done");
+            } else editor.remove("pending").remove("done").remove("expanded_items");
             return editor.commit();
         } catch (Exception ignored) { return false; }
     }
@@ -148,6 +148,32 @@ final class DailyWidgetStore {
         values.edit().putString("done", done.toString()).putString("pending", pending.toString()).commit();
     }
     boolean isDone(String kind, String id, String day) { return readObject("done").has(kind + ":" + id + ":" + day); }
+    boolean isItemsExpanded(String id, String day) {
+        return expandedMatches(snapshot(), readObject("expanded_items"), id, day);
+    }
+    boolean toggleItems(String id, String day) {
+        synchronized (DailyWidgetStore.class) {
+            JsonObject owner = snapshot();
+            if (owner == null || id == null || id.isEmpty() || !today().equals(day)) return false;
+            if (expandedMatches(owner, readObject("expanded_items"), id, day))
+                return values.edit().remove("expanded_items").commit();
+            JsonObject state = new JsonObject();
+            state.addProperty("userId", string(owner, "userId"));
+            state.addProperty("generation", owner.get("generation").getAsLong());
+            state.addProperty("database", string(owner, "database"));
+            state.addProperty("date", day); state.addProperty("id", id);
+            return values.edit().putString("expanded_items", state.toString()).commit();
+        }
+    }
+    static boolean expandedMatches(JsonObject owner, JsonObject state, String id, String day) {
+        try {
+            return owner != null && state != null && day.equals(today())
+                    && string(owner, "userId").equals(string(state, "userId"))
+                    && owner.get("generation").getAsLong() == state.get("generation").getAsLong()
+                    && string(owner, "database").equals(string(state, "database"))
+                    && day.equals(string(state, "date")) && id.equals(string(state, "id"));
+        } catch (RuntimeException ignored) { return false; }
+    }
     boolean openMenu(String id, String day) {
         synchronized (DailyWidgetStore.class) {
             JsonObject owner = snapshot();
