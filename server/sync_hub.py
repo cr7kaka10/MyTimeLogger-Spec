@@ -172,6 +172,24 @@ def _task_raw_json(record: dict) -> dict:
     return {}
 
 
+def _merge_provider_task_items(task: dict, existing: dict) -> bool:
+    """Only a complete provider items list may replace the saved checklist."""
+    previous = _task_raw_json(existing).get("items")
+    incoming = task.get("items")
+    valid = isinstance(incoming, list) and all(
+        isinstance(item, dict) and str(item.get("id") or "").strip()
+        and isinstance(item.get("title"), str) and type(item.get("status")) is int
+        for item in incoming
+    )
+    if valid:
+        return incoming != previous
+    if isinstance(previous, list):
+        task["items"] = previous
+    else:
+        task.pop("items", None)
+    return False
+
+
 def _task_project_id(record: dict) -> str:
     raw = _task_raw_json(record)
     return str(
@@ -1480,6 +1498,15 @@ class SyncHub:
             if field in record and record.get(field) != local.get(field):
                 merged[field] = record.get(field)
                 changed_fields.append(field)
+        if str(local.get("source") or "ticktick") != "local":
+            provider_raw = _task_raw_json(local)
+            client_raw = _task_raw_json(merged)
+            if client_raw.get("items") != provider_raw.get("items"):
+                if "items" in provider_raw:
+                    client_raw["items"] = provider_raw["items"]
+                else:
+                    client_raw.pop("items", None)
+                merged["raw_json"] = json.dumps(client_raw, ensure_ascii=False)
         if changed_fields and _parse_ts(local.get("updated_at")) > _parse_ts(record.get("updated_at")):
             for field in changed_fields:
                 self._record_conflict(
@@ -2867,6 +2894,7 @@ class SyncHub:
                         if field not in t and field not in stats["missing_fields"]:
                             stats["missing_fields"].append(field)
                     normalized_task = normalize_ticktick_task_times(t)
+                    items_changed = _merge_provider_task_items(normalized_task, local_snapshots.get(tid, {}))
                     due_date = normalized_task.get("due_date") or normalized_task.get("dueDate") or ""
                     if due_date and due_date < start_date.beijing_start_datetime.strftime("%Y-%m-%d %H:%M:%S") and tid not in local_snapshots:
                         continue
@@ -2902,7 +2930,7 @@ class SyncHub:
                         )
                         raise
                     stats["active_tasks"] += 1
-                    if delta.unchanged:
+                    if delta.unchanged and not items_changed:
                         stats["active_task_unchanged"] += 1
                         continue
                     staged_active_tasks[tid] = task_payload
@@ -3014,6 +3042,7 @@ class SyncHub:
                             stats["missing_fields"].append(missing_key)
                     title = t.get("title") or local_snapshot.get("title", "")
                     normalized_task = normalize_ticktick_task_times(t)
+                    items_changed = _merge_provider_task_items(normalized_task, local_snapshot)
                     due_date = normalized_task.get("due_date") or normalized_task.get("dueDate") or local_snapshot.get("due_date") or ""
                     completed_today_tids.add(tid)
                     tags = t.get("tags", local_snapshot.get("tags", []))
@@ -3043,7 +3072,7 @@ class SyncHub:
                         )
                         raise
                     stats["completed_tasks"] += 1
-                    if delta.unchanged:
+                    if delta.unchanged and not items_changed:
                         stats["completed_task_unchanged"] += 1
                         continue
 

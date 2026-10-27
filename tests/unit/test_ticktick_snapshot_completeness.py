@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import asyncio
+import json
 import sqlite3
 from types import SimpleNamespace
 
@@ -39,6 +40,54 @@ def test_incomplete_project_payload_never_deletes(tmp_path, mode):
     assert deleted_at is None
     assert stats["project_failures"] == 1
     assert "project_pull_failed" in stats["deletion_skipped_reason"]
+
+
+def test_checklist_items_refresh_without_etag_change_and_missing_is_safe(tmp_path):
+    path, hub = _hub(tmp_path)
+    item = lambda title, order=1, status=0, uid="item-1": {"id": uid, "title": title, "status": status, "sortOrder": order}
+
+    class Client:
+        items = [item("初版")]
+        async def get_projects(self): return [{"id": "p1", "name": "项目"}]
+        async def get_project_data(self, project_id):
+            task = {"id": "checklist", "title": "任务", "status": 0, "priority": 0,
+                    "dueDate": "2099-01-01T00:00:00+0800", "tags": [], "etag": "same",
+                    "modifiedTime": "2099-01-01T00:00:00+0800"}
+            if project_id == "p1" and self.items is not None: task["items"] = self.items
+            return {"tasks": [task] if project_id == "p1" else []}
+        async def get_completed_tasks(self, _start): return []
+
+    client = Client()
+    def saved_items():
+        with sqlite3.connect(path) as conn:
+            raw = conn.execute("SELECT raw_json FROM server_tasks WHERE id='checklist'").fetchone()[0]
+        return json.loads(raw).get("items")
+
+    asyncio.run(hub._pull_tasks(client, 1))
+    assert saved_items() == [item("初版")]
+    client.items = [item("新增", 1, uid="item-2"), item("改名", 2, status=2)]
+    stats = asyncio.run(hub._pull_tasks(client, 1))
+    assert stats["active_task_changes"] == 1 and saved_items() == client.items
+    client.items = [item("改名", 2, status=2)]
+    asyncio.run(hub._pull_tasks(client, 1))
+    assert saved_items() == client.items
+    client.items = None
+    asyncio.run(hub._pull_tasks(client, 1))
+    assert saved_items() == [item("改名", 2, status=2)]
+    client.items = []
+    asyncio.run(hub._pull_tasks(client, 1))
+    assert saved_items() == []
+
+
+def test_client_task_raw_json_cannot_replace_provider_items(tmp_path):
+    _, hub = _hub(tmp_path)
+    hub.db.upsert_task(1, {"id": "keep", "title": "fixture", "priority": 0, "status": 0,
+                           "tags": [], "items": [{"id": "item-1", "title": "远端", "status": 0}]})
+    local = hub.get_record("tasks", "keep", 1)
+    for incoming in ({"title": "旧端"}, {"items": [{"id": "item-1", "title": "过时", "status": 2}]}):
+        merged, errors = hub._apply_task_field_policy(local, {"id": "keep", "raw_json": json.dumps(incoming)}, None, 1)
+        assert not errors
+        assert json.loads(merged["raw_json"])["items"] == json.loads(local["raw_json"])["items"]
 
 
 def test_incomplete_snapshot_is_degraded_cooled_down_and_manual_can_retry(tmp_path, monkeypatch):
