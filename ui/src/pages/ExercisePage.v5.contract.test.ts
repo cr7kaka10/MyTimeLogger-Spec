@@ -10,6 +10,8 @@ const hook = read('../hooks/useExercise.ts')
 const authority = read('../utils/exerciseAuthoritativeScore.ts')
 const reference = read('../components/Exercise/ExerciseReferencePanels.tsx')
 const data = JSON.parse(read('../../../server/domain/exercise_plan_sample_data.json')).v5
+assert(JSON.stringify(data.diet.map((rule: any) => rule.content)) === JSON.stringify(['不喝含糖饮料', '不吃精米白面', '不吃零食']), 'V5 quality labels must match the restored rules')
+assert(panel.includes('no_sugary_drinks: 6') && panel.includes('no_refined_staples: 6') && panel.includes('no_snacks: 5'), 'V5 quality points must remain 6/6/5')
 
 assert(authority.includes("version === 'v4' || version === 'v5'"), 'V5 must use the server-authoritative score capability')
 assert(page.includes('projectAuthoritativeScore(authoritativeScore'), 'V5 must render the server score projection')

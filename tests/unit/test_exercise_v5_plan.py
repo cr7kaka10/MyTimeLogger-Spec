@@ -65,9 +65,9 @@ def test_v5_personal_calorie_budget_contract():
 def test_v5_diet_progression_and_safety_contract():
     plan = _plan()
     assert [rule["ruleKey"] for rule in plan["diet"]] == [
-        "protein_at_lunch_and_dinner", "vegetables_at_lunch_and_dinner",
-        "controlled_staple_and_no_sugary_drink",
+        "no_sugary_drinks", "no_refined_staples", "no_snacks",
     ]
+    assert [rule["content"] for rule in plan["diet"]] == ["不喝含糖饮料", "不吃精米白面", "不吃零食"]
     progress = " ".join(item["when"] + item["text"] for item in plan["progress"])
     assert all(phase in progress for phase in ("第1–2周", "第3–4周", "第5–8周", "第9–12周"))
     assert sum("外食" in item["when"] for item in plan["progress"]) == 5

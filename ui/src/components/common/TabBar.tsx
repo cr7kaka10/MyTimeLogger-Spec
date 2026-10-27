@@ -15,7 +15,7 @@ const mainTabs: { id: TabIconName; label: string }[] = [
   { id: 'timer', label: '计时' },
   { id: 'timebook', label: '时间书' },
   { id: 'goals', label: '目标' },
-  { id: 'learning', label: '学习' },
+  { id: 'learning', label: '计划' },
   { id: 'checklist', label: '清单' },
   { id: 'exercise', label: '运动' },
   { id: 'sleep', label: '睡眠' },

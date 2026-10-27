@@ -5,7 +5,7 @@ import sqlite3
 import pytest
 
 import server.server as server_module
-from server.domain.exercise_v4_service import DIET_RULES, PLAN_POLICIES, ExerciseV4Service
+from server.domain.exercise_v4_service import DIET_RULES, PLAN_POLICIES, V5_DIET_POINTS, V5_MEAL_RULES, ExerciseV4Service
 from server.domain.sample_data_initialization_service import SampleDataInitializationService
 from server.store import ServerSleepStore
 
@@ -56,6 +56,33 @@ def test_v5_publish_is_idempotent_and_does_not_override_manual_v4_switch(tmp_db_
         items = conn.execute("SELECT COUNT(*) FROM server_exercise_plan_items WHERE user_id=1 AND plan_version='v5'").fetchone()[0]
         markers = conn.execute("SELECT COUNT(*) FROM server_sample_data_initializations WHERE user_id=1 AND module='exercise_plan_v5'").fetchone()[0]
     assert (active, items, markers) == ("v4", 41, 1)
+
+
+def test_v5_quality_restore_is_idempotent_and_date_scoped(tmp_db_path, monkeypatch):
+    store, _ = _setup(tmp_db_path)
+    monkeypatch.setattr(server_module, "store", store)
+    monkeypatch.setattr(server_module, "beijing_now", lambda: datetime(2026, 10, 27, 12, tzinfo=BJ))
+    monkeypatch.setattr(server_module, "_exercise_write_change", lambda *args: None)
+    old = ("protein_at_lunch_and_dinner", "vegetables_at_lunch_and_dinner",
+           "controlled_staple_and_no_sugary_drink")
+    with store._transact() as conn:
+        for order, key in enumerate(old):
+            conn.execute("UPDATE server_exercise_plan_diet_rules SET rule_key=?,content=? "
+                         "WHERE user_id=1 AND id=?", (key, key, f"v5-diet-{order}"))
+        conn.execute("INSERT OR IGNORE INTO server_exercise_policy_metadata VALUES('v5_meal_timing','2026-10-27','2026-10-27')")
+        conn.execute("INSERT INTO server_exercise_item_scores(id,user_id,date,plan_version,item_key,earned_points,max_points,created_at) VALUES('historic-quality',1,'2026-10-27','v5','diet:protein_at_lunch_and_dinner',6,6,'2026-10-27')")
+    assert server_module._restore_v5_quality_rules_on_startup() == 3
+    assert server_module._restore_v5_quality_rules_on_startup() == 0
+    v5 = ExerciseV4Service(store.reward_wallet_service, lambda *args: None, "v5")
+    v4 = ExerciseV4Service(store.reward_wallet_service, lambda *args: None, "v4")
+    with store._connect() as conn:
+        assert conn.execute("SELECT effective_date FROM server_exercise_policy_metadata WHERE policy_key='v5_quality_restored'").fetchone()[0] == "2026-10-28"
+        assert [row[0] for row in conn.execute("SELECT rule_key FROM server_exercise_plan_diet_rules WHERE user_id=1 AND plan_version='v5' AND sort_order<3 ORDER BY sort_order")] == ["no_sugary_drinks", "no_refined_staples", "no_snacks"]
+        assert v5._diet_rules_for_date(conn, 1, "2026-10-27") == old + V5_MEAL_RULES
+        assert v5._diet_rules_for_date(conn, 1, "2026-10-28") == ("no_sugary_drinks", "no_refined_staples", "no_snacks") + V5_MEAL_RULES
+        assert sum(V5_DIET_POINTS[key] for key in v5._diet_rules_for_date(conn, 1, "2026-10-28")) == 50
+        assert conn.execute("SELECT earned_points FROM server_exercise_item_scores WHERE id='historic-quality'").fetchone()[0] == 6
+        assert v4._diet_rules_for_date(conn, 1, "2026-10-28") == DIET_RULES
 
 
 def test_v5_cardio_v3_revision_upgrades_v2_rows_idempotently(tmp_db_path):

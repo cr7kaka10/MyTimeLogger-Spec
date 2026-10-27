@@ -9,10 +9,12 @@ PLAN_VERSION = "v4"
 RULE_VERSION = "exercise-score-v4"
 DIET_RULES = ("no_snacks", "no_sugary_drinks", "no_refined_staples")
 V5_MEAL_RULES = ("breakfast_on_time", "lunch_on_time", "dinner_on_time")
+V5_RESTORED_QUALITY_RULES = ("no_sugary_drinks", "no_refined_staples", "no_snacks")
 REST_DAY_DIET_EXEMPTION_FROM = "2026-10-26"
 V5_DIET_POINTS = {"breakfast_on_time": 11, "lunch_on_time": 11, "dinner_on_time": 11,
                   "protein_at_lunch_and_dinner": 6, "vegetables_at_lunch_and_dinner": 6,
-                  "controlled_staple_and_no_sugary_drink": 5}
+                  "controlled_staple_and_no_sugary_drink": 5,
+                  "no_sugary_drinks": 6, "no_refined_staples": 6, "no_snacks": 5}
 PLAN_POLICIES = {
     "v4": {"rule_version": RULE_VERSION, "diet_rules": DIET_RULES, "diet_penalty": -20, "effective_from": "2026-09-10"},
     "v5": {"rule_version": "exercise-score-v5", "diet_rules": (
@@ -72,13 +74,20 @@ class ExerciseV4Service:
         row = conn.execute("SELECT effective_date FROM server_exercise_policy_metadata WHERE policy_key='v5_meal_timing'").fetchone()
         return bool(row and date >= str(row["effective_date"]))
 
+    def _restored_v5_quality(self, conn, date: str) -> bool:
+        if self.plan_version != "v5":
+            return False
+        row = conn.execute("SELECT effective_date FROM server_exercise_policy_metadata WHERE policy_key='v5_quality_restored'").fetchone()
+        return bool(row and date >= str(row["effective_date"]))
+
     def _is_rest_day(self, conn, user_id: int, date: str) -> bool:
         return is_exercise_rest_day(conn, user_id, self.plan_version, date)
 
     def _diet_rules_for_date(self, conn, user_id: int, date: str) -> tuple[str, ...]:
         if self._is_rest_day(conn, user_id, date):
             return ()
-        return self.diet_rules + V5_MEAL_RULES if self._new_v5_policy(conn, date) else self.diet_rules
+        quality = V5_RESTORED_QUALITY_RULES if self._restored_v5_quality(conn, date) else self.diet_rules
+        return quality + V5_MEAL_RULES if self._new_v5_policy(conn, date) else quality
 
     def _discard_invalid_diet_facts(self, conn, user_id: int, date: str, now: datetime) -> None:
         if self._is_rest_day(conn, user_id, date):

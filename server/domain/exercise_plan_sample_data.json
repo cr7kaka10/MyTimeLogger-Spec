@@ -1770,9 +1770,9 @@
   "v5": {
     "version":"v5","title":"运动计划 V5 · 健身房减脂保肌","sourceName":"12周六练·90分钟器械计划","exercisePoints":75,
     "diet":[
-      {"ruleKey":"protein_at_lunch_and_dinner","time":"午餐和晚餐","content":"每餐先保证1–2掌心蛋白质","note":"鸡蛋、鸡胸/鸡腿去皮、鱼虾、瘦牛肉、豆腐均可；未完成只丢5分，不扣金币"},
-      {"ruleKey":"vegetables_at_lunch_and_dinner","time":"午餐和晚餐","content":"每餐至少2拳蔬菜","note":"优先清蒸、白灼、炖煮；外卖备注少油少盐、酱汁分开"},
-      {"ruleKey":"controlled_staple_and_no_sugary_drink","time":"全天","content":"每餐主食1拳且不喝含糖饮料","note":"米饭半份、面少汤；喝水、无糖茶或黑咖啡；失败仅影响当日饮食分"}
+      {"ruleKey":"no_sugary_drinks","time":"全天","content":"不喝含糖饮料","note":"训练日适用；逾期失败按现有V5规则扣20金币"},
+      {"ruleKey":"no_refined_staples","time":"全天","content":"不吃精米白面","note":"训练日适用；逾期失败按现有V5规则扣20金币"},
+      {"ruleKey":"no_snacks","time":"全天","content":"不吃零食","note":"训练日适用；逾期失败按现有V5规则扣20金币"}
     ],
     "weekdaySchedule":[{"time":"训练前","item":"💧 饮水300–500ml并检查状态","note":"胸闷、眩晕、异常气促、锐痛或关节痛立即停止；新器械首组请巡场教练确认调节","accent":"stretch"}],
     "restSchedule":[{"time":"周一","item":"🚄 返回天津·完全休息","note":"不补练、不追步数；正常吃三餐并优先睡眠恢复","accent":"default"}],

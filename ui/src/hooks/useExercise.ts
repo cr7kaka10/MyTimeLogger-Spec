@@ -6,9 +6,9 @@ import type {ExercisePlanDefinition} from '@models/ExercisePlanSampleDataInitial
 import type {ExerciseScoreSettlement} from '../types'
 export type ExerciseState={status:number;completed_time?:string|null;note?:string|null;locked_at?:string|null;lock_reason?:string|null;earned_points?:number;max_points?:number;difficulty?:string;score_reason?:string|null;score_rule_version?:string;score_fact_status?:string}
 type DietStatus='pending'|'completed'|'failed'
-const V5_RULE_KEYS=['breakfast_on_time','lunch_on_time','dinner_on_time','protein_at_lunch_and_dinner','vegetables_at_lunch_and_dinner','controlled_staple_and_no_sugary_drink']
+const V5_RULE_KEYS=['breakfast_on_time','lunch_on_time','dinner_on_time','no_sugary_drinks','no_refined_staples','no_snacks']
 const hasLatestV5Plan=(definition:ExercisePlanDefinition|null)=>Boolean(definition?.dietRulesValid&&definition.diet.length===6&&V5_RULE_KEYS.every(key=>definition.diet.some(rule=>rule.ruleKey===key)))
-const dietPoints=(status:DietStatus,ruleKey:string,newPolicy:boolean)=>status==='completed'?(newPolicy?(({breakfast_on_time:11,lunch_on_time:11,dinner_on_time:11,protein_at_lunch_and_dinner:6,vegetables_at_lunch_and_dinner:6,controlled_staple_and_no_sugary_drink:5} as Record<string,number>)[ruleKey]||5):5):0
+const dietPoints=(status:DietStatus,ruleKey:string,newPolicy:boolean)=>status==='completed'?(newPolicy?(({breakfast_on_time:11,lunch_on_time:11,dinner_on_time:11,protein_at_lunch_and_dinner:6,vegetables_at_lunch_and_dinner:6,controlled_staple_and_no_sugary_drink:5,no_sugary_drinks:6,no_refined_staples:6,no_snacks:5} as Record<string,number>)[ruleKey]||5):5):0
 const projectDietSettlement=(current:ExerciseScoreSettlement|null,date:string,previous:DietStatus,next:DietStatus,planVersion:AuthoritativePlanVersion,ruleKey:string):ExerciseScoreSettlement=>{
  const score=projectAuthoritativeScore(current?.score_snapshot,planVersion),newPolicy=planVersion==='v5'&&score.cats['饮食约束'].m===50,maximum=newPolicy?50:15
  const earned=Math.max(0,Math.min(maximum,score.cats['饮食约束'].s-dietPoints(previous,ruleKey,newPolicy)+dietPoints(next,ruleKey,newPolicy)))

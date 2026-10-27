@@ -382,6 +382,46 @@ def _migrate_v5_meal_rules_on_startup() -> int:
         return created
 
 
+def _restore_v5_quality_rules_on_startup() -> int:
+    rules = (
+        ("protein_at_lunch_and_dinner", "no_sugary_drinks", "不喝含糖饮料"),
+        ("vegetables_at_lunch_and_dinner", "no_refined_staples", "不吃精米白面"),
+        ("controlled_staple_and_no_sugary_drink", "no_snacks", "不吃零食"),
+    )
+    with store._transact() as conn:
+        plans = conn.execute("SELECT user_id,version FROM server_exercise_plan_versions WHERE lower(version)='v5'").fetchall()
+        today = beijing_now().date()
+        stamp = today.strftime("%Y-%m-%d %H:%M:%S")
+        conn.execute("INSERT OR IGNORE INTO server_exercise_policy_metadata VALUES('v5_quality_restored',?,?)",
+                     ((today + timedelta(days=1)).isoformat(), stamp))
+        if not plans:
+            return 0
+        changed = 0
+        for plan in plans:
+            user_id, version = int(plan["user_id"]), str(plan["version"])
+            for order, (old_key, new_key, title) in enumerate(rules):
+                note = "训练日适用；逾期失败按现有V5规则扣20金币"
+                row = conn.execute("SELECT id,rule_key,time,content,note,sort_order FROM server_exercise_plan_diet_rules "
+                                   "WHERE user_id=? AND plan_version=? AND rule_key IN (?,?) "
+                                   "ORDER BY CASE WHEN rule_key=? THEN 0 ELSE 1 END LIMIT 1",
+                                   (user_id, version, new_key, old_key, new_key)).fetchone()
+                if row:
+                    row_id = row["id"]
+                    if (row["rule_key"], row["time"], row["content"], row["note"], row["sort_order"]) == (new_key, "全天", title, note, order):
+                        continue
+                    conn.execute("UPDATE server_exercise_plan_diet_rules SET rule_key=?,sort_order=?,time='全天',content=?,note=?,updated_at=? WHERE user_id=? AND id=?",
+                                 (new_key, order, title, note, stamp, user_id, row_id))
+                else:
+                    row_id = f"{version}-diet-{order}"
+                    conn.execute("INSERT OR IGNORE INTO server_exercise_plan_diet_rules(id,user_id,plan_version,rule_key,sort_order,time,content,note,created_at,updated_at) VALUES(?,?,?,?,?,'全天',?,?,?,?)",
+                                 (row_id, user_id, version, new_key, order, title, note, stamp, stamp))
+                _exercise_write_change(conn, user_id, "exercise_plan_diet_rule", row_id,
+                    {"id": row_id, "user_id": user_id, "plan_version": version, "rule_key": new_key,
+                     "sort_order": order, "time": "全天", "content": title, "note": note})
+                changed += 1
+        return changed
+
+
 def _retire_legacy_noon_bedtime_penalties_on_startup() -> dict:
     """幂等撤销已废弃 noon 规则的精确历史流水。"""
     result = store.sleep_reward_service.rollback_bedtime_coins()
@@ -872,6 +912,10 @@ async def lifespan(app: FastAPI):
         _migrate_v5_meal_rules_on_startup()
     except Exception as e:
         logger.error(f"❌ 服务端启动 V5 三餐规则迁移失败: {e}")
+    try:
+        _restore_v5_quality_rules_on_startup()
+    except Exception as e:
+        logger.error(f"❌ 服务端启动 V5 饮食质量规则迁移失败: {e}")
     try:
         _retire_legacy_noon_bedtime_penalties_on_startup()
     except Exception as e:
@@ -4044,12 +4088,16 @@ def get_exercise_state(
         plan_definition = _exercise_plan_definition(conn, user["id"], active_plan)
         if active_plan == "v5":
             policy = conn.execute("SELECT effective_date FROM server_exercise_policy_metadata WHERE policy_key='v5_meal_timing'").fetchone()
+            quality_policy = conn.execute("SELECT effective_date FROM server_exercise_policy_metadata WHERE policy_key='v5_quality_restored'").fetchone()
             if policy:
                 current_policy = date >= str(policy["effective_date"])
                 plan_definition["policyEffectiveDate"] = str(policy["effective_date"])
-                plan_definition["dietScorePoints"] = ({"breakfast_on_time": 11, "lunch_on_time": 11, "dinner_on_time": 11,
+                quality_points = ({"no_sugary_drinks": 6, "no_refined_staples": 6, "no_snacks": 5}
+                    if quality_policy and date >= str(quality_policy["effective_date"]) else {
                     "protein_at_lunch_and_dinner": 6, "vegetables_at_lunch_and_dinner": 6,
-                    "controlled_staple_and_no_sugary_drink": 5} if current_policy else {key: 5 for key in (
+                    "controlled_staple_and_no_sugary_drink": 5})
+                plan_definition["dietScorePoints"] = ({**quality_points, "breakfast_on_time": 11,
+                    "lunch_on_time": 11, "dinner_on_time": 11} if current_policy else {key: 5 for key in (
                     "protein_at_lunch_and_dinner", "vegetables_at_lunch_and_dinner", "controlled_staple_and_no_sugary_drink")})
                 plan_definition["trainingPoints"] = 50 if current_policy else None
                 plan_definition["bodyPoints"] = 0 if current_policy else None
