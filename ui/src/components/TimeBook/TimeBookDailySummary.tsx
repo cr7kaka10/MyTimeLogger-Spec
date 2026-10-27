@@ -67,8 +67,7 @@ export function buildDailySummary({ date, diary, planVersion, planDefinition, pl
     items.push({ key: `habit-${habit.id}`, label: `${habit.icon?.trim() ? `${habit.icon} ` : ''}${habit.name}`, status: habit.status === 2 ? 'completed' : habit.status === 1 ? 'failed' : 'pending', tab: 'checklist', consequence: 'reward_only', rewardSource: { sourceType: 'habit', sourceId: String(habit.id) }, sourceIds: [] })
   }
   const dueTasks = filterTasksForChecklistDate(checklistTasks, new Date(`${date}T12:00:00+08:00`))
-  const tasks = new Map([...dueTasks, ...checklistTasks.filter(task => task.is_overdue && task.status !== 2)].map(task => [task.id, task]))
-  if (summaryReady) for (const task of tasks.values()) items.push({ key: `task-${task.id}`, label: `${task.is_overdue && task.status !== 2 ? '【超期】' : ''}${task.title}`, status: task.status === 2 ? 'completed' : task.is_overdue ? 'overdue' : 'pending', tab: 'checklist', consequence: 'reward_only', rewardSource: { sourceType: 'checklist_task', sourceId: task.id }, sourceIds: [] })
+  if (summaryReady) for (const task of dueTasks) items.push({ key: `task-${task.id}`, label: `${task.is_overdue && task.status !== 2 ? '【超期】' : ''}${task.title}`, status: task.status === 2 ? 'completed' : task.is_overdue ? 'overdue' : 'pending', tab: 'checklist', consequence: 'reward_only', rewardSource: { sourceType: 'checklist_task', sourceId: task.id }, sourceIds: [] })
   const dayPlan = planDefinition?.exercisePlan[planDayForDate(date)]
   const v5RestDay = planVersion === 'v5' && dayPlan && !dayPlan.gym.length && !dayPlan.rain.length
   const dietRules: ReadonlyArray<readonly [string, string]> = planVersion === 'v4' ? DIET_RULES : planVersion === 'v5' && planReady && !v5RestDay

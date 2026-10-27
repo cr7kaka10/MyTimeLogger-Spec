@@ -51,6 +51,8 @@ const checklistDone = buildDailySummary({ ...base, diary: null, dailyHabits: [{ 
 assert(checklistDone.find(item => item.key === 'task-task-1')?.status === 'completed' && checklistDone.find(item => item.key === 'habit-habit-1')?.status === 'completed', 'summary must follow completed checklist facts')
 const checklistFailed = buildDailySummary({ ...base, diary: null, dailyHabits: [{ ...habit, status: 1 }], checklistTasks: [{ ...task, is_overdue: true }] })
 assert(checklistFailed.find(item => item.key === 'habit-habit-1')?.status === 'failed' && checklistFailed.find(item => item.key === 'task-task-1')?.status === 'overdue', 'summary must follow failed and overdue checklist facts')
+const otherDateOverdue = { ...task, id: 'task-other-day', due_date: '2026-10-02 12:00:00', is_overdue: true }
+assert(!buildDailySummary({ ...base, diary: null, checklistTasks: [task, otherDateOverdue] }).some(item => item.key === 'task-task-other-day'), 'summary must not mix another day overdue tasks into selected date')
 const offlineSleep = buildDailySummary({ ...base, diary: { image_uploaded_at: '2026-10-03 08:59:00', sync_status: 'error', morning_diary_reward_status: 'failed' }, nowMs: afterNine })
 assert(offlineSleep.find(item => item.key === 'sleep-upload')?.status === 'completed' && offlineSleep.find(item => item.key === 'morning-diary')?.status === 'pending', 'sync and reward errors must not rewrite local sleep or diary status')
 const settledFailure = buildDailySummary({ ...base, diary: null, dailyGoals: [{ ...base.dailyGoals[0], current: 150 }], ledger: [{ id: 'goal-penalty', source_type: 'goal_penalty', source_id: 'goal_g1_20261003', amount: -15 }] })
