@@ -4891,6 +4891,25 @@ async def retry_habit_checkin_command(idempotency_key: str, user: dict = Depends
         "idempotency_key": idempotency_key,
     })
 
+
+@app.put("/api/habits/{habit_id}/checkins/{checkin_date}/journal")
+async def save_habit_checkin_journal(habit_id: str, checkin_date: str, request: Request,
+                                    user: dict = Depends(get_current_user)):
+    try:
+        if datetime.strptime(checkin_date, "%Y-%m-%d").strftime("%Y-%m-%d") != checkin_date:
+            raise ValueError("invalid_date")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="invalid_checkin_date") from exc
+    body = await request.json()
+    note = body.get("note") if isinstance(body, dict) else None
+    if not isinstance(note, str) or len(note) > 2000:
+        raise HTTPException(status_code=400, detail="invalid_habit_journal")
+    saved = store.habit_domain_service.save_checkin_journal(int(user["id"]), habit_id, checkin_date, note)
+    if not saved:
+        raise HTTPException(status_code=404, detail="confirmed_local_checkin_not_found")
+    sync_hub._notify_clients(["habit_checkins"], int(user["id"]))
+    return saved
+
 @app.post("/api/habits/{habit_id}/checkin")
 async def checkin_habit(habit_id: str, request: Request, user: dict = Depends(get_current_user_optional)):
     body = await request.json()

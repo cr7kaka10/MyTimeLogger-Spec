@@ -107,7 +107,7 @@ const CATEGORY_REFERENCE_COLUMNS = [
 
 export interface HabitCheckin {
   id: number | string; habit_id: number | string; checkin_date: string
-  checkin_time?: string; status: number; updated_at?: string; pushed_at?: string | null
+  checkin_time?: string; status: number; note?: string | null; updated_at?: string; pushed_at?: string | null
 }
 
 export interface Goal {
@@ -1264,6 +1264,15 @@ export class Database {
     const category = habit.category_id == null ? null : this._get('SELECT name FROM categories WHERE id=? AND is_active=1', [habit.category_id])?.name
     const checkins = this._all('SELECT * FROM habit_checkins WHERE habit_id=? ORDER BY date DESC LIMIT 30', [id]) as (HabitCheckin & { date: string })[]
     return { habit, checkins, category: category ?? null }
+  }
+
+  getHabitMonthCheckins(id: string | number, month: string): HabitCheckin[] {
+    if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) return []
+    const [year, part] = month.split('-').map(Number)
+    const next = part === 12 ? `${year + 1}-01` : `${year}-${String(part + 1).padStart(2, '0')}`
+    const rows = this._all('SELECT * FROM habit_checkins WHERE habit_id=? AND COALESCE(checkin_date,date)>=? AND COALESCE(checkin_date,date)<? ORDER BY COALESCE(checkin_date,date) DESC',
+      [id, `${month}-01`, `${next}-01`]) as (HabitCheckin & { date?: string })[]
+    return rows.map(row => ({ ...row, checkin_date: row.checkin_date || row.date || '' }))
   }
 
   addHabit(name: string, icon = '✅', fields: Pick<HabitEdits, 'repeat_rule' | 'category_id'> = {}): string {

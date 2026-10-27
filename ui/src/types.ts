@@ -49,6 +49,7 @@ export interface HabitCheckin {
   habit_id: number | string
   checkin_date: string
   status: number
+  note?: string | null
 }
 
 export interface Goal {

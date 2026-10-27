@@ -15,9 +15,9 @@ assert(panel.includes('no_sugary_drinks: 6') && panel.includes('no_refined_stapl
 
 assert(authority.includes("version === 'v4' || version === 'v5'"), 'V5 must use the server-authoritative score capability')
 assert(page.includes('projectAuthoritativeScore(authoritativeScore'), 'V5 must render the server score projection')
-assert(hook.includes('projectDietSettlement(current,date,previous,status,planVersion)'), 'V5 diet clicks must optimistically project their own version')
+assert(hook.includes('projectDietSettlement(current,date,previous,status,planVersion,ruleKey)'), 'V5 diet clicks must project the changed rule and plan version')
 assert(panel.includes("'今日休息 · 不计训练分'") && panel.includes('const sections: string[]'), 'Monday rest and V5 dynamic sections must render')
-assert(panel.includes('本项不得分（不扣金币）') && panel.includes("planVersion === 'v4' ? '已过24:00，扣20金币'"), 'V4 and V5 diet consequences must stay distinct')
+assert(panel.includes('超时失败，扣20金币') && panel.includes("rule.time === '全天' ? '24:00'"), 'diet deadlines display the correct consequence and all-day cutoff')
 assert(reference.includes('planDefinition.progress.map'), 'progress and five eating-out templates must render in the reference panel')
 assert(data.exercisePlan['周一'].gym.length === 0, 'Monday must be a no-training travel rest day')
 assert(['周二','周三','周四','周五','六','日'].every(day => data.exercisePlan[day].gym.reduce((sum: number, item: any) => sum + item.durationMinutes, 0) === 90), 'six training days must each total 90 minutes')

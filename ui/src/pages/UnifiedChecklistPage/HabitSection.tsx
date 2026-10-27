@@ -213,7 +213,7 @@ export const HabitSection = memo(({
 
             {/* 习惯信息 */}
             <span className="min-w-0">
-              <span className="block truncate text-sm font-semibold leading-5 text-gray-900">{habit.name}</span>
+              <button type="button" onClick={() => setManagedHabit(habit)} className="block max-w-full truncate text-left text-sm font-semibold leading-5 text-gray-900 dark:text-gray-100" aria-label={`查看习惯「${habit.name}」月打卡记录`}>{habit.name}</button>
               <span className="mt-0.5 flex flex-wrap items-center gap-2 text-xs text-gray-400">
                 <span>连续 {streak} 天</span>
                 <span>{habit.source === 'local' || String(habit.id).startsWith('local_') ? 'MyTimeLogger' : '滴答镜像'}</span>
@@ -235,6 +235,7 @@ export const HabitSection = memo(({
                 type="button"
                 onClick={(e) => {
                   e.stopPropagation()
+                  if (todayStatus === 2 && checkin?.note && !window.confirm('撤销打卡会删除这一天的日志，确定继续吗？')) return
                   onToggleCheckin(habit.id, selectedDateStr, 2)
                 }}
                 className={`${statusControlClass(todayStatus === 2 ? 'success' : 'idle')} hover:bg-green-50 hover:text-green-500 hover:border-green-300`}
@@ -248,6 +249,7 @@ export const HabitSection = memo(({
                 type="button"
                 onClick={(e) => {
                   e.stopPropagation()
+                  if (todayStatus === 2 && checkin?.note && !window.confirm('改为失败会清除成功打卡日志，确定继续吗？')) return
                   onToggleCheckin(habit.id, selectedDateStr, 1)
                 }}
                 className={`${statusControlClass(todayStatus === 1 ? 'failure' : 'idle')} hover:bg-red-50 hover:text-red-500 hover:border-red-300`}

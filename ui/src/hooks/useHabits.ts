@@ -13,7 +13,7 @@ export interface UseHabitsReturn {
   setSelectedDate: (date: string) => void
   streakMap: Record<number | string, number>
   weeklyMap: Record<number | string, number[]>
-  toggleCheckin: (habitId: number | string, date?: string, forceStatus?: number) => Promise<void>
+  toggleCheckin: (habitId: number | string, date?: string, forceStatus?: number) => Promise<{ confirmed: boolean; checkedIn: boolean; date: string }>
   habitCommandStatus: Record<string, 'syncing' | 'retryable_failed'>
   retryHabitCheckin: (habitId: number | string) => Promise<void>
   addHabit: (name: string, icon: string) => void
@@ -91,29 +91,35 @@ export const useHabits = (): UseHabitsReturn => {
     const api = getCurrentTimerClient()
     if (!api) {
       setHabitCommandStatus(previous => ({ ...previous, [habitKey]: 'retryable_failed' }))
-      return
+      return false
     }
     commandKeys.current[habitKey] = idempotencyKey
     setHabitCommandStatus(previous => ({ ...previous, [habitKey]: 'syncing' }))
-    const response = retry
-      ? await api.retryHabitCheckin(idempotencyKey)
-      : await api.commandHabitCheckin({ habit_id: habitKey, date, desired_status: desiredStatus, idempotency_key: idempotencyKey })
+    let response
+    try {
+      response = retry
+        ? await api.retryHabitCheckin(idempotencyKey)
+        : await api.commandHabitCheckin({ habit_id: habitKey, date, desired_status: desiredStatus, idempotency_key: idempotencyKey })
+    } catch {
+      setHabitCommandStatus(previous => ({ ...previous, [habitKey]: 'retryable_failed' }))
+      return false
+    }
     if (response.data?.status === 'failed') {
       delete commandKeys.current[habitKey]
       setHabitCommandStatus(previous => { const next = { ...previous }; delete next[habitKey]; return next })
       await syncNow({ reason: 'habit-lifecycle-rejected' })
       setRefreshTrigger(previous => previous + 1)
       window.dispatchEvent(new CustomEvent('habit-lifecycle-error', { detail: response.data.error_code || 'habit_unavailable' }))
-      return
+      return false
     }
     if (!response.ok || response.data?.status !== 'confirmed') {
       setHabitCommandStatus(previous => ({ ...previous, [habitKey]: 'retryable_failed' }))
-      return
+      return false
     }
-    const result = await syncNow({ reason: 'habit-checkin-command' })
+    const result = await syncNow({ reason: 'habit-checkin-command' }).catch(() => ({ ok: false }))
     if (!result.ok) {
       setHabitCommandStatus(previous => ({ ...previous, [habitKey]: 'retryable_failed' }))
-      return
+      return true
     }
     setHabitCommandStatus(previous => {
       const next = { ...previous }
@@ -122,6 +128,7 @@ export const useHabits = (): UseHabitsReturn => {
     })
     setRefreshTrigger(previous => previous + 1)
     window.dispatchEvent(new CustomEvent('balance-updated'))
+    return true
   }, [])
 
   const toggleCheckin = useCallback(async (habitId: number | string, date?: string, forceStatus?: number) => {
@@ -132,7 +139,8 @@ export const useHabits = (): UseHabitsReturn => {
     if (forceStatus !== undefined && existing?.status === forceStatus) desiredStatus = 0
     const cryptoApi = globalThis.crypto
     const idempotencyKey = cryptoApi?.randomUUID?.() || `habit-${Date.now()}-${Math.random().toString(16).slice(2)}`
-    await submitHabitCommand(habitId, targetDate, desiredStatus, idempotencyKey)
+    const confirmed = await submitHabitCommand(habitId, targetDate, desiredStatus, idempotencyKey)
+    return { confirmed: Boolean(confirmed), checkedIn: desiredStatus === 2, date: targetDate }
   }, [submitHabitCommand, todayCheckins])
 
   const retryHabitCheckin = useCallback(async (habitId: number | string) => {

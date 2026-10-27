@@ -25,7 +25,7 @@ const detailsSource = readFileSync(new URL('./HabitDetails.tsx', import.meta.url
 const sheetSource = readFileSync(new URL('../../components/common/BottomSheet.tsx', import.meta.url), 'utf8')
 assert(!sectionSource.includes('LocalHabitHistory') && !sectionSource.includes('已删除的本地习惯'), 'history entry is absent without affecting creator')
 assert(sectionSource.includes('新建原生习惯') && sectionSource.includes('＋习惯'), 'habit creator remains visible')
-assert(['习惯概览', '奖励', '近期打卡'].every(label => detailsSource.includes(label)), 'details use named sections')
+assert(['习惯概览', '奖励', 'HabitMonthView'].every(label => detailsSource.includes(label)), 'details include the monthly record view')
 assert(['编辑习惯排期', '编辑习惯分类'].every(label => detailsSource.includes(label)), 'schedule and category summaries are keyboard buttons')
 assert(detailsSource.includes('onEdit={onEditReward}') && actionsSource.includes("onEditHabit={() => setMode('edit')}"), 'summary cards use the existing editors')
 assert(actionsSource.includes("onClick={() => setMode('delete')}") && actionsSource.match(/deleteHabit/g)?.length === 1, 'first delete action only enters confirmation')

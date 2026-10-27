@@ -49,6 +49,23 @@ class HabitDomainService:
         except sqlite3.IntegrityError:
             return False
 
+    def save_checkin_journal(self, user_id: int, habit_id: str, date_str: str, note: str) -> dict | None:
+        """只修改当前账号本地习惯已确认的打卡日志，不触碰奖励。"""
+        with self._transact() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute("""SELECT c.id,c.note FROM server_habit_checkins c
+                JOIN server_habits h ON h.user_id=c.user_id AND h.id=c.habit_id
+                WHERE c.user_id=? AND c.habit_id=? AND COALESCE(c.checkin_date,c.date)=? AND c.status=2
+                  AND h.source='local' AND h.is_active=0""",
+                (user_id, habit_id, date_str)).fetchone()
+            if not row:
+                return None
+            if (row["note"] or "") != note:
+                conn.execute("UPDATE server_habit_checkins SET note=?,updated_at=? WHERE user_id=? AND id=?",
+                             (note, self._now(), user_id, row["id"]))
+                self._record_change(conn, user_id, row["id"], "upsert")
+            return {"id": row["id"], "habit_id": habit_id, "date": date_str, "note": note}
+
     def checkin_habit_in_txn(self, conn, user_id, habit_id, date_str, replace_failed=False) -> str | None:
         """在调用方事务内登记服务端确认的打卡和全部派生奖励事实。"""
         if not self._active_in_txn(conn, user_id, habit_id):
@@ -125,7 +142,7 @@ class HabitDomainService:
         now_ts = self._now()
         checkin_id = existing["id"] if existing else uuid.uuid4().hex
         if existing:
-            conn.execute("UPDATE server_habit_checkins SET status=1,updated_at=? WHERE id=?", (now_ts, checkin_id))
+            conn.execute("UPDATE server_habit_checkins SET status=1,note=NULL,updated_at=? WHERE id=?", (now_ts, checkin_id))
         else:
             conn.execute(
                 """INSERT INTO server_habit_checkins
