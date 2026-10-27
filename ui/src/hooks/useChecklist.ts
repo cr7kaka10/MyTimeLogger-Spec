@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { TaskItem } from '../types'
+import { parseChecklistItems } from '../utils/checklistItems'
 import type { TickTickTaskCommandResult } from '@core/ApiClient'
 import { formatSyncProgress, getCurrentTimerClient, getDatabase, syncChecklistNow, syncNow, pushChecklistOnly } from '../db'
 import { recordBehavior } from '../utils/behaviorAudit'
@@ -167,7 +168,10 @@ export const useChecklist = (): UseChecklistReturn => {
 
       setTasks(raw.map((r: any) => {
         let source: any = {}
-        try { source = JSON.parse(r.raw_json || '{}') } catch { source = {} }
+        try {
+          const parsed = JSON.parse(r.raw_json || '{}')
+          source = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}
+        } catch { source = {} }
         const rewardCfg = db.getItemReward('task', r.ticktick_id || String(r.id), 0.1)
         const dueDate = normalizeShanghaiDateTime(r.due_date || '')
         const dueAt = dueDate ? new Date(dueDate.replace(' ', 'T') + '+08:00') : null
@@ -188,6 +192,7 @@ export const useChecklist = (): UseChecklistReturn => {
           time_zone: source.timeZone || 'Asia/Shanghai',
           is_all_day: Boolean(source.isAllDay),
           repeat_flag: source.repeatFlag || '',
+          items: parseChecklistItems(source.items),
           source: r.source || (String(r.id).startsWith('local_') ? 'local' : 'ticktick'),
         }
       }))

@@ -7,6 +7,7 @@ import { filterTasksForChecklistDate } from '../../utils/checklistFilter'
 import { formatTaskFocusBlockedMessage } from '../../hooks/taskFocusRouting'
 import { isTaskFocusActive } from './taskFocusState'
 import { TaskEditDialog } from '../../components/Checklist/TaskEditDialog'
+import { ChecklistItemsPreview } from '../../components/Checklist/ChecklistItemsPreview'
 import { SourceRewardSummary } from '../../components/Rewards/SourceRewardSummary'
 import { SourceRewardEditor } from '../../components/Rewards/SourceRewardEditor'
 import { BottomSheet } from '../../components/common/BottomSheet'
@@ -243,7 +244,7 @@ export const TaskSection = memo(({
             <div
               key={task.id}
               onContextMenu={(e) => handleContextMenu(e, task)}
-              className="grid min-h-12 w-full grid-cols-[28px_1fr_auto] items-center gap-2 rounded-xl border border-green-300 bg-green-50/30 p-2.5 opacity-80 shadow-sm transition-all duration-200 hover:bg-green-50/50"
+              className="grid min-h-12 w-full grid-cols-[28px_minmax(0,1fr)_auto] items-center gap-2 rounded-xl border border-green-300 bg-green-50/30 p-2.5 opacity-80 shadow-sm transition-all duration-200 hover:bg-green-50/50 dark:border-green-800 dark:bg-green-950/20 dark:hover:bg-green-950/30"
             >
               {/* 完成勾选框 */}
               <button
@@ -258,8 +259,8 @@ export const TaskSection = memo(({
               </button>
 
               {/* 任务主体信息 */}
-              <span className="min-w-0">
-                <span className="block truncate text-sm font-normal leading-5 text-gray-500 line-through">
+              <div className="min-w-0">
+                <span className="block truncate text-sm font-normal leading-5 text-gray-500 line-through dark:text-gray-300">
                   {task.title}
                 </span>
                 <span className="mt-1 flex flex-wrap items-center gap-1.5 text-xs">
@@ -287,7 +288,8 @@ export const TaskSection = memo(({
                   <SourceRewardSummary sourceType="checklist_task" sourceId={task.id} compact onEdit={() => setRewardTask(task)} />
                   <span className="text-[10px] text-gray-400">{(task as any).source === 'local' || task.id.startsWith('local_') ? 'MyTimeLogger' : '滴答镜像'}</span>
                 </span>
-              </span>
+                <ChecklistItemsPreview items={task.items} />
+              </div>
             </div>
           )
         })}
@@ -327,7 +329,7 @@ export const TaskSection = memo(({
 
   return (
     <div className="space-y-2" role="region" aria-label={`${getDateLabel()}任务`}>
-      <div className="flex items-center justify-between px-1"><h3 className="text-sm font-bold text-gray-700">{getDateLabel()}</h3><button type="button" aria-label="添加任务" title="添加 MyTimeLogger 原生任务" className="theme-accent-button rounded-md px-2" onClick={() => { setDraftTitle(''); setEditor({ task: null }) }}>＋</button></div>{editorForm}
+      <div className="flex items-center justify-between px-1"><h3 className="text-sm font-bold text-gray-700 dark:text-gray-100">{getDateLabel()}</h3><button type="button" aria-label="添加任务" title="添加 MyTimeLogger 原生任务" className="theme-accent-button rounded-md px-2" onClick={() => { setDraftTitle(''); setEditor({ task: null }) }}>＋</button></div>{editorForm}
       {focusFeedback && <p role="alert" className="px-1 text-xs text-red-600">{focusFeedback}</p>}
       {tasksToRender.map((task) => {
         const pri = PRIORITY_MAP[task.priority] || PRIORITY_MAP[0]
@@ -340,12 +342,12 @@ export const TaskSection = memo(({
           <div
             key={task.id}
             onContextMenu={(e) => handleContextMenu(e, task)}
-            className={`grid min-h-12 w-full grid-cols-[28px_1fr_auto] items-center gap-2 rounded-xl border p-2.5 shadow-sm transition-all duration-200 ${
+            className={`grid min-h-12 w-full grid-cols-[28px_minmax(0,1fr)_auto] items-center gap-2 rounded-xl border p-2.5 shadow-sm transition-all duration-200 ${
               isFocusing
-                ? 'border-blue-500 ring-2 ring-blue-500/20 bg-blue-50/10'
+                ? 'border-blue-500 ring-2 ring-blue-500/20 bg-blue-50/10 dark:bg-blue-950/30'
                 : isCompleted
-                ? 'border-green-300 bg-green-50/30 hover:bg-green-50/50'
-                : 'border-gray-100/80 hover:border-gray-200 bg-white'
+                ? 'border-green-300 bg-green-50/30 hover:bg-green-50/50 dark:border-green-800 dark:bg-green-950/20 dark:hover:bg-green-950/30'
+                : 'theme-surface hover:border-gray-200 dark:hover:border-gray-600'
             } ${task.is_overdue && !isCompleted ? 'border-l-4 border-l-red-500' : ''}`}
           >
             {/* 完成勾选框 */}
@@ -365,9 +367,9 @@ export const TaskSection = memo(({
             </button>
 
             {/* 任务主体信息 */}
-            <span className="min-w-0">
+            <div className="min-w-0">
               <span className={`block truncate text-sm font-semibold leading-5 ${
-                isCompleted ? 'line-through text-gray-400 font-normal' : 'text-gray-800'
+                isCompleted ? 'line-through text-gray-400 dark:text-gray-300 font-normal' : 'text-gray-800 dark:text-gray-100'
               }`}>{task.title}</span>
               <span className="mt-1 flex flex-wrap items-center gap-1.5 text-xs">
                 <button
@@ -407,7 +409,8 @@ export const TaskSection = memo(({
                 <SourceRewardSummary sourceType="checklist_task" sourceId={task.id} compact onEdit={() => setRewardTask(task)} />
                 <span className="text-[10px] text-gray-400">{(task as any).source === 'local' || task.id.startsWith('local_') ? 'MyTimeLogger' : '滴答镜像'}</span>
               </span>
-            </span>
+              <ChecklistItemsPreview items={task.items} />
+            </div>
 
             {/* 右侧动作区 */}
             <div className="flex items-center gap-2">

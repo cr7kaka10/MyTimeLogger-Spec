@@ -310,6 +310,13 @@ export interface BackpackEvent {
 
 // ======================== 清单 / TickTick ========================
 
+export interface ChecklistItem {
+  readonly id: string
+  readonly title: string
+  readonly status: number
+  readonly sortOrder: number
+}
+
 export interface TaskItem {
   id: string
   title: string
@@ -327,6 +334,7 @@ export interface TaskItem {
   time_zone?: string
   is_all_day?: boolean
   repeat_flag?: string
+  readonly items?: readonly ChecklistItem[]
 }
 
 export interface TickTickHabit {
