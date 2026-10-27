@@ -57,12 +57,15 @@ def test_habit_journal_updates_only_confirmed_local_checkin(tmp_path, monkeypatc
         url = "/api/habits/local_journal/checkins/2026-10-27/journal"
         with store._connect() as conn:
             before = conn.execute("SELECT COUNT(*) FROM server_reward_ledger WHERE user_id=1").fetchone()[0]
+            before_version = conn.execute("SELECT COALESCE(MAX(server_version),0) FROM server_change_log WHERE user_id=1").fetchone()[0]
         saved = client.put(url, json={"note": "😊 今天完成了"})
         assert saved.status_code == 200 and saved.json()["note"] == "😊 今天完成了"
         db = ServerDBWrapper()
         db.log_path = str(tmp_path / "habit-journal.db")
         snapshot = asyncio.run(SyncHub(db).handle_pull_by_version(0, user_id=1))
         assert any(row["note"] == "😊 今天完成了" for row in snapshot["tables"]["habit_checkins"])
+        delta = asyncio.run(SyncHub(db).handle_pull_by_version(before_version, user_id=1))
+        assert any(row["note"] == "😊 今天完成了" for row in delta["tables"]["habit_checkins"])
         assert client.put(url, json={"note": "😊 今天完成了"}).status_code == 200
         assert client.put(url, json={"note": "x" * 2001}).status_code == 400
         assert client.put(url.replace("2026-10-27", "2026-10-28"), json={"note": "误写"}).status_code == 404
