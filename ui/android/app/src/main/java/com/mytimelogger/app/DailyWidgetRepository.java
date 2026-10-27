@@ -14,11 +14,16 @@ import java.util.Set;
 
 final class DailyWidgetRepository {
     static final class Row {
-        final String kind, id, title, badge, day;
-        final boolean checked, header;
+        final String kind, id, title, badge, day, parentId, progress;
+        final boolean checked, header, expanded;
         Row(String kind, String id, String title, String badge, String day, boolean checked, boolean header) {
+            this(kind, id, title, badge, day, checked, header, id, "", false);
+        }
+        Row(String kind, String id, String title, String badge, String day, boolean checked,
+                boolean header, String parentId, String progress, boolean expanded) {
             this.kind = kind; this.id = id; this.title = title; this.badge = badge;
             this.day = day; this.checked = checked; this.header = header;
+            this.parentId = parentId; this.progress = progress; this.expanded = expanded;
         }
     }
     static Row header(String title, String badge) { return new Row("header", "", title, badge, "", false, true); }
@@ -49,14 +54,23 @@ final class DailyWidgetRepository {
                             badge("今天", store.pendingState("habit", id, today)), today, false, false));
             }
             List<Row> dueToday = new ArrayList<>(), overdue = new ArrayList<>();
-            for (Map<String, Object> item : db.query("SELECT id,title,due_date FROM tasks WHERE status=0 AND deleted_at IS NULL "
+            for (Map<String, Object> item : db.query("SELECT id,title,due_date,raw_json FROM tasks WHERE status=0 AND deleted_at IS NULL "
                     + "AND due_date IS NOT NULL AND due_date<>'' AND substr(due_date,1,10)<=? ORDER BY due_date,priority DESC,id", Collections.singletonList(today))) {
                 String id = text(item.get("id")), due = text(item.get("due_date"));
                 if (due.length() < 10 || store.isDone("task", id, today)) continue;
                 boolean late = dueBucket(due, today) < 0;
+                List<DailyWidgetChecklistItems.Entry> items = DailyWidgetChecklistItems.parse(text(item.get("raw_json")));
+                boolean expanded = !items.isEmpty() && store.isItemsExpanded(id, today);
+                int done = 0;
+                for (DailyWidgetChecklistItems.Entry entry : items) if (entry.done()) done++;
                 Row row = new Row("task", id, text(item.get("title")),
-                        badge(late ? due.substring(5, 10) : "今天", store.pendingState("task", id, today)), today, false, false);
-                (late ? overdue : dueToday).add(row);
+                        badge(late ? due.substring(5, 10) : "今天", store.pendingState("task", id, today)),
+                        today, false, false, id, items.isEmpty() ? "" : done + "/" + items.size(), expanded);
+                List<Row> bucket = late ? overdue : dueToday;
+                bucket.add(row);
+                if (expanded) for (DailyWidgetChecklistItems.Entry entry : items)
+                    bucket.add(new Row("checklist_item", entry.id, entry.title, "", today,
+                            entry.done(), false, id, "", false));
             }
             result.addAll(assemble(dueToday, overdue, habits));
             if (result.isEmpty()) result.add(header("今天已完成", "暂无待办"));
@@ -79,9 +93,14 @@ final class DailyWidgetRepository {
     }
     static List<Row> assemble(List<Row> dueToday, List<Row> overdue, List<Row> habits) {
         List<Row> rows = new ArrayList<>();
-        if (!dueToday.isEmpty()) { rows.add(header("今日任务", String.valueOf(dueToday.size()))); rows.addAll(dueToday); }
-        if (!overdue.isEmpty()) { rows.add(header("已过期", String.valueOf(overdue.size()))); rows.addAll(overdue); }
+        if (!dueToday.isEmpty()) { rows.add(header("今日任务", String.valueOf(parentCount(dueToday)))); rows.addAll(dueToday); }
+        if (!overdue.isEmpty()) { rows.add(header("已过期", String.valueOf(parentCount(overdue)))); rows.addAll(overdue); }
         if (!habits.isEmpty()) { rows.add(header("今日习惯", String.valueOf(habits.size()))); rows.addAll(habits); }
         return rows;
+    }
+    private static int parentCount(List<Row> rows) {
+        int count = 0;
+        for (Row row : rows) if ("task".equals(row.kind)) count++;
+        return count;
     }
 }
