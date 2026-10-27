@@ -21,6 +21,18 @@ public final class DailyWidgetCommandReceiver extends BroadcastReceiver {
                 || !getClass().getName().equals(intent.getComponent().getClassName())) return;
         String action = intent.getStringExtra("action");
         if ("open".equals(action)) { openChecklist(context); return; }
+        if ("toggle_items".equals(action)) {
+            String id = intent.getStringExtra("id"), day = intent.getStringExtra("date");
+            if (id == null || day == null || !day.equals(DailyWidgetStore.today())) return;
+            for (DailyWidgetRepository.Row row : new DailyWidgetRepository(context).load()) {
+                if ("task".equals(row.kind) && row.id.equals(id) && row.day.equals(day)
+                        && !row.progress.isEmpty()) {
+                    if (new DailyWidgetStore(context).toggleItems(id, day)) DailyWidgetProvider.refresh(context);
+                    return;
+                }
+            }
+            return;
+        }
         if (!("complete".equals(action) || "menu_open".equals(action)
                 || "menu_cancel".equals(action) || "menu_confirm".equals(action))) return;
         String kind = intent.getStringExtra("kind"), id = intent.getStringExtra("id");
