@@ -12,7 +12,7 @@ public class MorningMotivationScheduleTest {
         long at = day.getTimeInMillis();
         assertEquals(at, MorningMotivationReceiver.next(before));
         assertTrue(MorningMotivationReceiver.due(at));
-        assertFalse(MorningMotivationReceiver.due(at + 120_000));
+        assertFalse(MorningMotivationReceiver.due(at + 15 * 60_000));
         day.add(Calendar.DAY_OF_MONTH, 1);
         assertEquals(day.getTimeInMillis(), MorningMotivationReceiver.next(at));
     }

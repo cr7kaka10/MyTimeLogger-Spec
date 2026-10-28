@@ -18,7 +18,7 @@ public final class MorningMotivationReceiver extends BroadcastReceiver {
         if (day.getTimeInMillis() <= now) day.add(Calendar.DAY_OF_MONTH, 1);
         return day.getTimeInMillis();
     }
-    static boolean due(long now) { return next(now - 120_000) <= now; }
+    static boolean due(long now) { return next(now - 15 * 60_000) <= now; }
     static PendingIntent pending(Context context) {
         return PendingIntent.getBroadcast(context, REQUEST, new Intent(context, MorningMotivationReceiver.class).setAction(ACTION),
             PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
