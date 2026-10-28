@@ -133,6 +133,29 @@ def test_v5_hidden_quality_transition_exempts_pending_without_exempting_meals(tm
         assert not any(entry.endswith(key) for entry in ledger for key in PLAN_POLICIES["v5"]["diet_rules"])
 
 
+def test_v5_restored_quality_only_pending_auto_fails_after_midnight(tmp_db_path):
+    store, _ = _setup(tmp_db_path)
+    service = ExerciseV4Service(store.reward_wallet_service, lambda *args: None, "v5")
+    before = datetime(2026, 10, 28, 22, tzinfo=BJ)
+    after = datetime(2026, 10, 29, 0, 1, tzinfo=BJ)
+    with store._transact() as conn:
+        conn.execute("INSERT INTO server_exercise_policy_metadata VALUES('v5_quality_restored','2026-10-28','2026-10-27')")
+        conn.execute("INSERT OR IGNORE INTO server_exercise_policy_metadata VALUES('v5_meal_timing','2026-10-26','2026-10-25')")
+        service.ensure_diet_rows(conn, 1, "2026-10-28", before)
+        service.set_diet(conn, 1, "2026-10-28", "no_sugary_drinks", "completed", None, before)
+        service.set_diet(conn, 1, "2026-10-28", "no_refined_staples", "failed", None, before)
+        service.close_diet(conn, 1, "2026-10-28", after)
+        assert service.close_diet(conn, 1, "2026-10-28", after) == 0
+        facts = {r[0]: (r[1], r[2]) for r in conn.execute("SELECT rule_key,status,failure_reason FROM server_exercise_diet_checkins WHERE user_id=1 AND date='2026-10-28'")}
+        assert facts["no_sugary_drinks"] == ("completed", None)
+        assert facts["no_refined_staples"] == ("failed", "user_marked_failed")
+        assert facts["no_snacks"] == ("failed", "meal_window_passed")
+        penalties = [r[0] for r in conn.execute("SELECT id FROM server_reward_ledger WHERE user_id=1 AND target_date='2026-10-28' AND source_type='exercise_diet_penalty'")]
+        assert sum(id.endswith(":no_snacks") for id in penalties) == 1
+        assert not any(id.endswith(":no_sugary_drinks") or id.endswith(":no_refined_staples") for id in penalties)
+        assert service._diet_rules_for_date(conn, 1, "2026-11-02") == ()
+
+
 def test_v5_cardio_v3_revision_upgrades_v2_rows_idempotently(tmp_db_path):
     store, _ = _setup(tmp_db_path)
     seed = SampleDataInitializationService(tmp_db_path)

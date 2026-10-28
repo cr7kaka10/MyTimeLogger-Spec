@@ -927,8 +927,8 @@ class SyncHub:
                     raise ValueError("body_metrics_deadline_locked")
             if table == "exercise_diet_checkins":
                 target_date = str(data_copy.get("date") or _cst_today())[:10]
-                if str(data_copy.get("plan_version") or "") != "v4":
-                    raise ValueError("diet_checkin_requires_v4")
+                if str(data_copy.get("plan_version") or "") not in {"v4", "v5"}:
+                    raise ValueError("diet_checkin_requires_v4_or_v5")
                 if str(data_copy.get("status") or "pending") not in {"pending", "completed", "failed"}:
                     raise ValueError("invalid_diet_status")
             data_copy = self._prepare_exercise_record(conn, table, data_copy, user_id)
@@ -1120,10 +1120,10 @@ class SyncHub:
 
         if table == "exercise_diet_checkins":
             try:
-                from .server import _beijing_now, _exercise_v4
+                from .server import _beijing_now, _exercise_authoritative
             except (ImportError, ValueError):
-                from server import _beijing_now, _exercise_v4
-            _exercise_v4().set_diet(conn, user_id, str(record.get("date") or _cst_today())[:10],
+                from server import _beijing_now, _exercise_authoritative
+            _exercise_authoritative(str(record.get("plan_version") or "v4")).set_diet(conn, user_id, str(record.get("date") or _cst_today())[:10],
                 str(record.get("rule_key") or ""), str(record.get("status") or "pending"),
                 record.get("occurred_at"), _beijing_now())
             return
@@ -1716,6 +1716,11 @@ class SyncHub:
                 if pk_val is None:
                     rejected.append({"table": table, "record_id": None, "reason": "missing_primary_key"})
                     operation_results.append({"change_id": change_id, "status": "rejected", "reason": "missing_primary_key"})
+                    continue
+                if (table == "exercise_diet_checkins" and record.get("plan_version") == "v5"
+                        and record.get("status") == "pending" and str(record.get("date") or "")[:10] < _cst_today()):
+                    operation_results.append({"change_id": change_id, "status": "skipped", "record_id": str(pk_val),
+                                              "reason": "stale_pending_diet_noop"})
                     continue
                 if self._has_change_id(user_id, change_id):
                     accepted += 1

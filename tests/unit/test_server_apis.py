@@ -1261,6 +1261,36 @@ def test_body_metric_deadline_lock_allows_data_backfill_without_reopening_checki
     assert not ok and rejected[0]["reason"] == "body_metrics_deadline_locked"
 
 
+def test_v5_diet_outbox_accepts_current_actions_and_skips_historical_pending(client_with_db, monkeypatch):
+    client, store = client_with_db
+    _login_headers(client, "v5_diet_outbox_user")
+    now = datetime(2026, 10, 28, 10, 0, tzinfo=server_module.timezone(server_module.timedelta(hours=8)))
+    monkeypatch.setattr(server_module, "_beijing_now", lambda: now)
+    monkeypatch.setattr(sync_hub_module, "_cst_today", lambda: "2026-10-28")
+    with store._transact() as conn:
+        conn.execute("INSERT OR REPLACE INTO server_exercise_policy_metadata VALUES('v5_quality_restored','2026-10-28','2026-10-27')")
+        conn.execute("INSERT OR REPLACE INTO server_exercise_policy_metadata VALUES('v5_meal_timing','2026-10-26','2026-10-25')")
+        server_module._exercise_authoritative("v5").ensure_diet_rows(conn, 1, "2026-10-28", now)
+    operations = [
+        {"table": "exercise_diet_checkins", "change_id": f"v5-{key}", "operation": "upsert",
+         "payload": {"id": f"local-{key}", "date": "2026-10-28", "plan_version": "v5",
+                     "rule_key": key, "status": status, "occurred_at": now.isoformat()}}
+        for key, status in (("no_snacks", "completed"), ("no_refined_staples", "failed"))
+    ]
+    operations.append({"table": "exercise_diet_checkins", "change_id": "v5-old-pending", "operation": "upsert",
+                       "payload": {"id": "old-local", "date": "2026-10-25", "plan_version": "v5",
+                                   "rule_key": "controlled_staple_and_no_sugary_drink", "status": "pending"}})
+    result = asyncio.run(server_module.sync_hub.handle_push(operations, user_id=1))
+    assert [row["status"] for row in result["operation_results"]] == ["accepted", "accepted", "skipped"]
+    repeated = asyncio.run(server_module.sync_hub.handle_push(operations[:2], user_id=1))
+    assert [row["status"] for row in repeated["operation_results"]] == ["duplicate", "duplicate"]
+    late = asyncio.run(server_module.sync_hub.handle_push([{**operations[0], "change_id": "v5-late",
+        "payload": {**operations[0]["payload"], "date": "2026-10-25", "id": "old-completed"}}], user_id=1))
+    assert late["operation_results"][0]["status"] == "rejected"
+    with store._connect() as conn:
+        assert [tuple(row) for row in conn.execute("SELECT rule_key,status FROM server_exercise_diet_checkins WHERE user_id=1 AND date='2026-10-28' AND rule_key IN ('no_snacks','no_refined_staples') ORDER BY rule_key")] == [("no_refined_staples", "failed"), ("no_snacks", "completed")]
+
+
 def test_exercise_checkin_persists_completed_time(client_with_db):
     client, store = client_with_db
     headers = _login_headers(client, "exercise_checkin_time_user")
