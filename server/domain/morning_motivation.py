@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+import json
 
 PROMPT_VERSION = "morning-motivation-v1"
 SYSTEM_PROMPT = (
@@ -31,3 +32,27 @@ def validate_week(raw: object) -> list[str]:
     if len(set(messages)) != 7:
         raise ValueError("morning_week_duplicate")
     return messages
+
+
+def generate_week(cfg: dict, caller=None) -> list[str]:
+    base = str(cfg.get("text_base_url") or "").strip()
+    key = str(cfg.get("text_api_key") or "").strip()
+    model = str(cfg.get("text_model") or "").strip()
+    if not (base and key and model):
+        raise ValueError("ai_config_required")
+    if caller is None:
+        def caller():
+            import httpx
+            from openai import OpenAI
+            with httpx.Client(trust_env=False, timeout=8.0) as transport:
+                response = OpenAI(api_key=key, base_url=base.rstrip("/"), http_client=transport,
+                                  max_retries=0).chat.completions.create(
+                    model=model, temperature=0.8, response_format={"type": "json_object"},
+                    messages=[{"role": "system", "content": SYSTEM_PROMPT},
+                              {"role": "user", "content": "请生成未来七天各不相同的短句。"}])
+                return response.choices[0].message.content
+    try:
+        payload = json.loads(caller() or "{}")
+        return validate_week(payload.get("messages"))
+    except Exception as exc:
+        raise RuntimeError("ai_generation_failed") from exc
