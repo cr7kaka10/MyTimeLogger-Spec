@@ -8,6 +8,8 @@ import { classifySleepNotificationEvents } from './notificationEvents'
 import { morningNotifications, poopReminder } from './contextualNotifications'
 import type { LogicSnapshot } from '@core/LogicSnapshot'
 import { recordBehavior } from '../utils/behaviorAudit'
+import { hasEarlierLocalDietCheckin } from './dietPenaltyNotificationGuard'
+import { syncNow } from '../db'
 
 let cleanup = () => {}; let current: ReturnType<typeof buildRuntime> | null = null
 export const nextSleepReminderAt = (now = new Date()): number => {
@@ -21,8 +23,22 @@ const buildRuntime = (runtime: PlatformRuntime, db: any, lifecycle: LifecycleSer
   const runtimeState = createDeviceRuntimeStateService(runtime)
   const preferences = createNotificationPreferences(runtimeState)
   let foreground = true
+  let lastDietRecheck = 0
   const coordinator = createNotificationCoordinator({
-    readFacts: () => ({ external: db.getUnclaimedRewards(), ledger: db.getLedgerFull(500, 0) }),
+    readFacts: () => {
+      const ledger = db.getLedgerFull(500, 0).filter((fact: any) => {
+        if (fact.source_type !== 'exercise_diet_penalty') return true
+        const date = fact.target_date || String(fact.source_id || '').split(':')[2]
+        const rows = date ? db.getExerciseDietCheckins(date, 'v5') : []
+        const outbox = db.getPendingOutbox(500, 'core')
+        if (!hasEarlierLocalDietCheckin(fact, rows, outbox)) return true
+        if (Date.now() - lastDietRecheck > 30_000) {
+          lastDietRecheck = Date.now(); void syncNow({ reason: 'diet-penalty-local-checkin' }).catch(() => {})
+        }
+        return false
+      })
+      return { external: db.getUnclaimedRewards(), ledger }
+    },
     preferences, notifications, isForeground: () => foreground,
   })
   return { notifications, preferences, coordinator, lifecycle, runtimeState, isForeground: () => foreground, setForeground: (value: boolean) => { foreground = value } }
