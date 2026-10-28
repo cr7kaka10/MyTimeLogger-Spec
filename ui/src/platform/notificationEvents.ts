@@ -1,7 +1,8 @@
 import type { NotificationChannel, NotificationRoute } from './services'
+import { parseLedgerDisplay } from '../utils/ledgerDisplay'
 
 type ExternalFact = { id: string | number; ext_id?: string; item_type: string; item_name?: string; coins: number; status: number }
-type LedgerFact = { id: string | number; amount: number; source_type: string; description?: string }
+type LedgerFact = { id: string | number; amount: number; source_type: string; description?: string; source_id?: string; target_date?: string; display_title?: string }
 export type BusinessNotification = { eventKey: string; handledKeys: string[]; channel: NotificationChannel; title: string; body: string; route: NotificationRoute }
 const amount = (value: number) => Math.abs(Number(value)).toLocaleString('zh-CN', { maximumFractionDigits: 2 })
 export const externalNotificationKey = (fact: ExternalFact) => `ext:${fact.ext_id || fact.id}`
@@ -19,7 +20,12 @@ export function classifyNotificationEvents(external: ExternalFact[], ledger: Led
   if (pending.length) { const keys = pending.map(externalKey); notifications.push({ eventKey: keys[0], handledKeys: keys, channel: 'rewards', title: '新奖励待领取', body: `${pending.length} 项奖励待领取`, route: 'rewards' }) }
   const purchases = ledger.filter(item => item.source_type === 'reward_buy')
   for (const fact of purchases) { const key = ledgerKey(fact); notifications.push({ eventKey: key, handledKeys: [key], channel: 'rewards', title: '兑换成功', body: `${fact.description || '奖励'}，已放入背包`, route: 'backpack' }) }
-  const regular = ledger.filter(item => item.source_type !== 'reward_buy'); const positive = regular.filter(item => Number(item.amount) > 0); const negative = regular.filter(item => Number(item.amount) < 0)
+  const dietPenalties = ledger.filter(item => item.source_type === 'exercise_diet_penalty' && Number(item.amount) < 0)
+  for (const fact of dietPenalties) {
+    const key = ledgerKey(fact); const display = parseLedgerDisplay({ ...fact, description: fact.description || '', source_id: fact.source_id || '', target_date: fact.target_date || '', display_title: fact.display_title || '' })
+    notifications.push({ eventKey: key, handledKeys: [key], channel: 'rewards', title: '饮食打卡逾期', body: `${display.description}，-${amount(fact.amount)}🪙`, route: 'rewards' })
+  }
+  const regular = ledger.filter(item => item.source_type !== 'reward_buy' && item.source_type !== 'exercise_diet_penalty'); const positive = regular.filter(item => Number(item.amount) > 0); const negative = regular.filter(item => Number(item.amount) < 0)
   if (positive.length) { const keys = positive.map(ledgerKey); const total = positive.reduce((sum, item) => sum + Number(item.amount), 0); notifications.push({ eventKey: keys[0], handledKeys: keys, channel: 'rewards', title: '金币变动', body: `金币到账 +${amount(total)}`, route: 'rewards' }) }
   if (negative.length) { const keys = negative.map(ledgerKey); const total = negative.reduce((sum, item) => sum + Number(item.amount), 0); notifications.push({ eventKey: keys[0], handledKeys: keys, channel: 'rewards', title: '金币变动', body: `金币扣除 -${amount(total)}`, route: 'rewards' }) }
   return { handledKeys, notifications }
