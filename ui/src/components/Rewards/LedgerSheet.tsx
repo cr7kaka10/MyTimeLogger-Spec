@@ -272,7 +272,7 @@ export const LedgerSheet = memo(({ groupedEntries, filter, setFilter, summary, h
               </div>
               <div className="flex justify-between">
                 <span className="text-gray-400">描述</span>
-                <span className="text-right text-gray-900">{detail.description || '—'}</span>
+                <span className="text-right text-gray-900">{parseLedgerDisplay(detail).description}</span>
               </div>
               <div className="flex justify-between">
                 <span className="text-gray-400">时间</span>

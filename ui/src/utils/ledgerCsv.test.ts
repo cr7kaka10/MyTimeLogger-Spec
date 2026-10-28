@@ -11,6 +11,10 @@ const csv = buildLedgerCsv([{
   id: 'row-3', amount: -50, source_type: 'body_metric_deadline_penalty', description: '体重体脂逾期未填写（09:00）', target_date: '2026-08-24',
 }, {
   id: 'row-4', amount: 0, source_type: 'future_internal_key', description: '', target_date: '2026-08-24',
+}, {
+  id: 'row-5', amount: -20, source_type: 'exercise_diet_penalty',
+  source_id: 'exercise-diet-penalty:1:2026-10-28:v5:lunch_on_time',
+  description: '饮食必做项逾期未完成', target_date: '2026-10-28',
 }])
 
 assert(csv.startsWith('\uFEFF业务日期,发生时间,类型,标题,说明,收入,支出,净额,来源类型,来源 ID,流水 ID,创建时间'), 'CSV must carry BOM and fixed columns')
@@ -20,5 +24,6 @@ assert(csv.includes(',0.5,,0.5,习惯打卡,') && csv.includes(',,2,-2,任务失
 assert(csv.includes('2026-08-24 09:08:07') && csv.includes('中文'), 'Chinese and business time must be retained')
 assert(csv.includes('体重体脂逾期处罚,体重体脂逾期未填写（09:00）') && !csv.includes('body_metric_deadline_penalty'), 'CSV uses readable penalty type and title')
 assert(csv.includes('系统流水,系统流水') && !csv.includes('future_internal_key'), 'CSV never exposes an unknown internal source key')
+assert(csv.includes('午餐按时打卡逾期未完成（2026-10-28，截止 13:31，北京时间）'), 'legacy lunch detail uses readable rule and cutoff')
 assert(ledgerCsvFilename('reward', new Date('2026-08-23T17:02:03Z')) === 'MyTimeLogger-金币流水-兑换-20260824-010203.csv', 'filename must use Beijing time and filter')
 console.log('ledger CSV tests passed')
