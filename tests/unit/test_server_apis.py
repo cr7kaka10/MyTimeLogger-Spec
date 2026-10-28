@@ -1292,6 +1292,30 @@ def test_v5_diet_outbox_accepts_current_actions_and_skips_historical_pending(cli
         assert [tuple(row) for row in conn.execute("SELECT rule_key,status FROM server_exercise_diet_checkins WHERE user_id=1 AND date='2026-10-28' AND rule_key IN ('no_snacks','no_refined_staples') ORDER BY rule_key")] == [("no_refined_staples", "failed"), ("no_snacks", "completed")]
 
 
+def test_v5_late_offline_meal_sync_repairs_auto_penalty(client_with_db, monkeypatch):
+    client, store = client_with_db
+    _login_headers(client, "late_meal_sync_user")
+    date = "2026-10-28"
+    now = datetime(2026, 10, 28, 14, tzinfo=server_module.timezone(server_module.timedelta(hours=8)))
+    monkeypatch.setattr(server_module, "_beijing_now", lambda: now)
+    monkeypatch.setattr(sync_hub_module, "_cst_today", lambda: date)
+    with store._transact() as conn:
+        conn.execute("INSERT OR REPLACE INTO server_exercise_policy_metadata VALUES('v5_meal_timing','2026-10-26','2026-10-25')")
+        server_module._exercise_authoritative("v5").close_diet(conn, 1, date,
+            datetime(2026, 10, 28, 13, 32, tzinfo=server_module.timezone(server_module.timedelta(hours=8))))
+    def push(change_id, occurred, recorded):
+        return asyncio.run(server_module.sync_hub.handle_push([{"table": "exercise_diet_checkins", "change_id": change_id,
+            "base_version": "0", "operation": "upsert", "payload": {"id": "diet:" + date + ":v5:lunch_on_time",
+            "date": date, "plan_version": "v5", "rule_key": "lunch_on_time", "status": "completed",
+            "occurred_at": occurred, "updated_at": recorded}}], user_id=1))["operation_results"][0]
+    invalid = push("late-invalid", f"{date} 13:31:10", f"{date} 13:31:10")
+    assert invalid["status"] == "rejected" and invalid["reason"] == "diet_deadline_passed"
+    assert push("late-valid", f"{date} 13:30:00", f"{date} 13:30:00")["status"] == "accepted"
+    with store._connect() as conn:
+        assert conn.execute("SELECT status FROM server_exercise_diet_checkins WHERE user_id=1 AND date=? AND rule_key='lunch_on_time'", (date,)).fetchone()[0] == "completed"
+        assert conn.execute("SELECT 1 FROM server_reward_ledger WHERE user_id=1 AND id=?", (f"exercise-diet-penalty:1:{date}:v5:lunch_on_time",)).fetchone() is None
+
+
 def test_body_metrics_recovery_and_server_wins(client_with_db, monkeypatch):
     client, store = client_with_db
     _login_headers(client, "body_recovery_user")

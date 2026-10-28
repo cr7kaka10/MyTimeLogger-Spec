@@ -789,7 +789,8 @@ class SyncHub:
         """
         RewardWalletService.rebuild_wallet_snapshot_in_txn(conn, user_id, _now)
 
-    def _prepare_exercise_record(self, conn: sqlite3.Connection, table: str, record: dict, user_id: int) -> dict:
+    def _prepare_exercise_record(self, conn: sqlite3.Connection, table: str, record: dict, user_id: int,
+                                 client_recorded_at: str | None = None) -> dict:
         if table == "exercise_diet_checkins":
             target_date = str(record.get("date") or _cst_today())[:10]
             plan_version, rule_key = str(record.get("plan_version") or "v4"), str(record.get("rule_key") or "")
@@ -802,26 +803,32 @@ class SyncHub:
                     raise ValueError("diet_checkin_rest_day")
             cutoff = datetime.strptime(target_date, "%Y-%m-%d") + timedelta(days=1)
             meal_windows = {"breakfast_on_time": ((0, 0), (8, 30)), "lunch_on_time": ((12, 0), (13, 31)), "dinner_on_time": ((18, 0), (19, 1))}
-            policy = conn.execute("SELECT effective_date FROM server_exercise_policy_metadata WHERE policy_key='v5_meal_timing'").fetchone() if plan_version == "v4" and rule_key in meal_windows else None
+            policy = conn.execute("SELECT effective_date FROM server_exercise_policy_metadata WHERE policy_key='v5_meal_timing'").fetchone() if plan_version in {"v4", "v5"} and rule_key in meal_windows else None
             new_timed_rule = bool(policy and target_date >= str(policy["effective_date"]))
+            late_evidence = False
             if new_timed_rule:
                 end = meal_windows[rule_key][1]
-                cutoff = cutoff.replace(hour=end[0], minute=end[1])
+                cutoff = datetime.strptime(target_date, "%Y-%m-%d").replace(hour=end[0], minute=end[1])
                 now = datetime.now(CST)
                 if record.get("status") == "completed":
                     occurred = datetime.fromisoformat(str(record.get("occurred_at") or now.isoformat()).replace("Z", "+00:00"))
                     occurred = occurred.replace(tzinfo=CST) if occurred.tzinfo is None else occurred.astimezone(CST)
+                    recorded_text = client_recorded_at
+                    recorded = datetime.fromisoformat(str(recorded_text).replace("Z", "+00:00")) if recorded_text else None
+                    recorded = recorded.replace(tzinfo=CST) if recorded and recorded.tzinfo is None else recorded.astimezone(CST) if recorded else None
+                    late_evidence = bool(recorded and occurred <= recorded < cutoff.replace(tzinfo=CST))
                     start = datetime.strptime(target_date, "%Y-%m-%d").replace(hour=meal_windows[rule_key][0][0], minute=meal_windows[rule_key][0][1], tzinfo=CST)
-                    if occurred.date().isoformat() != target_date or occurred < start or occurred >= cutoff.replace(tzinfo=CST) or now >= cutoff.replace(tzinfo=CST):
+                    if occurred.date().isoformat() != target_date or occurred < start or occurred >= cutoff.replace(tzinfo=CST) or (now >= cutoff.replace(tzinfo=CST) and not late_evidence):
                         raise ValueError("diet_deadline_passed")
                 if record.get("status") == "failed":
                     raise ValueError("diet_failure_is_server_owned")
             # Deadline is a server-owned Beijing-time fact, even for old clients.
             record["deadline_at"] = cutoff.strftime("%Y-%m-%d %H:%M:%S")
-            existing = conn.execute("""SELECT id,status FROM server_exercise_diet_checkins
+            existing = conn.execute("""SELECT id,status,failure_reason FROM server_exercise_diet_checkins
                 WHERE user_id=? AND date=? AND plan_version=? AND rule_key=?""",
                 (user_id, target_date, plan_version, rule_key)).fetchone()
-            if new_timed_rule and existing and existing["status"] == "failed" and record.get("status") != "failed":
+            if existing and existing["status"] == "failed" and record.get("status") == "completed" and not (
+                    existing["failure_reason"] in {"meal_window_passed", "not_completed_before_midnight"} and late_evidence):
                 raise ValueError("diet_failure_is_server_owned")
             record["id"] = existing["id"] if existing else f"diet:{user_id}:{target_date}:{plan_version}:{rule_key}"
             return record
@@ -902,6 +909,7 @@ class SyncHub:
                         conn.close()
                     return False, [{"table": table, "record_id": data.get("id"), "reason": exc.code}]
             server_table = server_table_for(table)
+            client_recorded_at = data.get("updated_at") if table == "exercise_diet_checkins" else None
             data_copy, rejected = self._filter_sync_record(conn, table, data, user_id)
             body_metric_locked = False
             if table == "exercise_daily_logs" and (
@@ -934,7 +942,7 @@ class SyncHub:
                     raise ValueError("diet_checkin_requires_v4_or_v5")
                 if str(data_copy.get("status") or "pending") not in {"pending", "completed", "failed"}:
                     raise ValueError("invalid_diet_status")
-            data_copy = self._prepare_exercise_record(conn, table, data_copy, user_id)
+            data_copy = self._prepare_exercise_record(conn, table, data_copy, user_id, client_recorded_at)
             if table == "exercise_daily_logs" and body_metric_locked:
                 # 09:00 后允许补录原始身体数据，但绝不能覆盖守时评分或其他每日事实。
                 allowed = {"id", "user_id", "date", "plan_version", "exercise_type", "weight", "body_fat_rate", "created_at", "updated_at"}
@@ -1090,7 +1098,7 @@ class SyncHub:
                     difficulty=data_copy.get("difficulty"),
                 )
 
-            self._settle_synced_behavior_in_txn(conn, table, data_copy, user_id)
+            self._settle_synced_behavior_in_txn(conn, table, data_copy, user_id, client_recorded_at)
             if table == "huawei_sleep_data" and ("morning_diary" in data_copy or "evening_diary" in data_copy):
                 self._sleep_rewards.reconcile_diary_completion_in_txn(conn, user_id, data_copy["date"])
             if table == "study_sessions" and pk_value is not None:
@@ -1117,7 +1125,8 @@ class SyncHub:
             logger.error(f"upsert server_{table} (user={user_id}): {e}")
             return False, [{"table": table, "record_id": data.get("id") or data.get("ext_id") or data.get("key"), "reason": str(e)}]
 
-    def _settle_synced_behavior_in_txn(self, conn: sqlite3.Connection, table: str, record: dict, user_id: int):
+    def _settle_synced_behavior_in_txn(self, conn: sqlite3.Connection, table: str, record: dict, user_id: int,
+                                       client_recorded_at: str | None = None):
         if table == "exercise_daily_logs":
             if str(record.get("plan_version") or "") == "v4" and str(record.get("date") or _cst_today())[:10] == _cst_today():
                 try:
@@ -1134,7 +1143,7 @@ class SyncHub:
                 from server import _beijing_now, _exercise_authoritative
             _exercise_authoritative(str(record.get("plan_version") or "v4")).set_diet(conn, user_id, str(record.get("date") or _cst_today())[:10],
                 str(record.get("rule_key") or ""), str(record.get("status") or "pending"),
-                record.get("occurred_at"), _beijing_now())
+                record.get("occurred_at"), _beijing_now(), recorded_at=client_recorded_at)
             return
         if table == "exercise_checkins":
             # 客户端通常通过通用 outbox 推送打卡，而不是调用 exercise/checkin API；
@@ -1754,7 +1763,9 @@ class SyncHub:
                     local = self.get_record(table, canonical_id, user_id)
                 baseline = op.get("base_version")
                 pending_can_complete = (table == "exercise_diet_checkins" and local
-                    and local.get("status") == "pending" and record.get("status") in {"completed", "failed"})
+                    and (local.get("status") == "pending" and record.get("status") in {"completed", "failed"}
+                         or local.get("status") == "failed" and local.get("failure_reason") == "meal_window_passed"
+                         and record.get("status") == "completed" and record.get("occurred_at") and record.get("updated_at")))
                 blank_body_can_fill = (table == "exercise_daily_logs" and local and
                     any(record.get(field) is not None and local.get(field) is None
                         for field in ("weight", "body_fat_rate")) and
