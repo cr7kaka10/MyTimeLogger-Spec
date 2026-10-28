@@ -172,6 +172,19 @@ def test_v5_meal_deadline_only_auto_fails_pending(tmp_db_path):
         assert len(penalties) == 1 and penalties[0].endswith(":dinner_on_time")
 
 
+def test_v5_lunch_penalty_names_rule_and_cutoff(tmp_db_path):
+    store, _ = _setup(tmp_db_path)
+    service = ExerciseV4Service(store.reward_wallet_service, lambda *args: None, "v5")
+    with store._transact() as conn:
+        conn.execute("INSERT OR IGNORE INTO server_exercise_policy_metadata VALUES('v5_meal_timing','2026-10-26','2026-10-25')")
+        now = datetime(2026, 10, 28, 13, 31, 1, tzinfo=BJ)
+        service.close_diet(conn, 1, "2026-10-28", now)
+        row = conn.execute("SELECT amount,description,id FROM server_reward_ledger WHERE user_id=1 AND id LIKE '%:lunch_on_time'").fetchone()
+        assert row["amount"] == -20
+        assert row["id"].endswith(":lunch_on_time")
+        assert row["description"] == "午餐按时打卡逾期未完成（截止 2026-10-28 13:31，北京时间）"
+
+
 def test_v5_cardio_v3_revision_upgrades_v2_rows_idempotently(tmp_db_path):
     store, _ = _setup(tmp_db_path)
     seed = SampleDataInitializationService(tmp_db_path)

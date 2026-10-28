@@ -10,6 +10,12 @@ RULE_VERSION = "exercise-score-v4"
 DIET_RULES = ("no_snacks", "no_sugary_drinks", "no_refined_staples")
 V5_MEAL_RULES = ("breakfast_on_time", "lunch_on_time", "dinner_on_time")
 V5_RESTORED_QUALITY_RULES = ("no_sugary_drinks", "no_refined_staples", "no_snacks")
+DIET_RULE_NAMES = {
+    "breakfast_on_time": "早餐按时打卡", "lunch_on_time": "午餐按时打卡", "dinner_on_time": "晚餐按时打卡",
+    "no_snacks": "不吃零食", "no_sugary_drinks": "不喝含糖饮料", "no_refined_staples": "不吃精制主食",
+    "protein_at_lunch_and_dinner": "午晚餐摄入蛋白质", "vegetables_at_lunch_and_dinner": "午晚餐摄入蔬菜",
+    "controlled_staple_and_no_sugary_drink": "控制主食且不喝含糖饮料",
+}
 REST_DAY_DIET_EXEMPTION_FROM = "2026-10-26"
 V5_DIET_POINTS = {"breakfast_on_time": 11, "lunch_on_time": 11, "dinner_on_time": 11,
                   "protein_at_lunch_and_dinner": 6, "vegetables_at_lunch_and_dinner": 6,
@@ -39,6 +45,12 @@ def _diet_deadline(date: str, rule_key: str) -> datetime:
     day = datetime.strptime(date, "%Y-%m-%d").replace(tzinfo=TZ)
     times = {"breakfast_on_time": (8, 30), "lunch_on_time": (13, 31), "dinner_on_time": (19, 1)}
     return day.replace(hour=times[rule_key][0], minute=times[rule_key][1]) if rule_key in times else day + timedelta(days=1)
+
+
+def _diet_penalty_description(date: str, rule_key: str) -> str:
+    name = DIET_RULE_NAMES.get(rule_key, rule_key)
+    deadline = _diet_deadline(date, rule_key).strftime("%Y-%m-%d %H:%M")
+    return f"{name}逾期未完成（截止 {deadline}，北京时间）"
 
 
 def _now_text(now: datetime) -> str:
@@ -220,7 +232,7 @@ class ExerciseV4Service:
                 "SELECT 1 FROM server_reward_ledger WHERE user_id=? AND id=?", (user_id, source)).fetchone()
             if ledger_missing:
                 self.wallet.append_ledger_in_txn(conn, user_id, penalty, "exercise_diet_penalty", source,
-                    "饮食必做项逾期未完成", date, source, stamp)
+                    _diet_penalty_description(date, str(row["rule_key"])), date, source, stamp)
                 self._change(conn, user_id, "server_reward_ledger", source)
             if row_changed:
                 self._change(conn, user_id, "server_exercise_diet_checkins", row["id"])
