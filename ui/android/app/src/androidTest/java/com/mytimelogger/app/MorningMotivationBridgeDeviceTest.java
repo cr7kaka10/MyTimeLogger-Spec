@@ -63,4 +63,11 @@ public class MorningMotivationBridgeDeviceTest {
             assertFalse(new JSONObject(bridge.status()).optBoolean("enabled", true));
         } catch (Exception error) { throw new AssertionError(error); }
     }
+    @Test public void permissionDeniedDoesNotConsumeDailyNotification() {
+        try (DietReminderFixture fixture = new DietReminderFixture()) {
+            fixture.setup();
+            assertFalse(MorningMotivationNotifier.notifyAt(fixture.context, System.currentTimeMillis(), false));
+            assertNull(fixture.motivation.getString("last_notified", null));
+        }
+    }
 }
