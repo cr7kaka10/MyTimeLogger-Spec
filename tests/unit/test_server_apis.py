@@ -38,6 +38,22 @@ def _login_headers(client, username="sleep_user"):
     return {"Authorization": f"Bearer {resp.json()['token']}"}
 
 
+def test_morning_motivation_week_is_authenticated_and_account_scoped(client_with_db, monkeypatch):
+    client, _ = client_with_db
+    assert client.get("/api/morning-motivation/week").status_code == 401
+    first = _login_headers(client, "motivation_one")
+    second = _login_headers(client, "motivation_two")
+    monkeypatch.setattr(server_module, "_load_user_provider_config", lambda user_id, key: {"text_model": f"账号{user_id}"})
+    monkeypatch.setattr(server_module, "generate_week", lambda cfg: [f"{cfg['text_model']}今天先完成第{i}件小事，让行动开始。" for i in range(7)])
+    one = client.get("/api/morning-motivation/week", headers=first)
+    two = client.get("/api/morning-motivation/week", headers=second)
+    assert one.status_code == two.status_code == 200
+    assert one.json()["version"] == "morning-motivation-v1"
+    assert len(one.json()["items"]) == 7
+    assert one.json()["items"][0]["date"] == server_module._beijing_today()
+    assert one.json()["items"][0]["message"] != two.json()["items"][0]["message"]
+
+
 def _seed_ai_config(db_path, user_id=1):
     conn = sqlite3.connect(db_path)
     try:

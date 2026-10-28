@@ -72,6 +72,7 @@ current_dir = os.path.dirname(os.path.abspath(__file__))
 root_dir = os.path.dirname(current_dir)
 if root_dir not in sys.path:
     sys.path.insert(0, root_dir)
+from server.domain.morning_motivation import PROMPT_VERSION, generate_week
 
 
 def _source_revision() -> str:
@@ -4045,6 +4046,22 @@ def _exercise_history(conn: sqlite3.Connection, user_id: int, plan_version: str,
             "completion_rate": round(completed_items / total_items * 100) if total_items else 0,
         })
     return history
+
+
+@app.get("/api/morning-motivation/week")
+def get_morning_motivation_week(user: dict = Depends(get_current_user_optional)):
+    cfg = _load_user_provider_config(int(user["id"]), "ai_model_config")
+    try:
+        messages = generate_week(cfg)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    today = datetime.now(timezone(timedelta(hours=8))).date()
+    return {"version": PROMPT_VERSION, "items": [
+        {"date": (today + timedelta(days=index)).isoformat(), "message": message}
+        for index, message in enumerate(messages)
+    ]}
 
 
 @app.get("/api/exercise/state")
