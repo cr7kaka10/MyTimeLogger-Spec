@@ -7,6 +7,8 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 import org.junit.Test;
 import org.junit.runner.RunWith;
+import android.Manifest;
+import androidx.test.platform.app.InstrumentationRegistry;
 
 @RunWith(AndroidJUnit4.class)
 public class MorningMotivationBridgeDeviceTest {
@@ -29,5 +31,21 @@ public class MorningMotivationBridgeDeviceTest {
             bridge.clear();
             assertFalse(fixture.context.getSharedPreferences("morning_motivation_v1", 0).getAll().containsKey("diet-test:" + today));
         }
+    }
+    @Test public void trialDoesNotConsumeDailyNotificationAndDisableStopsIt() {
+        try (DietReminderFixture fixture = new DietReminderFixture()) {
+            fixture.setup();
+            if (!fixture.hadPermission) InstrumentationRegistry.getInstrumentation().getUiAutomation()
+                .grantRuntimePermission(fixture.context.getPackageName(), Manifest.permission.POST_NOTIFICATIONS);
+            MorningMotivationBridge bridge = new MorningMotivationBridge(fixture.context);
+            assertTrue(bridge.trial());
+            assertNull(fixture.motivation.getString("last_notified", null));
+            long now = System.currentTimeMillis();
+            assertTrue(MorningMotivationNotifier.notifyAt(fixture.context, now, false));
+            assertFalse(MorningMotivationNotifier.notifyAt(fixture.context, now, false));
+            bridge.setEnabled(false);
+            assertFalse(MorningMotivationNotifier.notifyAt(fixture.context, now + 86_400_000, false));
+            assertFalse(new JSONObject(bridge.status()).optBoolean("enabled", true));
+        } catch (Exception error) { throw new AssertionError(error); }
     }
 }

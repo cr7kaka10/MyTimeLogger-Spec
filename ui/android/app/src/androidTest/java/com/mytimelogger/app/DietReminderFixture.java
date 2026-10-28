@@ -16,10 +16,13 @@ final class DietReminderFixture implements AutoCloseable {
     final SharedPreferences runtime = context.getSharedPreferences("mtl_widget_runtime_v1", Context.MODE_PRIVATE);
     final SharedPreferences sent = context.getSharedPreferences("diet_reminder_v1", Context.MODE_PRIVATE);
     final SharedPreferences mealSent = context.getSharedPreferences("meal_deadline_v1", Context.MODE_PRIVATE);
+    final SharedPreferences motivation = context.getSharedPreferences("morning_motivation_v1", Context.MODE_PRIVATE);
     final String oldDb = storage.getString(WidgetTimerPreferences.ACTIVE_DB_KEY, null);
     final String oldRuntime = runtime.getString("runtime", null);
     final String oldSent = sent.getString("last_notified", null);
     final String oldMealSent = mealSent.getString("last_1", null);
+    final String oldMotivationLast = motivation.getString("last_notified", null);
+    final boolean oldMotivationEnabled = motivation.getBoolean("enabled", true);
     final boolean hadPermission = context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED;
     final SqliteConnection db = new SqliteConnection(context, name);
 
@@ -41,14 +44,20 @@ final class DietReminderFixture implements AutoCloseable {
         storage.edit().putString(WidgetTimerPreferences.ACTIVE_DB_KEY, name).commit();
         sent.edit().remove("last_notified").commit();
         mealSent.edit().remove("last_1").commit();
+        motivation.edit().remove("last_notified").putBoolean("enabled", true).commit();
     }
     @Override public void close() {
         db.close(); context.deleteDatabase(name);
         restore(storage, WidgetTimerPreferences.ACTIVE_DB_KEY, oldDb);
         restore(runtime, "runtime", oldRuntime); restore(sent, "last_notified", oldSent);
         restore(mealSent, "last_1", oldMealSent);
+        restore(motivation, "last_notified", oldMotivationLast);
+        motivation.edit().putBoolean("enabled", oldMotivationEnabled).commit();
+        MorningMotivationStore.clear(context, "diet-test");
         context.getSystemService(NotificationManager.class).cancel(852);
         context.getSystemService(NotificationManager.class).cancel(861);
+        context.getSystemService(NotificationManager.class).cancel(870);
+        context.getSystemService(NotificationManager.class).cancel(871);
         if (!hadPermission) InstrumentationRegistry.getInstrumentation().getUiAutomation().revokeRuntimePermission(context.getPackageName(), Manifest.permission.POST_NOTIFICATIONS);
     }
     private static void restore(SharedPreferences prefs, String key, String value) {
