@@ -21,6 +21,7 @@ export function NotificationSettings() {
     setSettings(await runtime.preferences.updateSettings({ [key]: checked }))
   }
   const permissionText = permission === 'granted' ? '系统权限已允许' : permission === 'denied' ? '系统权限已拒绝，请到系统设置开启' : '首次通知时会请求系统权限'
+  const resultText = morning?.lastResult === 'trial_delivered' ? '试发成功' : morning?.lastResult === 'delivered' ? '已投递' : morning?.lastResult === 'permission_denied' ? '通知权限未允许' : morning?.lastResult || '未投递'
   return <section className="overflow-hidden rounded-xl border border-gray-100 bg-white">
     <div className="flex items-center justify-between border-b border-gray-50 px-4 py-2">
       <span className="text-xs font-semibold uppercase tracking-wider text-gray-500">Android 通知</span>
@@ -34,8 +35,8 @@ export function NotificationSettings() {
       <label className="flex items-center justify-between font-medium">每天 07:30 激励提醒
         <input type="checkbox" checked={morning.enabled} onChange={event => { morningBridge()?.setEnabled(event.target.checked); refreshMorning() }} className="h-5 w-5 accent-blue-600" />
       </label>
-      <p className="mt-2 text-xs">通知权限：{morning.permission ? '已开启' : '未开启'} · 精确闹钟：{morning.exactAlarm ? '已允许' : '未允许，可能延迟'}</p>
-      <p className="mt-1 text-xs">下次排程：{morning.enabled ? `北京时间 ${morning.next}` : '已关闭'} · 最近投递：{morning.lastResult}{morning.lastAt ? `（${morning.lastAt}）` : ''}</p>
+      <p className="mt-2 text-xs">通知权限：{morning.permission ? '已开启' : '未开启'} · 精确闹钟：{morning.exactAlarm ? '已允许' : '未允许，请到系统设置开启（否则可能延迟）'}</p>
+      <p className="mt-1 text-xs">下次排程：{morning.enabled ? `北京时间 ${morning.next}` : '已关闭'} · 最近投递：{resultText}{morning.lastAt ? `（${morning.lastAt}）` : ''}</p>
       <button type="button" className="mt-2 rounded-lg border border-blue-200 px-3 py-1 text-blue-600" onClick={() => { morningBridge()?.trial(); refreshMorning() }}>试发激励通知</button>
     </div>}
   </section>

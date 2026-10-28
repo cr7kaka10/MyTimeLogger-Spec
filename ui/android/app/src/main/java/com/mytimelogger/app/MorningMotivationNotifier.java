@@ -28,7 +28,7 @@ final class MorningMotivationNotifier {
             .setContentText(message).setContentIntent(open).setAutoCancel(true).build());
         String at = java.time.Instant.ofEpochMilli(now).atZone(java.time.ZoneId.of("Asia/Shanghai"))
             .format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"));
-        var edit = prefs.edit().putString("last_result", "delivered").putString("last_at", at);
+        var edit = prefs.edit().putString("last_result", trial ? "trial_delivered" : "delivered").putString("last_at", at);
         if (!trial) edit.putString("last_notified", account + ":" + date);
         edit.apply();
         return true;
