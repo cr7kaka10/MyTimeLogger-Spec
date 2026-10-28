@@ -1092,16 +1092,17 @@ def test_ticktick_habit_makeup_pull_is_ledger_idempotent(tmp_path):
 def test_store_buy_reward_uses_transactional_settlement(tmp_db_path):
     store = ServerSleepStore(db_path=tmp_db_path)
     user_id = _create_user(store, "buy_reward")
+    today = server_module._beijing_today()
     with store._transact() as conn:
         conn.execute(
             """
             INSERT INTO server_rewards (id, user_id, title, icon, price, is_active, created_at, updated_at)
-            VALUES ('reward-1', ?, '看电影', '', 3.0, 1, '2026-06-12 10:00:00', '2026-06-12 10:00:00')
+            VALUES ('reward-1', ?, '看电影', '', 3.0, 1, ?, ?)
             """,
-            (user_id,),
+            (user_id, f"{today} 10:00:00", f"{today} 10:00:00"),
         )
         store.reward_settlement_service.settle_task_success_in_txn(
-            conn, user_id, "task-1", "准备金币", 5.0, "2026-06-12"
+            conn, user_id, "task-1", "准备金币", 5.0, today
         )
 
     assert store.buy_reward(user_id, "reward-1") == (True, "购买成功")
@@ -1116,4 +1117,4 @@ def test_store_buy_reward_uses_transactional_settlement(tmp_db_path):
     conn.close()
 
     assert row["amount"] == -3.0
-    assert row["description"] == "√ 兑换 看电影"
+    assert "看电影" in row["description"] and "3 金币" in row["description"]

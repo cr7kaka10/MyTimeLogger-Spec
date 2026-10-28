@@ -567,16 +567,50 @@ def _settle_completed_goal_periods() -> int:
     return changed
 
 
+def _settle_zero_exercise_checkin_penalty_in_txn(conn, user_id: int, target_date: str) -> bool:
+    """按当天最终训练打卡事实结算一次零运动处罚。"""
+    day = datetime.strptime(target_date, "%Y-%m-%d").date()
+    if day.weekday() == 0:
+        return False
+    completed = conn.execute(
+        """SELECT 1 FROM server_exercise_checkins WHERE user_id=? AND date=?
+           AND status=1 AND item_key GLOB ? LIMIT 1""",
+        (user_id, target_date, f"ex-{target_date}-[gr]-*"),
+    ).fetchone()
+    ledger_id = f"exercise-zero-checkin:{user_id}:{target_date}"
+    if completed or conn.execute(
+        "SELECT 1 FROM server_reward_ledger WHERE user_id=? AND id=?", (user_id, ledger_id)
+    ).fetchone():
+        return False
+    source_id = f"exercise-zero-checkin:{target_date}"
+    next_day = (day + timedelta(days=1)).isoformat()
+    store.reward_wallet_service.append_ledger_in_txn(
+        conn, user_id, -200, "exercise_zero_checkin_penalty", source_id,
+        f"运动漏打卡 · {target_date} · 当天无任何运动训练打卡 · -200🪙",
+        target_date, ledger_id, f"{next_day} 00:00:00",
+    )
+    return True
+
+
 def _settle_completed_exercise_days() -> int:
     """北京时间跨日后锁定昨天及更早的运动评分，并按总分写入一次账本。"""
     today = _beijing_today()
     changed_users: set[int] = set()
     with store._transact() as conn:
+        policy_start = (_beijing_now().date() + timedelta(days=1)).isoformat()
+        conn.execute("INSERT OR IGNORE INTO server_exercise_policy_metadata VALUES('zero_checkin_penalty_v1',?,?)",
+                     (policy_start, _exercise_now_str()))
+        policy_start = conn.execute("SELECT effective_date FROM server_exercise_policy_metadata WHERE policy_key='zero_checkin_penalty_v1'").fetchone()["effective_date"]
         changed_users.update(_backfill_exercise_score_snapshots_in_txn(conn, today))
         yesterday = datetime.strptime(today, "%Y-%m-%d").date() - timedelta(days=1)
         for user_row in conn.execute("SELECT id FROM users").fetchall():
             user_id = int(user_row["id"])
             start = datetime.strptime(get_user_statistics_start_date(conn, user_id).date, "%Y-%m-%d").date()
+            penalty_cursor = max(start, datetime.strptime(policy_start, "%Y-%m-%d").date())
+            while penalty_cursor <= yesterday:
+                if _settle_zero_exercise_checkin_penalty_in_txn(conn, user_id, penalty_cursor.isoformat()):
+                    changed_users.add(user_id)
+                penalty_cursor += timedelta(days=1)
             active_plan = _exercise_active_plan(conn, user_id)
             if active_plan in {"v4", "v5"}:
                 service = _exercise_authoritative(active_plan)
@@ -5180,9 +5214,9 @@ def get_reward_ledger(limit: int = 30, user: dict = Depends(get_current_user_opt
 @app.post("/api/rewards/buy/{reward_id}")
 async def buy_reward(reward_id: str, request: Request, user: dict = Depends(get_current_user_optional)):
     body = await request.json() if request.headers.get("content-length") not in (None, "0") else {}
-    success, msg = store.buy_reward(user["id"], reward_id, body.get("amount"), body.get("note"))
+    success, msg = store.buy_reward(user["id"], reward_id, body.get("amount"), body.get("note"), body.get("request_id"))
     if not success:
-        raise HTTPException(status_code=409 if msg == "商品库存已用完" else 400, detail=msg)
+        raise HTTPException(status_code=409 if msg == "商品库存已用完" or "冲突" in msg else 400, detail=msg)
     sync_hub._notify_clients(["reward_ledger", "user_wallets"], user["id"])
     return {"status": "ok", "msg": msg}
 

@@ -38,6 +38,23 @@ def _login_headers(client, username="sleep_user"):
     return {"Authorization": f"Bearer {resp.json()['token']}"}
 
 
+def test_compensation_purchase_api_requires_login_and_reuses_request(client_with_db):
+    client, store = client_with_db
+    assert client.post("/api/rewards/buy/unknown", json={}).status_code == 401
+    headers = _login_headers(client, "compensation-api-isolated")
+    reward = next(item for item in client.get("/api/rewards", headers=headers).json()["rewards"]
+                  if item["redemption_mode"] == "compensation_credit")
+    body = {"amount": 200, "note": "面试当天无法运动", "request_id": "00000000-0000-4000-8000-000000000001"}
+    endpoint = f"/api/rewards/buy/{reward['id']}"
+    assert client.post(endpoint, json=body, headers=headers).status_code == 200
+    assert client.post(endpoint, json=body, headers=headers).status_code == 200
+    assert client.post(endpoint, json={**body, "amount": 201}, headers=headers).status_code == 409
+    with store._connect() as conn:
+        rows = conn.execute("SELECT amount,description FROM server_reward_ledger WHERE source_type='store_compensation_credit'").fetchall()
+        assert len(rows) == 1 and rows[0]["amount"] == 200
+        assert "面试当天无法运动" in rows[0]["description"]
+
+
 def test_morning_motivation_week_is_authenticated_and_account_scoped(client_with_db, monkeypatch):
     client, _ = client_with_db
     assert client.get("/api/morning-motivation/week").status_code == 401

@@ -3,6 +3,7 @@
 
 import json
 import logging
+import math
 import os
 import sqlite3
 import uuid
@@ -46,6 +47,7 @@ except (ImportError, ValueError):
 
 DONE_STATUSES = {"done"}
 UNSET = object()
+COMPENSATION_DESCRIPTION = "只能用于补偿因面试等找工作直接相关、外部不可行力引起的当天金币损失，其他情况禁用！比如当天去面试，无法达标运动健身、睡眠指标无法完成口金币，可以通过此商品补偿金币损失"
 
 
 import hashlib
@@ -1619,6 +1621,7 @@ class ServerSleepStore:
     def list_rewards(self, user_id):
         self.auto_unlock_rewards(user_id)
         self._ensure_custom_spend_templates(user_id)
+        self._ensure_compensation_template(user_id)
         conn = self._connect()
         try:
             rows = conn.execute("""SELECT r.*,(SELECT COUNT(*) FROM server_reward_source_bindings b
@@ -1648,6 +1651,20 @@ class ServerSleepStore:
                     VALUES (?, ?, ?, ?, 0, 'custom_spend', '每次兑换时填写实际消费金额', 'unlimited', 1, 1, ?, ?)""",
                     (reward_id, user_id, title, icon, stamp, stamp),
                 )
+                self._record_server_change(conn, user_id, "server_rewards", reward_id, "upsert", {"id": reward_id})
+
+    def _ensure_compensation_template(self, user_id):
+        reward_id = f"compensation-credit:{user_id}"
+        with self._transact() as conn:
+            stamp = now_str()
+            inserted = conn.execute(
+                """INSERT OR IGNORE INTO server_rewards
+                (id,user_id,title,icon,price,redemption_mode,description,inventory_mode,
+                 unlock_required_count,is_active,created_at,updated_at)
+                VALUES (?,?, '补偿金币','🪙',0,'compensation_credit',?,'unlimited',1,1,?,?)""",
+                (reward_id, user_id, COMPENSATION_DESCRIPTION, stamp, stamp),
+            )
+            if inserted.rowcount:
                 self._record_server_change(conn, user_id, "server_rewards", reward_id, "upsert", {"id": reward_id})
 
     def _resolve_unlock_source(self, conn, user_id, unlock_source_type=None, unlock_source_id=None, unlock_task_id=None, allow_legacy_exercise=False):
@@ -1851,6 +1868,8 @@ class ServerSleepStore:
             row = conn.execute("SELECT * FROM server_rewards WHERE id=? AND user_id=?", (reward_id, user_id)).fetchone()
             if not row:
                 return False
+            if row["redemption_mode"] == "compensation_credit":
+                raise ValueError("固定补偿商品不能编辑或删除")
 
             fields = []
             params = []
@@ -2227,7 +2246,31 @@ class ServerSleepStore:
                         conn, user_id, float(reward["coins"]), "learning_objective_complete", source_id,
                         f"学习目标完成: {objective['title']}", str(occurred_at)[:10], source_id, str(occurred_at),
                     )
-    def buy_reward(self, user_id, reward_id, amount=None, note=None):
+    def _credit_compensation_in_txn(self, conn, user_id, reward, amount, reason, request_key):
+        ledger_id = f"compensation:{user_id}:{request_key}"
+        description = f"补偿金币 · +{amount:g}🪙 · 原因：{reason}"
+        existing = conn.execute(
+            "SELECT amount,description FROM server_reward_ledger WHERE id=? AND user_id=?",
+            (ledger_id, user_id),
+        ).fetchone()
+        if existing:
+            if float(existing["amount"]) != amount or existing["description"] != description:
+                return False, "补偿请求编号与已入账内容冲突"
+            return True, "补偿成功"
+        occurred_at = now_str()
+        source_id = f"{reward['id']}:{request_key}"
+        self.reward_wallet_service.append_ledger_in_txn(
+            conn, user_id, amount, "store_compensation_credit", source_id,
+            description, occurred_at[:10], ledger_id, occurred_at,
+        )
+        self.reward_wallet_service.record_action_event_in_txn(
+            conn, user_id, f"action:{ledger_id}", "compensation_credit", amount,
+            occurred_at, reward["id"], {"ledger_id": ledger_id, "note": reason,
+                "source_type": "store_compensation_credit", "source_id": source_id},
+        )
+        return True, "补偿成功"
+
+    def buy_reward(self, user_id, reward_id, amount=None, note=None, request_id=None):
         # 调用链路：POST /api/rewards/buy/{id} -> store 门面 -> RewardWalletService。
         with self._transact() as conn:
             reward = conn.execute(
@@ -2237,6 +2280,21 @@ class ServerSleepStore:
             if not reward:
                 return False, "未找到该商品"
             mode = reward["redemption_mode"] or "coins"
+            if mode == "compensation_credit":
+                try:
+                    value = float(amount)
+                except (TypeError, ValueError, OverflowError):
+                    return False, "请输入补偿金币金额"
+                if isinstance(amount, bool) or not math.isfinite(value) or value <= 0 or round(value, 2) != value:
+                    return False, "补偿金额必须是至多两位小数的正数"
+                reason = str(note or "").strip()
+                if not 1 <= len(reason) <= 120:
+                    return False, "请填写1至120字的具体补偿原因"
+                try:
+                    request_key = uuid.UUID(str(request_id)).hex
+                except (TypeError, ValueError, AttributeError):
+                    return False, "补偿请求编号无效"
+                return self._credit_compensation_in_txn(conn, user_id, reward, value, reason, request_key)
             if mode == "pending_binding":
                 return False, "该商品暂未绑定任务，暂不能兑换"
             if mode in {"task", "goal"}:
