@@ -788,6 +788,14 @@ describe('Database', () => {
     expect((isolated as any)._get('SELECT payload_json FROM sync_outbox WHERE id=?', [first.id]).payload_json).toContain('新内容')
   })
 
+  it('普通同步不把第三方清单队列计作待处理', () => {
+    const isolated = createIsolatedDb()
+    isolated.createOutboxOperation('tasks', 'provider', 'upsert', { id: 'provider', source: 'ticktick' })
+    isolated.createOutboxOperation('tasks', 'local', 'upsert', { id: 'local', source: 'local' })
+    expect(isolated.getPendingOutbox(10, 'core').filter(item => item.table_name === 'tasks').map(item => item.record_id)).toEqual(['local'])
+    expect(isolated.getPendingOutbox(10, 'checklist').filter(item => item.table_name === 'tasks')).toHaveLength(2)
+  })
+
   it('aTimeLogger 同步开关默认关闭', () => {
     expect(db.getConfig('atimelogger_enabled')).toBe('false')
   })

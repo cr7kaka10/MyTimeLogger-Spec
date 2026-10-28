@@ -309,7 +309,7 @@ export class SyncWorker {
     if (this._pausedForReset) return { ok: true, merged: 0, pending: 0 }
     if (!this._identityReady()) return { ok: false, merged: 0, pending: 0, error: 'account_identity_mismatch' }
 
-    const pendingOutboxCount = (this._db as any).getPendingOutbox?.(1)?.length ?? 0
+    const pendingOutboxCount = (this._db as any).getPendingOutbox?.(1, this._syncScope(context))?.length ?? 0
     if (pendingOutboxCount === 0) {
       console.info('[SyncWorker] pushOnly skipped: pending=0')
       return { ok: true, merged: 0, pending: 0 }
@@ -346,7 +346,7 @@ export class SyncWorker {
 
   private async _flushOutbox(context: SyncRunContext = {}): Promise<PushResult> {
     if (!this._api || !this._db) return { ok: false, error: 'sync_worker_not_ready' }
-    const entries = (this._db as any).getPendingOutbox?.(50) ?? []
+    const entries = (this._db as any).getPendingOutbox?.(50, this._syncScope(context)) ?? []
     if (entries.length === 0) return { ok: true }
 
     const ignoredIds: number[] = []
@@ -1040,7 +1040,7 @@ export class SyncWorker {
       }
     }
     const pulled = await this.pullAndMergeResult(refresh, context)
-    const pending = (this._db as any)?.getPendingOutbox?.(1)?.length ?? 0
+    const pending = (this._db as any)?.getPendingOutbox?.(1, this._syncScope(context))?.length ?? 0
     if (pending > 0) this._scheduleOutboxRetry()
     else if (pulled.ok) {
       this._retryCount = 0

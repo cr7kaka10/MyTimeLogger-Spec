@@ -479,10 +479,13 @@ export class Database {
     return this._get(`SELECT * FROM ${table} WHERE id = ?`, [id])
   }
 
-  getPendingOutbox(limit = 50): SyncOutboxEntry[] {
+  getPendingOutbox(limit = 50, scope?: 'core' | 'checklist'): SyncOutboxEntry[] {
+    const scopeFilter = scope === 'core'
+      ? `AND (table_name NOT IN ('tasks','habits') OR payload_json LIKE '%"source":"local"%')` : ''
     return this._all(
       `SELECT * FROM sync_outbox
        WHERE status IN ('pending', 'failed', 'exhausted')
+       ${scopeFilter}
        ORDER BY id ASC
        LIMIT ?`,
       [limit],
