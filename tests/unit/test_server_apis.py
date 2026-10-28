@@ -1333,6 +1333,30 @@ def test_body_metrics_recovery_and_server_wins(client_with_db, monkeypatch):
     assert outside["status"] == "rejected" and outside["reason"] == "body_metrics_recovery_window_expired"
 
 
+def test_isolated_phone_to_pc_body_metric_http_sync(client_with_db, monkeypatch):
+    client, store = client_with_db
+    headers = _login_headers(client, "isolated_body_http_user")
+    monkeypatch.setattr(sync_hub_module, "_cst_today", lambda: "2026-10-28")
+    phone_change = {"table": "exercise_daily_logs", "change_id": "phone-99-30.5", "operation": "upsert",
+        "base_version": "0", "payload": {"id": "phone-local-1", "date": "2026-10-28",
+            "plan_version": "v5", "exercise_type": "daily", "weight": 99, "body_fat_rate": 30.5}}
+    assert phone_change["payload"]["weight"] == 99  # phone-local outbox, not yet server-confirmed
+    confirmed = client.post("/api/sync/push", headers=headers, json={"operations": [phone_change], "sync_scope": "core"})
+    assert confirmed.status_code == 200
+    assert confirmed.json()["operation_results"][0]["status"] == "accepted"
+    with store._connect() as conn:
+        server_value = conn.execute("SELECT weight,body_fat_rate FROM server_exercise_daily_logs WHERE user_id=1 AND date='2026-10-28' AND plan_version='v5'").fetchone()
+    assert tuple(server_value) == (99, 30.5)
+    pc_pull = client.get("/api/sync/pull?since_version=0&sync_scope=core", headers=headers)
+    assert pc_pull.status_code == 200
+    pc_rows = pc_pull.json()["tables"]["exercise_daily_logs"]
+    assert any(row["weight"] == 99 and row["body_fat_rate"] == 30.5 for row in pc_rows)
+    conflict = client.post("/api/sync/push", headers=headers, json={"operations": [{**phone_change,
+        "change_id": "pc-stale-body", "payload": {**phone_change["payload"], "id": "pc-local-1", "weight": 98}}]})
+    assert conflict.json()["operation_results"][0]["status"] == "server_wins"
+    assert conflict.json()["operation_results"][0]["canonical_record"]["weight"] == 99
+
+
 def test_exercise_checkin_persists_completed_time(client_with_db):
     client, store = client_with_db
     headers = _login_headers(client, "exercise_checkin_time_user")

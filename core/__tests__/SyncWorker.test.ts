@@ -139,6 +139,22 @@ describe('SyncWorker version cursor', () => {
     expect(upsert).toHaveBeenCalledWith('exercise_daily_logs', expect.objectContaining({ id: 'local-1', weight: 99 }), expect.any(String), expect.any(String))
   })
 
+  it('updates a real local body row from server_wins and retains the original outbox payload', async () => {
+    const db = new Database(createBetterSqliteAdapter())
+    db.upsertExerciseDailyLog('2026-10-28', 44, '周三', 98, 0, 0, 'v5', undefined, 'gym', 29)
+    const original = db.getPendingOutbox(10).find(row => row.table_name === 'exercise_daily_logs')!
+    const worker = new SyncWorker()
+    worker.bind({ post: vi.fn(async () => ({ ok: true, data: { status: 'ok', server_time: '2026-10-28 14:00:00',
+      operation_results: [{ change_id: original.change_id, status: 'server_wins', reason: 'stale_base_version',
+        canonical_record: { id: 'server-body', date: '2026-10-28', plan_version: 'v5', exercise_type: 'daily',
+          weight: 99, body_fat_rate: 30.5 } }] } })) } as any, db)
+    expect(await (worker as any)._flushOutbox()).toMatchObject({ ok: true })
+    expect(db.getExerciseDailyLog('2026-10-28', 'v5')).toMatchObject({ weight: 99, body_fat_rate: 30.5 })
+    expect(db.getPendingOutbox(10).some(row => row.id === original.id)).toBe(false)
+    expect(db.allRaw('SELECT status,payload_json FROM sync_outbox WHERE id=?', [original.id])[0]).toMatchObject({ status: 'resolved' })
+    expect(db.allRaw('SELECT payload_json FROM sync_outbox WHERE id=?', [original.id])[0].payload_json).toContain('"weight":98')
+  })
+
   it('backs off automatic retries without an unbounded immediate loop', async () => {
     vi.useFakeTimers()
     try {
