@@ -34,10 +34,9 @@ final class MorningMotivationStore {
     }
     static String fallback(String date) { return FALLBACK[Math.floorMod(date.hashCode(), FALLBACK.length)]; }
     static void clear(Context context, String account) {
-        if (account == null) return;
         SharedPreferences prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
         SharedPreferences.Editor edit = prefs.edit();
-        for (Map.Entry<String, ?> entry : prefs.getAll().entrySet()) if (entry.getKey().startsWith(account + ":")) edit.remove(entry.getKey());
+        for (Map.Entry<String, ?> entry : prefs.getAll().entrySet()) if (account == null ? entry.getKey().contains(":") : entry.getKey().startsWith(account + ":")) edit.remove(entry.getKey());
         edit.apply();
     }
     private MorningMotivationStore() {}

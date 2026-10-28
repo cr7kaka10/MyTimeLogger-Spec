@@ -37,6 +37,7 @@ public class MainActivity extends BridgeActivity {
         bridge.getWebView().addJavascriptInterface(dailyWidgetBridge, DailyWidgetBridge.JAVASCRIPT_NAME);
         sleepAutomationBridge = new SleepAutomationBridge(this);
         bridge.getWebView().addJavascriptInterface(sleepAutomationBridge, SleepAutomationBridge.JAVASCRIPT_NAME);
+        bridge.getWebView().addJavascriptInterface(new MorningMotivationBridge(this), MorningMotivationBridge.JAVASCRIPT_NAME);
         dispatchWidgetRoute(getIntent());
     }
 
@@ -74,6 +75,7 @@ public class MainActivity extends BridgeActivity {
         if (bridge != null) bridge.getWebView().removeJavascriptInterface(WidgetTimerBridge.JAVASCRIPT_NAME);
         if (bridge != null) bridge.getWebView().removeJavascriptInterface(DailyWidgetBridge.JAVASCRIPT_NAME);
         if (bridge != null) bridge.getWebView().removeJavascriptInterface(SleepAutomationBridge.JAVASCRIPT_NAME);
+        if (bridge != null) bridge.getWebView().removeJavascriptInterface(MorningMotivationBridge.JAVASCRIPT_NAME);
         if (widgetTimerBridge != null) widgetTimerBridge.close();
         if (dailyWidgetBridge != null) dailyWidgetBridge.close();
         if (sqliteBridge != null) sqliteBridge.close();
