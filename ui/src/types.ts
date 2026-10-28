@@ -74,7 +74,7 @@ export interface Reward {
   title: string
   icon: string
   price: number
-  redemption_mode?: 'coins' | 'task' | 'goal' | 'pending_binding' | 'custom_spend'
+  redemption_mode?: 'coins' | 'task' | 'goal' | 'pending_binding' | 'custom_spend' | 'compensation_credit'
   description: string
   is_active: number
   unlock_task_id?: string | null

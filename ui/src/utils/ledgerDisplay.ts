@@ -10,12 +10,14 @@ export const LEDGER_SOURCE_CATALOG: Record<string, LedgerSourcePresentation> = {
   learning_checkin: { name: '学习打卡', badge: '学习' }, learning_objective_complete: { name: '学习目标完成', badge: '学习' }, learning: { name: '学习奖励', badge: '学习' },
   exercise_checkin: { name: '运动打卡', badge: '运动' }, exercise_score: { name: '运动日结', badge: '运动' },
   exercise_completion_reward: { name: '运动全完成奖励', badge: '运动' }, body_metric_deadline_penalty: { name: '体重体脂逾期处罚', badge: '运动', isFail: true },
+  exercise_zero_checkin_penalty: { name: '零运动打卡处罚', badge: '运动', isFail: true },
   exercise_diet_penalty: { name: '饮食约束逾期处罚', badge: '饮食', isFail: true },
   sleep_settlement_reward: { name: '睡眠评分结果', badge: '睡眠' }, sleep_cycle_penalty: { name: '睡眠周期不足处罚', badge: '睡眠', isFail: true },
   sleep_deep_penalty: { name: '深睡不足处罚', badge: '睡眠', isFail: true }, sleep_no_sleep_penalty: { name: '无睡眠严重处罚', badge: '睡眠', isFail: true },
   sleep_completion_reward: { name: '睡眠全完成奖励', badge: '睡眠' }, sleep_bedtime_adjustment: { name: '入睡时间奖惩', badge: '睡眠' },
   sleep_diary_completion_reward: { name: '睡眠日记完成奖励', badge: '睡眠' }, sleep_morning_diary_reward: { name: '晨间日记奖励', badge: '睡眠' }, sleep_evening_diary_reward: { name: '晚间日记奖励', badge: '睡眠' },
   reward_buy: { name: '兑换奖励', badge: '兑换' }, store_custom_spend: { name: '自定义消费', badge: '兑换', isFail: true },
+  store_compensation_credit: { name: '补偿金币', badge: '补偿' },
   manual_adjustment: { name: '人工调整', badge: '系统流水' }, backpack_use: { name: '背包使用', badge: '兑换' }, backpack_discard: { name: '背包丢弃', badge: '兑换', isFail: true },
   external_claim: { name: '外部奖励', badge: '系统流水' },
 }
@@ -54,6 +56,8 @@ export const parseLedgerDisplay = (item: Pick<LedgerEntry, 'description' | 'sour
   const isGoalUnlock = item.source_type === 'reward_buy' && String(item.source_id || '').includes(':goal:goal_')
   if (isGoalUnlock) rest = rest.replace(/^目标自动解锁兑换:\s*/, '')
   const isCanonical = isGoalUnlock || ['goal_reward', 'goal_penalty', 'exercise_checkin', 'exercise_score'].includes(item.source_type)
+  const specialTitle = item.source_type === 'store_compensation_credit' ? '补偿金币'
+    : item.source_type === 'exercise_zero_checkin_penalty' ? '运动漏打卡' : undefined
   const rawName = dietDescription || item.display_title || (item.source_type === 'exercise_checkin' ? '运动打卡' : rest || presentation.name)
   const name = isCanonical ? rawName.replace(/\s+(?:\d{4}-)?\d{2}-\d{2}$/, '') : rawName
   const date = (item.target_date || '').slice(-5)
@@ -61,7 +65,7 @@ export const parseLedgerDisplay = (item: Pick<LedgerEntry, 'description' | 'sour
     isFail: marker ? marker !== '√' : Boolean(presentation.isFail) || item.amount < 0,
     label: isGoalUnlock ? '目标' : prefix || presentation.badge,
     sourceName: presentation.name,
-    title: isCanonical && date ? `${name}【${date}】` : name,
+    title: specialTitle ? `${specialTitle}${date ? `【${date}】` : ''}` : isCanonical && date ? `${name}【${date}】` : name,
     description: dietDescription || raw || presentation.name,
   }
 }

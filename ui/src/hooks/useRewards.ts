@@ -12,7 +12,7 @@ export interface UseRewardsReturn {
   rewards: Reward[]
   ledger: { id: number; amount: number; description: string; created_at: string }[]
   unclaimedRewards: any[]
-  buyReward: (id: string | number, amount?: number, note?: string) => Promise<void>
+  buyReward: (id: string | number, amount?: number, note?: string, requestId?: string) => Promise<void>
   addReward: (title: string, icon: string, price: number, description?: string, unlockTaskId?: string | null, unlockTaskTitle?: string | null, unlockSourceType?: string | null, unlockSourceId?: string | null, inventoryMode?: string, inventoryLimit?: number | null, unlockRequiredCount?: number, redemptionMode?: string, fulfillmentMode?: 'immediate' | 'fragment', fragmentTargetCount?: number) => Promise<any>
   updateReward: (id: string | number, title: string, icon: string, price: number, description?: string, unlockTaskId?: string | null, unlockTaskTitle?: string | null, unlockSourceType?: string | null, unlockSourceId?: string | null, inventoryMode?: string, inventoryLimit?: number | null, unlockRequiredCount?: number, redemptionMode?: string, fulfillmentMode?: 'immediate' | 'fragment', fragmentTargetCount?: number, convertFragmentToCount?: boolean) => Promise<any>
   deleteReward: (id: string | number) => Promise<void>
@@ -52,13 +52,13 @@ export const useRewards = (): UseRewardsReturn => {
     })
   }, [])
 
-  const buyReward = useCallback(async (id: string | number, amount?: number, note?: string) => {
+  const buyReward = useCallback(async (id: string | number, amount?: number, note?: string, requestId?: string) => {
     const db = await getDatabase()
     const runtime = requireActiveEnvironmentRuntimeConfig(db.getAllConfig(), 'rewards.buy')
     const resp = await fetch(`${runtime.serverUrl}/api/rewards/buy/${id}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${runtime.authToken}`, 'X-Auth-Token': runtime.authToken },
-      body: JSON.stringify(amount === undefined ? {} : { amount, note }),
+      body: JSON.stringify(amount === undefined ? {} : { amount, note, ...(requestId ? { request_id: requestId } : {}) }),
     })
     if (!resp.ok) {
       const body = await resp.json().catch(() => null)
