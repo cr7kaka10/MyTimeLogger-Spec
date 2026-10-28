@@ -9,6 +9,9 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 import android.Manifest;
 import androidx.test.platform.app.InstrumentationRegistry;
+import com.google.gson.JsonObject;
+import android.app.NotificationManager;
+import android.app.Notification;
 
 @RunWith(AndroidJUnit4.class)
 public class MorningMotivationBridgeDeviceTest {
@@ -24,6 +27,14 @@ public class MorningMotivationBridgeDeviceTest {
             String payload = new JSONObject().put("version", "morning-motivation-v1").put("items", items).toString();
             assertTrue(bridge.cacheWeek(payload));
             assertTrue(MorningMotivationStore.today(fixture.context, today).contains("第0件"));
+            JsonObject other = new JsonObject();
+            other.addProperty("serverUrl", "http://127.0.0.1:9"); other.addProperty("authToken", "other-token");
+            other.addProperty("deviceId", "other-device"); other.addProperty("verifiedUserId", "other-test"); other.addProperty("generation", 889);
+            assertTrue(new WidgetTimerRuntimeStore(fixture.context).configure(other.toString()));
+            assertFalse(MorningMotivationStore.today(fixture.context, today).contains("第0件"));
+            other.addProperty("authToken", "isolated-test"); other.addProperty("deviceId", "diet-test");
+            other.addProperty("verifiedUserId", "diet-test"); other.addProperty("generation", 888);
+            assertTrue(new WidgetTimerRuntimeStore(fixture.context).configure(other.toString()));
             items.getJSONObject(1).put("date", "2026-01-01");
             assertFalse(bridge.cacheWeek(new JSONObject().put("version", "morning-motivation-v1").put("items", items).toString()));
             fixture.runtime.edit().remove("runtime").commit();
@@ -40,6 +51,10 @@ public class MorningMotivationBridgeDeviceTest {
             MorningMotivationBridge bridge = new MorningMotivationBridge(fixture.context);
             assertTrue(bridge.trial());
             assertNull(fixture.motivation.getString("last_notified", null));
+            Notification notice = java.util.Arrays.stream(fixture.context.getSystemService(NotificationManager.class)
+                .getActiveNotifications()).filter(item -> item.getId() == 871).findFirst().orElseThrow().getNotification();
+            assertEquals(MorningMotivationStore.fallback(DailyWidgetStore.dayAt(System.currentTimeMillis())),
+                String.valueOf(notice.extras.getCharSequence(Notification.EXTRA_TEXT)));
             long now = System.currentTimeMillis();
             assertTrue(MorningMotivationNotifier.notifyAt(fixture.context, now, false));
             assertFalse(MorningMotivationNotifier.notifyAt(fixture.context, now, false));

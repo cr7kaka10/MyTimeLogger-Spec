@@ -38,8 +38,9 @@ public final class MorningMotivationBridge {
         } catch (Exception error) { return false; }
     }
     @JavascriptInterface public void clear() {
-        MorningMotivationStore.clear(context, MorningMotivationStore.account(context));
-        context.getSharedPreferences("morning_motivation_v1", Context.MODE_PRIVATE).edit().remove("last_notified").apply();
+        MorningMotivationStore.clear(context, null);
+        context.getSharedPreferences("morning_motivation_v1", Context.MODE_PRIVATE).edit()
+            .remove("last_notified").remove("last_result").remove("last_at").apply();
         context.getSystemService(NotificationManager.class).cancel(870);
         context.getSystemService(NotificationManager.class).cancel(871);
     }
