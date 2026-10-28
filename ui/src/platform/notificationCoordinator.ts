@@ -18,11 +18,13 @@ export function createNotificationCoordinator(dependencies: Dependencies) {
       facts.ledger.filter(item => unseen.has(ledgerNotificationKey(item))),
     )
     const settings = await dependencies.preferences.getSettings(); let delivered = 0
+    const handled = new Set(batch.handledKeys)
     for (const message of batch.notifications) {
+      for (const key of message.handledKeys) handled.delete(key)
       if (!settings.master || !settings[message.channel] || (dependencies.isForeground() && !settings.foreground)) continue
-      try { if (await dependencies.notifications.notify(message) === 'delivered') delivered += 1 } catch { /* notifications never block business state */ }
+      try { if (await dependencies.notifications.notify(message) === 'delivered') { delivered += 1; message.handledKeys.forEach(key => handled.add(key)) } } catch { /* retry on next reconciliation */ }
     }
-    await dependencies.preferences.markHandled(batch.handledKeys)
+    await dependencies.preferences.markHandled([...handled])
     return { delivered, baseline: false }
   }
   return { reconcile() { const result = queue.then(run, run); queue = result.then(() => {}, () => {}); return result } }
