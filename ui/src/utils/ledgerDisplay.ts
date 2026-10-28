@@ -22,6 +22,14 @@ export const LEDGER_SOURCE_CATALOG: Record<string, LedgerSourcePresentation> = {
 
 const SYSTEM_FALLBACK: LedgerSourcePresentation = { name: '系统流水', badge: '系统流水' }
 const PREFIXES = ['习惯', '清单', '目标', '学习', '运动', '饮食', '睡眠', '兑换']
+const DIET_RULES: Record<string, [string, string]> = {
+  breakfast_on_time: ['早餐按时打卡', '08:30'], lunch_on_time: ['午餐按时打卡', '13:31'], dinner_on_time: ['晚餐按时打卡', '19:01'],
+  no_snacks: ['不吃零食', '次日 00:00'], no_sugary_drinks: ['不喝含糖饮料', '次日 00:00'],
+  no_refined_staples: ['不吃精制主食', '次日 00:00'],
+  protein_at_lunch_and_dinner: ['午晚餐摄入蛋白质', '次日 00:00'],
+  vegetables_at_lunch_and_dinner: ['午晚餐摄入蔬菜', '次日 00:00'],
+  controlled_staple_and_no_sugary_drink: ['控制主食且不喝含糖饮料', '次日 00:00'],
+}
 
 export const ledgerSourcePresentation = (sourceType: string): LedgerSourcePresentation => (
   LEDGER_SOURCE_CATALOG[sourceType] || SYSTEM_FALLBACK
@@ -39,10 +47,14 @@ export const parseLedgerDisplay = (item: Pick<LedgerEntry, 'description' | 'sour
     prefix = nextPrefix; rest = rest.slice(nextPrefix.length).trim()
   }
   const presentation = ledgerSourcePresentation(item.source_type)
+  const dietRule = item.source_type === 'exercise_diet_penalty'
+    ? DIET_RULES[String(item.source_id || '').split(':').at(-1) || ''] : undefined
+  const dietDescription = dietRule && item.target_date
+    ? `${dietRule[0]}逾期未完成（${item.target_date}，截止 ${dietRule[1]}，北京时间）` : undefined
   const isGoalUnlock = item.source_type === 'reward_buy' && String(item.source_id || '').includes(':goal:goal_')
   if (isGoalUnlock) rest = rest.replace(/^目标自动解锁兑换:\s*/, '')
   const isCanonical = isGoalUnlock || ['goal_reward', 'goal_penalty', 'exercise_checkin', 'exercise_score'].includes(item.source_type)
-  const rawName = item.display_title || (item.source_type === 'exercise_checkin' ? '运动打卡' : rest || presentation.name)
+  const rawName = dietDescription || item.display_title || (item.source_type === 'exercise_checkin' ? '运动打卡' : rest || presentation.name)
   const name = isCanonical ? rawName.replace(/\s+(?:\d{4}-)?\d{2}-\d{2}$/, '') : rawName
   const date = (item.target_date || '').slice(-5)
   return {
@@ -50,5 +62,6 @@ export const parseLedgerDisplay = (item: Pick<LedgerEntry, 'description' | 'sour
     label: isGoalUnlock ? '目标' : prefix || presentation.badge,
     sourceName: presentation.name,
     title: isCanonical && date ? `${name}【${date}】` : name,
+    description: dietDescription || raw || presentation.name,
   }
 }
