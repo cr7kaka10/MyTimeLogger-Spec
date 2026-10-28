@@ -10,6 +10,7 @@ import type { LogicSnapshot } from '@core/LogicSnapshot'
 import { recordBehavior } from '../utils/behaviorAudit'
 import { hasEarlierLocalDietCheckin } from './dietPenaltyNotificationGuard'
 import { syncNow } from '../db'
+import { clearMorningMotivation, prefetchMorningMotivation } from './morningMotivation'
 
 let cleanup = () => {}; let current: ReturnType<typeof buildRuntime> | null = null
 export const nextSleepReminderAt = (now = new Date()): number => {
@@ -47,6 +48,13 @@ const buildRuntime = (runtime: PlatformRuntime, db: any, lifecycle: LifecycleSer
 export async function installNotificationRuntime(runtime: PlatformRuntime, db: any, lifecycle: LifecycleService) {
   cleanup(); if (runtime === 'web') { current = null; return }
   current = buildRuntime(runtime, db, lifecycle); await current.notifications.initialize().catch(() => {})
+  let nextMotivationPrefetch = 0
+  const prefetchMotivation = (force = false) => {
+    if (runtime !== 'capacitor-android' || (!force && Date.now() < nextMotivationPrefetch)) return
+    nextMotivationPrefetch = Date.now() + 15 * 60_000
+    void prefetchMorningMotivation(db).then(ok => { if (ok) nextMotivationPrefetch = Date.now() + 6 * 60 * 60_000 })
+  }
+  prefetchMotivation()
   if (runtime === 'capacitor-android') await current.notifications.schedule(sleepTimeNotification(nextSleepReminderAt())).catch(() => {})
   let morningKeys: string[] = []; let poopKey: string | null = null
   let lastTimerSnapshot: LogicSnapshot | null = null
@@ -89,6 +97,11 @@ export async function installNotificationRuntime(runtime: PlatformRuntime, db: a
   const reconcile = () => { void current?.coordinator.reconcile().catch(() => {}); void reconcileSleep().catch(() => {}) }
   const events = ['sync-pull-complete', 'balance-updated', 'mtl:goals-settled', 'focus', 'visibilitychange', 'mtl:notification-permission-restored']
   events.forEach(event => window.addEventListener(event, reconcile))
+  const motivationRefresh = () => prefetchMotivation()
+  const motivationChanged = () => { nextMotivationPrefetch = 0; prefetchMotivation(true) }
+  window.addEventListener('sync-pull-complete', motivationRefresh)
+  window.addEventListener('online', motivationRefresh)
+  window.addEventListener('mtl:daily-widget-runtime-changed', motivationChanged)
   const authExpired = () => { void (async () => {
     const context = current; if (!context || !await context.preferences.beginAuthExpiry()) return
     const settings = await context.preferences.getSettings()
@@ -99,10 +112,10 @@ export async function installNotificationRuntime(runtime: PlatformRuntime, db: a
   let poopWork = Promise.resolve()
   const queuePoop = (snapshot: LogicSnapshot | null) => { poopWork = poopWork.then(() => reconcilePoop(snapshot)).catch(() => {}); return poopWork }
   const timerSnapshot = (event: Event) => { lastTimerSnapshot = (event as CustomEvent<LogicSnapshot | null>).detail; void queuePoop(lastTimerSnapshot) }
-  const authCleared = () => { lastTimerSnapshot = null; void queuePoop(null); for (const key of morningKeys) void current?.notifications.cancel(key); morningKeys = [] }
+  const authCleared = () => { clearMorningMotivation(); nextMotivationPrefetch = 0; lastTimerSnapshot = null; void queuePoop(null); for (const key of morningKeys) void current?.notifications.cancel(key); morningKeys = [] }
   window.addEventListener('mtl:timer-snapshot', timerSnapshot); window.addEventListener('mtl:auth-cleared', authCleared)
   const unsubscribe = lifecycle.subscribe(event => { current?.setForeground(event === 'foreground'); if (event === 'foreground') { reconcile(); void reconcileMorning(); void queuePoop(lastTimerSnapshot) } })
-  cleanup = () => { events.forEach(event => window.removeEventListener(event, reconcile)); window.removeEventListener('mtl:auth-expired', authExpired); window.removeEventListener('mtl:auth-restored', authRestored); window.removeEventListener('mtl:timer-snapshot', timerSnapshot); window.removeEventListener('mtl:auth-cleared', authCleared); unsubscribe() }
+  cleanup = () => { events.forEach(event => window.removeEventListener(event, reconcile)); window.removeEventListener('sync-pull-complete', motivationRefresh); window.removeEventListener('online', motivationRefresh); window.removeEventListener('mtl:daily-widget-runtime-changed', motivationChanged); window.removeEventListener('mtl:auth-expired', authExpired); window.removeEventListener('mtl:auth-restored', authRestored); window.removeEventListener('mtl:timer-snapshot', timerSnapshot); window.removeEventListener('mtl:auth-cleared', authCleared); unsubscribe() }
   await current.coordinator.reconcile().catch(() => {})
 }
 
