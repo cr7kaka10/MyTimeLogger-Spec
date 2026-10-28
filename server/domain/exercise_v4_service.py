@@ -208,8 +208,11 @@ class ExerciseV4Service:
                 "failed", failure_reason, penalty_source,
             )
             if row_changed:
-                conn.execute("""UPDATE server_exercise_diet_checkins SET status='failed',failure_reason=?,
-                    penalty_source_id=?,updated_at=? WHERE id=? AND user_id=?""", (failure_reason, penalty_source, stamp, row["id"], user_id))
+                applied = conn.execute("""UPDATE server_exercise_diet_checkins SET status='failed',failure_reason=?,
+                    penalty_source_id=?,updated_at=? WHERE id=? AND user_id=? AND status='pending'""",
+                    (failure_reason, penalty_source, stamp, row["id"], user_id))
+                if not applied.rowcount:
+                    continue
             ledger_missing = penalty < 0 and not conn.execute(
                 "SELECT 1 FROM server_reward_ledger WHERE user_id=? AND id=?", (user_id, source)).fetchone()
             if ledger_missing:

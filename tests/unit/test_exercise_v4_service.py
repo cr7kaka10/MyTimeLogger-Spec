@@ -156,6 +156,22 @@ def test_v5_restored_quality_only_pending_auto_fails_after_midnight(tmp_db_path)
         assert service._diet_rules_for_date(conn, 1, "2026-11-02") == ()
 
 
+def test_v5_meal_deadline_only_auto_fails_pending(tmp_db_path):
+    store, _ = _setup(tmp_db_path)
+    service = ExerciseV4Service(store.reward_wallet_service, lambda *args: None, "v5")
+    date = "2026-10-28"
+    with store._transact() as conn:
+        conn.execute("INSERT OR IGNORE INTO server_exercise_policy_metadata VALUES('v5_meal_timing','2026-10-26','2026-10-25')")
+        service.set_diet(conn, 1, date, "lunch_on_time", "completed", f"{date} 13:30:00", datetime(2026, 10, 28, 13, 30, tzinfo=BJ))
+        service.set_diet(conn, 1, date, "breakfast_on_time", "failed", f"{date} 08:00:00", datetime(2026, 10, 28, 8, tzinfo=BJ))
+        service.close_diet(conn, 1, date, datetime(2026, 10, 28, 19, 2, tzinfo=BJ))
+        facts = {r[0]: r[1] for r in conn.execute("SELECT rule_key,status FROM server_exercise_diet_checkins WHERE user_id=1 AND date=?", (date,))}
+        penalties = [r[0] for r in conn.execute("SELECT id FROM server_reward_ledger WHERE user_id=1 AND target_date=? AND source_type='exercise_diet_penalty'", (date,))]
+        assert facts["lunch_on_time"] == "completed"
+        assert facts["breakfast_on_time"] == "failed"
+        assert len(penalties) == 1 and penalties[0].endswith(":dinner_on_time")
+
+
 def test_v5_cardio_v3_revision_upgrades_v2_rows_idempotently(tmp_db_path):
     store, _ = _setup(tmp_db_path)
     seed = SampleDataInitializationService(tmp_db_path)
