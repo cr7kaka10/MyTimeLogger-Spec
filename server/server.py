@@ -392,8 +392,27 @@ def _restore_v5_quality_rules_on_startup() -> int:
         plans = conn.execute("SELECT user_id,version FROM server_exercise_plan_versions WHERE lower(version)='v5'").fetchall()
         today = beijing_now().date()
         stamp = today.strftime("%Y-%m-%d %H:%M:%S")
+        day = today.isoformat()
+        old_keys = tuple(rule[0] for rule in rules)
+        slots = ",".join("?" for _ in old_keys)
+        handled = conn.execute(f"""SELECT 1 FROM server_exercise_diet_checkins
+            WHERE date=? AND plan_version='v5' AND rule_key IN ({slots})
+              AND (status<>'pending' OR occurred_at IS NOT NULL OR penalty_source_id IS NOT NULL) LIMIT 1""",
+            (day, *old_keys)).fetchone()
+        scored = conn.execute(f"""SELECT 1 FROM server_exercise_item_scores
+            WHERE date=? AND plan_version='v5' AND item_key IN ({slots}) AND earned_points>0 LIMIT 1""",
+            (day, *(f"diet:{key}" for key in old_keys))).fetchone()
+        penalized = conn.execute("""SELECT 1 FROM server_reward_ledger
+            WHERE target_date=? AND source_type='exercise_diet_penalty' AND amount<0
+              AND (id LIKE ? OR id LIKE ? OR id LIKE ?) LIMIT 1""",
+            (day, *(f"%:{key}" for key in old_keys))).fetchone()
+        effective = (today + timedelta(days=1)).isoformat() if handled or scored or penalized else day
         conn.execute("INSERT OR IGNORE INTO server_exercise_policy_metadata VALUES('v5_quality_restored',?,?)",
-                     ((today + timedelta(days=1)).isoformat(), stamp))
+                     (effective, stamp))
+        if effective == day:
+            conn.execute("""UPDATE server_exercise_policy_metadata SET effective_date=?
+                WHERE policy_key='v5_quality_restored' AND effective_date=?""",
+                (day, (today + timedelta(days=1)).isoformat()))
         if not plans:
             return 0
         changed = 0

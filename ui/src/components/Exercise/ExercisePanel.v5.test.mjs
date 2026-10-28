@@ -25,20 +25,21 @@ const rules = [
 ]
 const labels = { no_sugary_drinks: '不喝含糖饮料', no_refined_staples: '不吃精米白面', no_snacks: '不吃零食' }
 const definition = gym => ({ dietRulesValid: true, diet: rules.map(ruleKey => ({ ruleKey, content: labels[ruleKey] || ruleKey, time: '12:00' })),
-  exercisePlan: { 周二: { label: '训练', color: '#000', gym, rain: gym }, 日: { label: '休息', color: '#000', gym: [], rain: [] } }, progress: [] })
-const render = (date, day, checkins, gym = [{}]) => renderToStaticMarkup(React.createElement(ExercisePanel, {
+  exercisePlan: { 周二: { label: '训练', color: '#000', gym, rain: gym }, 周三: { label: '训练', color: '#000', gym, rain: gym }, 日: { label: '休息', color: '#000', gym: [], rain: [] } }, progress: [] })
+const render = (date, day, checkins, gym = [{}], locked = false) => renderToStaticMarkup(React.createElement(ExercisePanel, {
   date, day, rain: false, setRain: () => {}, states: {}, setState: () => {}, dietCheckins: checkins,
-  setDietState: () => {}, planVersion: 'v5', planDefinition: definition(gym), locked: false,
+  setDietState: () => {}, planVersion: 'v5', planDefinition: definition(gym), locked,
 }))
-const historical = render('2026-10-20', '周二', Object.fromEntries(['protein_at_lunch_and_dinner', 'vegetables_at_lunch_and_dinner', 'controlled_staple_and_no_sugary_drink'].map(key => [key, { status: 'pending' }])))
+const historical = render('2026-10-27', '周二', Object.fromEntries(['protein_at_lunch_and_dinner', 'vegetables_at_lunch_and_dinner', 'controlled_staple_and_no_sugary_drink'].map(key => [key, { status: 'pending' }])), [{}], true)
 assert.match(historical, /饮食约束 · 50分/)
 assert.equal((historical.match(/class="diet-check-row/g) || []).length, 6)
 assert.equal((historical.match(/disabled=""/g) || []).length, 6, 'historical facts must not be interpreted as restored rules')
-assert.match(historical, /breakfast_on_time.*?0\/11分 · 该日仅展示计划/)
-const current = render('2026-10-27', '周二', Object.fromEntries(rules.map(key => [key, { status: 'pending' }])))
+assert.match(historical, /breakfast_on_time.*?0\/11分 · 历史日期已锁定，最新计划仅供查看/)
+const current = render('2026-10-28', '周三', Object.fromEntries(rules.map(key => [key, { status: 'pending' }])))
 assert.equal((current.match(/class="diet-check-row/g) || []).length, 6)
 assert.ok(current.indexOf('不喝含糖饮料') < current.indexOf('不吃精米白面') && current.indexOf('不吃精米白面') < current.indexOf('不吃零食'))
 assert.doesNotMatch(current, /disabled=""/)
+assert.match(render('2026-10-28', '周三', {}), /该日新规则未生效或记录待同步，暂不可打卡/)
 assert.equal((render('2026-10-25', '日', {}).match(/class="diet-check-row/g) || []).length, 0)
 const hook = readFileSync(new URL('../../hooks/useExercise.ts', import.meta.url), 'utf8')
 const helperSource = hook.match(/const V5_RULE_KEYS=.+\nconst hasLatestV5Plan=.+/g)?.[0]

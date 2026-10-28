@@ -80,6 +80,13 @@ class ExerciseV4Service:
         row = conn.execute("SELECT effective_date FROM server_exercise_policy_metadata WHERE policy_key='v5_quality_restored'").fetchone()
         return bool(row and date >= str(row["effective_date"]))
 
+    def _quality_transition_day(self, conn, date: str) -> bool:
+        if self.plan_version != "v5":
+            return False
+        row = conn.execute("SELECT effective_date,created_at FROM server_exercise_policy_metadata WHERE policy_key='v5_quality_restored'").fetchone()
+        return bool(row and date == str(row["created_at"])[:10]
+            and date == (datetime.strptime(str(row["effective_date"]), "%Y-%m-%d").date() - timedelta(days=1)).isoformat())
+
     def _is_rest_day(self, conn, user_id: int, date: str) -> bool:
         return is_exercise_rest_day(conn, user_id, self.plan_version, date)
 
@@ -173,9 +180,20 @@ class ExerciseV4Service:
     def close_diet(self, conn, user_id: int, date: str, now: datetime) -> int:
         self.ensure_diet_rows(conn, user_id, date, now)
         changed, stamp, new_policy = 0, _now_text(now), self._new_v5_policy(conn, date)
+        transition = self._quality_transition_day(conn, date)
         rows = conn.execute("""SELECT * FROM server_exercise_diet_checkins
             WHERE user_id=? AND date=? AND plan_version=?""", (user_id, date, self.plan_version)).fetchall()
         for row in rows:
+            if transition and row["rule_key"] in self.diet_rules:
+                auto_failed = row["status"] == "failed" and row["failure_reason"] in ("meal_window_passed", "not_completed_before_midnight")
+                due = row["status"] == "pending" and now.astimezone(TZ) >= _diet_deadline(date, str(row["rule_key"]))
+                if auto_failed or due:
+                    self._remove_diet_penalty(conn, user_id, date, str(row["rule_key"]))
+                    conn.execute("""UPDATE server_exercise_diet_checkins SET status='failed',failure_reason='quality_transition_exempt',
+                        penalty_source_id=NULL,updated_at=? WHERE user_id=? AND id=?""", (stamp, user_id, row["id"]))
+                    self._change(conn, user_id, "server_exercise_diet_checkins", row["id"])
+                    changed += 1
+                continue
             if row["status"] != "pending":
                 continue
             deadline = _diet_deadline(date, str(row["rule_key"]))

@@ -85,6 +85,54 @@ def test_v5_quality_restore_is_idempotent_and_date_scoped(tmp_db_path, monkeypat
         assert v4._diet_rules_for_date(conn, 1, "2026-10-28") == DIET_RULES
 
 
+@pytest.mark.parametrize("existing_policy", [False, True])
+def test_v5_quality_restore_activates_safe_upgrade_day(tmp_db_path, monkeypatch, existing_policy):
+    store, _ = _setup(tmp_db_path)
+    monkeypatch.setattr(server_module, "store", store)
+    now = datetime(2026, 10, 27, 12, tzinfo=BJ)
+    monkeypatch.setattr(server_module, "beijing_now", lambda: now)
+    monkeypatch.setattr(server_module, "_exercise_write_change", lambda *args: None)
+    service = ExerciseV4Service(store.reward_wallet_service, lambda *args: None, "v5")
+    with store._transact() as conn:
+        conn.execute("INSERT OR IGNORE INTO server_exercise_policy_metadata VALUES('v5_meal_timing','2026-10-27','2026-10-27')")
+        if existing_policy:
+            conn.execute("INSERT INTO server_exercise_policy_metadata VALUES('v5_quality_restored','2026-10-28','2026-10-27')")
+        service.ensure_diet_rows(conn, 1, "2026-10-27", now)
+    assert server_module._restore_v5_quality_rules_on_startup() == 0
+    assert server_module._restore_v5_quality_rules_on_startup() == 0
+    with store._transact() as conn:
+        assert conn.execute("SELECT effective_date FROM server_exercise_policy_metadata WHERE policy_key='v5_quality_restored'").fetchone()[0] == "2026-10-27"
+        assert not service._quality_transition_day(conn, "2026-10-26")
+        assert service._diet_rules_for_date(conn, 1, "2026-10-27") == ("no_sugary_drinks", "no_refined_staples", "no_snacks") + V5_MEAL_RULES
+        service.set_diet(conn, 1, "2026-10-27", "no_sugary_drinks", "completed", None, now)
+        service.set_diet(conn, 1, "2026-10-27", "no_refined_staples", "failed", None, now)
+        assert [tuple(row) for row in conn.execute("SELECT rule_key,status FROM server_exercise_diet_checkins WHERE user_id=1 AND date='2026-10-27' AND rule_key IN ('no_sugary_drinks','no_refined_staples') ORDER BY rule_key")] == [("no_refined_staples", "failed"), ("no_sugary_drinks", "completed")]
+        assert not conn.execute("SELECT 1 FROM server_exercise_diet_checkins WHERE user_id=1 AND date='2026-10-27' AND rule_key='protein_at_lunch_and_dinner'").fetchone()
+
+
+def test_v5_hidden_quality_transition_exempts_pending_without_exempting_meals(tmp_db_path):
+    store, _ = _setup(tmp_db_path)
+    service = ExerciseV4Service(store.reward_wallet_service, lambda *args: None, "v5")
+    start = datetime(2026, 10, 27, 12, tzinfo=BJ)
+    overdue = datetime(2026, 10, 28, 0, 1, tzinfo=BJ)
+    with store._transact() as conn:
+        conn.execute("INSERT OR IGNORE INTO server_exercise_policy_metadata VALUES('v5_meal_timing','2026-10-27','2026-10-27')")
+        conn.execute("INSERT INTO server_exercise_policy_metadata VALUES('v5_quality_restored','2026-10-28','2026-10-27')")
+        service.ensure_diet_rows(conn, 1, "2026-10-27", start)
+        old_key = "protein_at_lunch_and_dinner"
+        old_source = f"exercise-diet-penalty:1:2026-10-27:v5:{old_key}"
+        conn.execute("UPDATE server_exercise_diet_checkins SET status='failed',failure_reason='meal_window_passed',penalty_source_id=? WHERE user_id=1 AND date='2026-10-27' AND rule_key=?", (old_source, old_key))
+        store.reward_wallet_service.append_ledger_in_txn(conn, 1, -20, "exercise_diet_penalty", old_source,
+            "旧质量项逾期", "2026-10-27", old_source, "2026-10-28 00:01:00")
+        assert service.close_diet(conn, 1, "2026-10-27", overdue) == 6
+        assert service.close_diet(conn, 1, "2026-10-27", overdue) == 0
+        reasons = [tuple(row) for row in conn.execute("SELECT rule_key,failure_reason FROM server_exercise_diet_checkins WHERE user_id=1 AND date='2026-10-27' AND rule_key IN ('protein_at_lunch_and_dinner','vegetables_at_lunch_and_dinner','controlled_staple_and_no_sugary_drink') ORDER BY rule_key")]
+        assert len(reasons) == 3 and all(reason == "quality_transition_exempt" for _, reason in reasons)
+        ledger = [row[0] for row in conn.execute("SELECT id FROM server_reward_ledger WHERE user_id=1 AND target_date='2026-10-27' AND source_type='exercise_diet_penalty'")]
+        assert {entry.rsplit(':', 1)[-1] for entry in ledger} == set(V5_MEAL_RULES)
+        assert not any(entry.endswith(key) for entry in ledger for key in PLAN_POLICIES["v5"]["diet_rules"])
+
+
 def test_v5_cardio_v3_revision_upgrades_v2_rows_idempotently(tmp_db_path):
     store, _ = _setup(tmp_db_path)
     seed = SampleDataInitializationService(tmp_db_path)
