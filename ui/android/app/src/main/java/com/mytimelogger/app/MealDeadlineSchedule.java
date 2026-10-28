@@ -18,7 +18,7 @@ final class MealDeadlineSchedule {
         Calendar day = Calendar.getInstance(SleepAutomationScheduler.BEIJING);
         day.setTimeInMillis(now); day.set(Calendar.HOUR_OF_DAY, HOURS[meal]);
         day.set(Calendar.MINUTE, MINUTES[meal]); day.set(Calendar.SECOND, 0); day.set(Calendar.MILLISECOND, 0);
-        return now >= day.getTimeInMillis() && now < day.getTimeInMillis() + 120_000;
+        return now >= day.getTimeInMillis() && now < day.getTimeInMillis() + 15 * 60_000;
     }
     private MealDeadlineSchedule() {}
 }

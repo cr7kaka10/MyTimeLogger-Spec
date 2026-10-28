@@ -12,7 +12,7 @@ public class MealDeadlineScheduleTest {
         for (int i = 0; i < 3; i++) {
             long at = MealDeadlineSchedule.next(c.getTimeInMillis(), i);
             assertTrue(MealDeadlineSchedule.isDue(at, i));
-            assertFalse(MealDeadlineSchedule.isDue(at + 120_000, i));
+            assertFalse(MealDeadlineSchedule.isDue(at + 15 * 60_000, i));
         }
         assertEquals("lunch_on_time", MealDeadlineSchedule.RULES[1]);
     }

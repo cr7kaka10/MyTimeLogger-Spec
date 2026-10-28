@@ -28,9 +28,12 @@ public final class MealDeadlineReceiver extends BroadcastReceiver {
         long now = System.currentTimeMillis();
         if (intent != null && ACTION.equals(intent.getAction())) {
             int meal = intent.getIntExtra("meal", -1);
-            if (meal >= 0 && meal < 3 && MealDeadlineSchedule.isDue(now, meal)
-                && MealDeadlineState.pending(context, now, meal)) MealDeadlineNotifier.notifyPending(context, now, meal);
+            deliverAt(context, now, meal);
         }
         schedule(context, now);
+    }
+    static void deliverAt(Context context, long now, int meal) {
+        if (meal >= 0 && meal < 3 && MealDeadlineSchedule.isDue(now, meal)
+            && MealDeadlineState.pending(context, now, meal)) MealDeadlineNotifier.notifyPending(context, now, meal);
     }
 }

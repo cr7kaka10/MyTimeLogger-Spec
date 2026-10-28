@@ -20,11 +20,14 @@ public class MealDeadlineDeviceTest {
             assertTrue(MealDeadlineState.pending(fixture.context, at, 1));
             fixture.db.execute("UPDATE exercise_diet_checkins SET status='completed' WHERE rule_key='lunch_on_time'", Collections.emptyList());
             assertFalse(MealDeadlineState.pending(fixture.context, at, 1));
+            MealDeadlineReceiver.deliverAt(fixture.context, at, 1);
+            assertFalse(java.util.Arrays.stream(fixture.context.getSystemService(NotificationManager.class)
+                .getActiveNotifications()).anyMatch(item -> item.getId() == 861));
             fixture.db.execute("UPDATE exercise_diet_checkins SET status='pending' WHERE rule_key='lunch_on_time'", Collections.emptyList());
             if (!fixture.hadPermission) InstrumentationRegistry.getInstrumentation().getUiAutomation()
                 .grantRuntimePermission(fixture.context.getPackageName(), Manifest.permission.POST_NOTIFICATIONS);
-            MealDeadlineNotifier.notifyPending(fixture.context, at, 1);
-            MealDeadlineNotifier.notifyPending(fixture.context, at, 1);
+            MealDeadlineReceiver.deliverAt(fixture.context, at, 1);
+            MealDeadlineReceiver.deliverAt(fixture.context, at, 1);
             assertTrue(java.util.Arrays.stream(fixture.context.getSystemService(NotificationManager.class)
                 .getActiveNotifications()).anyMatch(item -> item.getId() == 861));
             day.add(Calendar.DAY_OF_MONTH, 3);
