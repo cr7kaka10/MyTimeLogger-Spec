@@ -28,7 +28,8 @@ public final class MealDeadlineReceiver extends BroadcastReceiver {
         long now = System.currentTimeMillis();
         if (intent != null && ACTION.equals(intent.getAction())) {
             int meal = intent.getIntExtra("meal", -1);
-            deliverAt(context, now, meal);
+            try { deliverAt(context, now, meal); }
+            catch (RuntimeException error) { android.util.Log.w("MealDeadline", "notify_failed", error); }
         }
         schedule(context, now);
     }

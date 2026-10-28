@@ -37,7 +37,10 @@ public final class MorningMotivationReceiver extends BroadcastReceiver {
     }
     @Override public void onReceive(Context context, Intent intent) {
         long now = System.currentTimeMillis();
-        if (intent != null && ACTION.equals(intent.getAction()) && due(now)) MorningMotivationNotifier.notifyAt(context, now, false);
+        if (intent != null && ACTION.equals(intent.getAction()) && due(now)) {
+            try { MorningMotivationNotifier.notifyAt(context, now, false); }
+            catch (RuntimeException error) { android.util.Log.w("MorningMotivation", "notify_failed", error); }
+        }
         schedule(context, now);
     }
 }
