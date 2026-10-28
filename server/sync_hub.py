@@ -908,13 +908,16 @@ class SyncHub:
                 data_copy.get("weight") is not None or data_copy.get("body_fat_rate") is not None
             ):
                 target_date = str(data_copy.get("date") or _cst_today())[:10]
-                if target_date != _cst_today():
-                    raise ValueError("body_metrics_recording_requires_today")
+                age = (datetime.fromisoformat(_cst_today()) - datetime.fromisoformat(target_date)).days
+                if age < 0 or age > 7:
+                    raise ValueError("body_metrics_recovery_window_expired")
+                if data_copy.get("weight") is not None and not 30 <= float(data_copy["weight"]) <= 200:
+                    raise ValueError("weight_out_of_range")
                 locked = conn.execute(
                     "SELECT 1 FROM server_exercise_checkins WHERE user_id=? AND date=? AND locked_at IS NOT NULL LIMIT 1",
                     (user_id, target_date),
                 ).fetchone()
-                body_metric_locked = bool(locked)
+                body_metric_locked = bool(locked) or age > 0
             if table == "exercise_checkins":
                 target_date = str(data_copy.get("date") or _cst_today())[:10]
                 plan_version = str(data_copy.get("plan_version") or "v0")
@@ -936,6 +939,12 @@ class SyncHub:
                 # 09:00 后允许补录原始身体数据，但绝不能覆盖守时评分或其他每日事实。
                 allowed = {"id", "user_id", "date", "plan_version", "exercise_type", "weight", "body_fat_rate", "created_at", "updated_at"}
                 data_copy = {key: value for key, value in data_copy.items() if key in allowed}
+                existing_body = conn.execute("""SELECT weight,body_fat_rate FROM server_exercise_daily_logs
+                    WHERE user_id=? AND date=? AND plan_version=? AND exercise_type='daily'""",
+                    (user_id, data_copy.get("date"), data_copy.get("plan_version") or "v0")).fetchone()
+                if existing_body and any(data_copy.get(field) is not None and existing_body[field] is not None
+                        and float(data_copy[field]) != float(existing_body[field]) for field in ("weight", "body_fat_rate")):
+                    raise ValueError("body_metrics_server_wins")
 
             if table == "tasks":
                 data_copy = normalize_task_record_for_db(data_copy)
@@ -1110,7 +1119,7 @@ class SyncHub:
 
     def _settle_synced_behavior_in_txn(self, conn: sqlite3.Connection, table: str, record: dict, user_id: int):
         if table == "exercise_daily_logs":
-            if str(record.get("plan_version") or "") == "v4":
+            if str(record.get("plan_version") or "") == "v4" and str(record.get("date") or _cst_today())[:10] == _cst_today():
                 try:
                     from .server import _beijing_now, _exercise_v4
                 except (ImportError, ValueError):
@@ -1717,6 +1726,17 @@ class SyncHub:
                     rejected.append({"table": table, "record_id": None, "reason": "missing_primary_key"})
                     operation_results.append({"change_id": change_id, "status": "rejected", "reason": "missing_primary_key"})
                     continue
+                if operation == "probe":
+                    probe_tables = {"exercise_daily_logs", "exercise_checkins", "exercise_diet_checkins",
+                                    "study_sessions", "learning_tasks", "huawei_sleep_data", "flash_cards"}
+                    canonical_id = self._canonical_record_id_for_change(table, record, user_id, pk_val)
+                    authority = self.get_record(table, canonical_id, user_id) if table in probe_tables else None
+                    operation_results.append({"change_id": change_id,
+                        "status": "server_wins" if authority else "authority_missing",
+                        "record_id": str(authority["id"] if authority else pk_val),
+                        "reason": "retry_limit_reached",
+                        **({"canonical_record": {key: value for key, value in authority.items() if key != "user_id"}} if authority else {})})
+                    continue
                 if (table == "exercise_diet_checkins" and record.get("plan_version") == "v5"
                         and record.get("status") == "pending" and str(record.get("date") or "")[:10] < _cst_today()):
                     operation_results.append({"change_id": change_id, "status": "skipped", "record_id": str(pk_val),
@@ -1730,7 +1750,29 @@ class SyncHub:
                     with self._conn() as lookup_conn:
                         local = self._category_record_by_name(lookup_conn, user_id, record.get("name"))
                 else:
-                    local = self.get_record(table, pk_val, user_id)
+                    canonical_id = self._canonical_record_id_for_change(table, record, user_id, pk_val)
+                    local = self.get_record(table, canonical_id, user_id)
+                baseline = op.get("base_version")
+                pending_can_complete = (table == "exercise_diet_checkins" and local
+                    and local.get("status") == "pending" and record.get("status") in {"completed", "failed"})
+                blank_body_can_fill = (table == "exercise_daily_logs" and local and
+                    any(record.get(field) is not None and local.get(field) is None
+                        for field in ("weight", "body_fat_rate")) and
+                    all(record.get(field) is None or local.get(field) is None or
+                        float(record[field]) == float(local[field]) for field in ("weight", "body_fat_rate")))
+                if (local and table in {"exercise_daily_logs", "exercise_checkins", "exercise_diet_checkins",
+                                        "study_sessions", "learning_tasks", "huawei_sleep_data", "flash_cards"}
+                        and not pending_can_complete and not blank_body_can_fill
+                        and str(baseline if baseline is not None else "").isdigit()):
+                    with self._conn() as version_conn:
+                        latest = version_conn.execute("""SELECT MAX(server_version) FROM server_change_log
+                            WHERE user_id=? AND table_name=? AND record_id=?""",
+                            (user_id, server_table_for(table), str(local["id"]))).fetchone()[0]
+                    if latest is not None and int(latest) > int(baseline):
+                        operation_results.append({"change_id": change_id, "status": "server_wins",
+                            "record_id": str(local["id"]), "reason": "stale_base_version",
+                            "canonical_record": {key: value for key, value in local.items() if key != "user_id"}})
+                        continue
                 if table == "tasks" and operation == "upsert" and local and local.get("deleted_at"):
                     rejected.append({"table": table, "record_id": pk_val, "reason": "tombstone_protected"})
                     self._record_conflict(
@@ -1794,7 +1836,10 @@ class SyncHub:
                         ok = False
                         record_rejections = [{"table": table, "record_id": pk_val, "reason": str(exc)}]
 
-                    rejected.extend(record_rejections)
+                    body_server_wins = (table == "exercise_daily_logs" and local is not None and
+                        any(item.get("reason") == "body_metrics_server_wins" for item in record_rejections))
+                    if not body_server_wins:
+                        rejected.extend(record_rejections)
                     if ok:
                         if table == "study_sessions" and self._goal_store:
                             affected_dates = {
@@ -1844,7 +1889,10 @@ class SyncHub:
                             "[sync_push] upsert failed table=%s record_id=%s reason=%s",
                             table, pk_val, reason,
                         )
-                        operation_results.append({"change_id": change_id, "status": "rejected", "record_id": str(pk_val), "reason": reason})
+                        operation_results.append({"change_id": change_id,
+                            "status": "server_wins" if body_server_wins else "rejected",
+                            "record_id": str(local["id"] if body_server_wins else pk_val), "reason": reason,
+                            **({"canonical_record": {key: value for key, value in local.items() if key != "user_id"}} if body_server_wins else {})})
                 elif action == "skip":
                     logger.info("[sync_push] skipped table=%s record_id=%s reason=resolve_skip", table, pk_val)
                     operation_results.append({"change_id": change_id, "status": "skipped", "record_id": str(pk_val)})

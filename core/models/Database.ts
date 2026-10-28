@@ -380,18 +380,19 @@ export class Database {
   }
 
   private _enqueueOutbox(table: string, recordId: number | string, operation: string, payload: Record<string, any>, baseVersion?: string | null): void {
+    const baseline = /^\d+$/.test(String(baseVersion ?? '')) ? String(baseVersion) : String(this.getLastServerVersion())
     const existing = this._get(
       `SELECT id FROM sync_outbox WHERE table_name = ? AND record_id = ? AND status IN ('pending', 'failed') ORDER BY id DESC LIMIT 1`,
       [table, String(recordId)],
     )
     if (existing) {
       this._run(
-        `UPDATE sync_outbox SET operation = ?, payload_json = ?, base_version = ?, status = 'pending', last_error = NULL, updated_at = ? WHERE id = ?`,
-        [operation, JSON.stringify(payload), baseVersion ?? null, this._now(), existing.id],
+        `UPDATE sync_outbox SET operation = ?, payload_json = ?, status = 'pending', retry_count = 0, last_error = NULL, updated_at = ? WHERE id = ?`,
+        [operation, JSON.stringify(payload), this._now(), existing.id],
       )
       return
     }
-    this.createOutboxOperation(table, recordId, operation, payload, baseVersion)
+    this.createOutboxOperation(table, recordId, operation, payload, baseline)
   }
 
   private repairInterruptedDietCheckinOutbox(): void {
@@ -481,7 +482,7 @@ export class Database {
   getPendingOutbox(limit = 50): SyncOutboxEntry[] {
     return this._all(
       `SELECT * FROM sync_outbox
-       WHERE status IN ('pending', 'failed')
+       WHERE status IN ('pending', 'failed', 'exhausted')
        ORDER BY id ASC
        LIMIT ?`,
       [limit],
@@ -491,7 +492,7 @@ export class Database {
   hasPendingOutbox(table: string, recordId: number | string): boolean {
     const row = this._get(
       `SELECT 1 AS found FROM sync_outbox
-       WHERE table_name = ? AND record_id = ? AND status IN ('pending', 'failed', 'sending')
+       WHERE table_name = ? AND record_id = ? AND status IN ('pending', 'failed', 'sending', 'exhausted')
        LIMIT 1`,
       [table, String(recordId)],
     )
@@ -502,7 +503,8 @@ export class Database {
     if (ids.length === 0) return
     const now = this._now()
     const placeholders = ids.map(() => '?').join(',')
-    this._run(`UPDATE sync_outbox SET status = 'sending', updated_at = ? WHERE id IN (${placeholders})`, [now, ...ids])
+    this._run(`UPDATE sync_outbox SET status = CASE WHEN status = 'exhausted' THEN status ELSE 'sending' END,
+      updated_at = ? WHERE id IN (${placeholders})`, [now, ...ids])
   }
 
   recoverInterruptedOutboxSending(): number {
@@ -537,10 +539,23 @@ export class Database {
     const placeholders = ids.map(() => '?').join(',')
     this._run(
       `UPDATE sync_outbox
-       SET status = 'failed', retry_count = retry_count + 1, last_error = ?, updated_at = ?
+       SET status = CASE WHEN retry_count >= 3 OR status = 'exhausted' THEN 'exhausted' ELSE 'failed' END,
+           retry_count = CASE WHEN status = 'exhausted' THEN retry_count ELSE retry_count + 1 END,
+           last_error = ?, updated_at = ?
        WHERE id IN (${placeholders})`,
       [error, now, ...ids],
     )
+  }
+
+  resolveOutbox(id: number, status: 'resolved' | 'terminated', reason: string): void {
+    this._run('UPDATE sync_outbox SET status=?, last_error=?, updated_at=? WHERE id=?',
+      [status, reason, this._now(), id])
+  }
+
+  getOutboxIssues(): { count: number; firstError: string | null } {
+    const count = this._get("SELECT COUNT(*) AS count FROM sync_outbox WHERE status IN ('failed','exhausted','terminated')")
+    const first = this._get("SELECT last_error FROM sync_outbox WHERE status IN ('failed','exhausted','terminated') ORDER BY id LIMIT 1")
+    return { count: Number(count?.count ?? 0), firstError: first?.last_error ?? null }
   }
 
   getLastServerVersion(): number {

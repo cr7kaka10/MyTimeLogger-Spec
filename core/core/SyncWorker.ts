@@ -53,10 +53,11 @@ export interface SyncRunContext {
 
 export interface SyncOperationResult {
   change_id: string
-  status: 'accepted' | 'duplicate' | 'skipped' | 'rejected'
+  status: 'accepted' | 'duplicate' | 'skipped' | 'rejected' | 'server_wins' | 'authority_missing'
   reason?: string
   table?: string
   record_id?: string | number
+  canonical_record?: Record<string, any>
 }
 
 interface PushResult {
@@ -92,6 +93,7 @@ export class SyncWorker {
   private _db: Database | null = null
   private _queue = new Map<string, Set<number>>()
   private _retryCount = 0
+  private _retryTimer: ReturnType<typeof setTimeout> | null = null
   private _running = false
   private _pausedForReset = false
   private _eventSource: EventSource | null = null
@@ -277,6 +279,8 @@ export class SyncWorker {
 
   /** 停止 */
   stop(): void {
+    if (this._retryTimer) clearTimeout(this._retryTimer)
+    this._retryTimer = null
     this._running = false
     this._flush(this._createContext('worker-stop')).catch(() => {})
   }
@@ -285,6 +289,8 @@ export class SyncWorker {
   pauseForReset(): void {
     this._pausedForReset = true
     this._running = false
+    if (this._retryTimer) clearTimeout(this._retryTimer)
+    this._retryTimer = null
     this._queue.clear()
   }
 
@@ -383,7 +389,7 @@ export class SyncWorker {
         device_id: entry.device_id,
         table: entry.table_name,
         record_id: entry.record_id,
-        operation: entry.operation,
+        operation: entry.status === 'exhausted' ? 'probe' : entry.operation,
         base_version: entry.base_version,
         payload: payload,
       }]
@@ -411,6 +417,10 @@ export class SyncWorker {
         request_id: resp.request_id ?? context.syncRunId,
       }
       if (results.length === 0) {
+        if (operations.some((operation: any) => operation.operation === 'probe')) {
+          ;(this._db as any).markOutboxFailed?.(ids, 'probe_response_missing')
+          return { ok: false, error: 'probe_response_missing', diagnostics: responseDiagnostics }
+        }
         ;(this._db as any).markOutboxSynced?.(ids, serverTime)
         this._db.setConfig('client_to_server_synced_at', serverTime)
         return { ok: true, diagnostics: responseDiagnostics, operationResults: operations.map((operation: any) => ({ ...operation, status: 'accepted' })) }
@@ -449,6 +459,21 @@ export class SyncWorker {
           } catch (error) {
             failed.push({ id: entry.id as number, reason: error instanceof Error ? error.message : 'category_id_rekey_failed' })
           }
+        } else if (result.status === 'server_wins' && result.canonical_record) {
+          try {
+            this._db.runInTransaction(() => {
+              const canonical = { ...result.canonical_record! }
+              const local = this._db!.getRecordById(entry.table_name, entry.record_id)
+              if (local?.id != null) canonical.id = local.id
+              ;(this._db as any).resolveOutbox?.(entry.id, 'resolved', result.reason || 'server_wins')
+              const error = this._upsertLocal(entry.table_name, canonical, serverTime, serverTime)
+              if (error) throw new Error(error)
+            })
+          } catch (error) {
+            failed.push({ id: entry.id as number, reason: error instanceof Error ? error.message : 'server_wins_merge_failed' })
+          }
+        } else if (result.status === 'authority_missing') {
+          ;(this._db as any).resolveOutbox?.(entry.id, 'terminated', result.reason || 'authority_missing')
         } else if (result.status === 'rejected' && String(result.reason || '').startsWith('server_owned_')) {
           acceptedIds.push(entry.id as number)
         } else if (result.status === 'rejected' && ['habit_deleted','habit_archived','provider_habit_readonly',
@@ -462,6 +487,10 @@ export class SyncWorker {
           failed.push({ id: entry.id as number, reason: result.reason || 'operation_rejected' })
         }
       }
+      const seen = new Set(results.map((result: any) => String(result.change_id)))
+      for (const entry of entries)
+        if (ids.includes(entry.id) && !seen.has(String(entry.change_id)))
+          failed.push({ id: entry.id, reason: 'push_result_missing' })
       if (acceptedIds.length > 0) {
         ;(this._db as any).markOutboxSynced?.(acceptedIds, serverTime)
       }
@@ -977,10 +1006,20 @@ export class SyncWorker {
     return this.requestSync(reason, refresh, completeContext)
   }
 
+  private _scheduleOutboxRetry(): void {
+    if (!this._running || this._pausedForReset || this._retryTimer) return
+    const delay = Math.min(30_000, 1000 * 2 ** Math.min(this._retryCount++, 5))
+    this._retryTimer = setTimeout(() => {
+      this._retryTimer = null
+      void this.requestSync('outbox-retry').catch(() => {})
+    }, delay)
+  }
+
   private async _flushNow(refresh = false, context: SyncRunContext = {}): Promise<SyncRunResult> {
     if (this._pausedForReset) return { ok: true, merged: 0 }
     const pushed = await this._flush(context)
     if (!pushed.ok) {
+      this._scheduleOutboxRetry()
       const pulled = await this._pullAndMergeResult(refresh, context)
       return {
         ...pulled,
@@ -996,12 +1035,22 @@ export class SyncWorker {
             operation_results: pushed.operationResults || [],
           },
         },
-        error: pulled.ok ? pulled.error : (pulled.error || pushed.error || 'sync_failed'),
+        ok: false,
+        error: pulled.error || pushed.error || 'sync_failed',
       }
     }
     const pulled = await this.pullAndMergeResult(refresh, context)
+    const pending = (this._db as any)?.getPendingOutbox?.(1)?.length ?? 0
+    if (pending > 0) this._scheduleOutboxRetry()
+    else if (pulled.ok) {
+      this._retryCount = 0
+      if (this._retryTimer) clearTimeout(this._retryTimer)
+      this._retryTimer = null
+    }
     return {
       ...pulled,
+      ok: pulled.ok && pending === 0,
+      error: pulled.error || (pending > 0 ? 'outbox_pending' : undefined),
       diagnostics: {
         ...(pulled.diagnostics || {}),
         provider_requested: Boolean(pulled.diagnostics?.provider_requested || pushed.diagnostics?.provider_requested),

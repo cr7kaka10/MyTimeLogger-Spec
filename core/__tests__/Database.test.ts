@@ -767,6 +767,27 @@ describe('Database', () => {
     expect(isolated.getPendingOutbox(10).find(item => item.id === outbox.id)?.status).toBe('pending')
   })
 
+  it('保留首次编辑基线并在首次失败加三次重试后只读回查', () => {
+    const isolated = createIsolatedDb()
+    isolated.setLastServerVersion(12)
+    const id = isolated.addCategory('基线测试', 'B', '#000', '输入')
+    const first = isolated.getPendingOutbox(10).find(item => item.record_id === String(id))!
+    expect(first.base_version).toBe('12')
+    isolated.setLastServerVersion(13)
+    ;(isolated as any)._enqueueOutbox('categories', id, 'upsert', { id, name: '新内容' }, '2026-10-28 10:00:00')
+    expect(isolated.getPendingOutbox(10).find(item => item.id === first.id)?.base_version).toBe('12')
+    for (let attempt = 1; attempt <= 4; attempt++) isolated.markOutboxFailed([first.id], 'push_failed')
+    const exhausted = isolated.getPendingOutbox(10).find(item => item.id === first.id)!
+    expect(exhausted.retry_count).toBe(4)
+    expect(exhausted.status).toBe('exhausted')
+    isolated.markOutboxSending([first.id])
+    isolated.markOutboxFailed([first.id], 'network_offline')
+    expect(isolated.getPendingOutbox(10).find(item => item.id === first.id)?.retry_count).toBe(4)
+    isolated.resolveOutbox(first.id, 'terminated', 'authority_missing')
+    expect(isolated.getPendingOutbox(10).some(item => item.id === first.id)).toBe(false)
+    expect((isolated as any)._get('SELECT payload_json FROM sync_outbox WHERE id=?', [first.id]).payload_json).toContain('新内容')
+  })
+
   it('aTimeLogger 同步开关默认关闭', () => {
     expect(db.getConfig('atimelogger_enabled')).toBe('false')
   })

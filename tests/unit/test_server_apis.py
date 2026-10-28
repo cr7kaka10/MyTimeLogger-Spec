@@ -1246,14 +1246,14 @@ def test_body_metric_deadline_lock_allows_data_backfill_without_reopening_checki
     assert backfill.json()["daily_log"]["weight"] == 80 and backfill.json()["daily_log"]["body_fat_rate"] == 20
     monkeypatch.setattr(sync_hub_module, "_cst_today", lambda: date)
     ok, rejected = server_module.sync_hub.upsert("exercise_daily_logs", {"id": "offline-daily", "date": date, "plan_version": "deadline-v1", "weight": 81, "body_fat_rate": 21, "completed_items": 99, "total_items": 99, "score_snapshot": "{\"total\":100}"}, 1)
-    assert ok and not rejected
+    assert not ok and rejected[0]["reason"] == "body_metrics_server_wins"
     with store._connect() as conn:
         daily = conn.execute("SELECT weight,body_fat_rate,completed_items,total_items,score_snapshot FROM server_exercise_daily_logs WHERE user_id=1 AND date=? AND plan_version='deadline-v1'", (date,)).fetchone()
         penalty_count = conn.execute("SELECT COUNT(*) FROM server_reward_ledger WHERE user_id=1 AND source_type='body_metric_deadline_penalty'", ()).fetchone()[0]
-    assert tuple(daily) == (81, 21, 0, 0, None) and penalty_count == 1
+    assert tuple(daily) == (80, 20, 0, 0, None) and penalty_count == 1
     refreshed = client.get(f"/api/exercise/state?date={date}&plan_version=deadline-v1", headers=headers).json()
     refreshed_lock = refreshed["checkins"][0]
-    assert refreshed["weight"] == 81 and refreshed["body_fat_rate"] == 21 and refreshed["body_metric_locked"] is True
+    assert refreshed["weight"] == 80 and refreshed["body_fat_rate"] == 20 and refreshed["body_metric_locked"] is True
     assert refreshed_lock["status"] == -1 and refreshed_lock["deadline_penalty_source_id"] == f"body-metric-deadline:{date}"
     allowed = client.post("/api/exercise/checkin", headers=headers, json={"date": date, "plan_version": "deadline-v1", "item_key": f"sc-{date}-1", "item_name": "普通项目", "status": 1})
     assert allowed.status_code == 200
@@ -1273,6 +1273,7 @@ def test_v5_diet_outbox_accepts_current_actions_and_skips_historical_pending(cli
         server_module._exercise_authoritative("v5").ensure_diet_rows(conn, 1, "2026-10-28", now)
     operations = [
         {"table": "exercise_diet_checkins", "change_id": f"v5-{key}", "operation": "upsert",
+         "base_version": "0",
          "payload": {"id": f"local-{key}", "date": "2026-10-28", "plan_version": "v5",
                      "rule_key": key, "status": status, "occurred_at": now.isoformat()}}
         for key, status in (("no_snacks", "completed"), ("no_refined_staples", "failed"))
@@ -1289,6 +1290,47 @@ def test_v5_diet_outbox_accepts_current_actions_and_skips_historical_pending(cli
     assert late["operation_results"][0]["status"] == "rejected"
     with store._connect() as conn:
         assert [tuple(row) for row in conn.execute("SELECT rule_key,status FROM server_exercise_diet_checkins WHERE user_id=1 AND date='2026-10-28' AND rule_key IN ('no_snacks','no_refined_staples') ORDER BY rule_key")] == [("no_refined_staples", "failed"), ("no_snacks", "completed")]
+
+
+def test_body_metrics_recovery_and_server_wins(client_with_db, monkeypatch):
+    client, store = client_with_db
+    _login_headers(client, "body_recovery_user")
+    monkeypatch.setattr(sync_hub_module, "_cst_today", lambda: "2026-10-28")
+    def push(change_id, date, weight, fat, baseline=None, operation="upsert"):
+        return asyncio.run(server_module.sync_hub.handle_push([{
+            "table": "exercise_daily_logs", "change_id": change_id, "operation": operation,
+            "base_version": baseline, "payload": {"id": "local-" + change_id, "date": date,
+                "plan_version": "v5", "exercise_type": "daily", "weight": weight, "body_fat_rate": fat}
+        }], user_id=1))["operation_results"][0]
+    first = push("first", "2026-10-27", 99, 30.5, "0")
+    assert first["status"] == "accepted"
+    with store._connect() as conn:
+        row = conn.execute("SELECT weight,body_fat_rate,score_snapshot FROM server_exercise_daily_logs WHERE user_id=1 AND date='2026-10-27' AND plan_version='v5'").fetchone()
+    assert tuple(row) == (99, 30.5, None)
+    stale = push("stale", "2026-10-27", 98, 29, "0")
+    assert stale["status"] == "server_wins" and stale["canonical_record"]["weight"] == 99
+    old_client = push("old-client", "2026-10-27", 97, 28, "2026-10-27 08:00:00")
+    assert old_client["status"] == "server_wins" and old_client["canonical_record"]["body_fat_rate"] == 30.5
+    probe = push("probe", "2026-10-27", 98, 29, None, "probe")
+    assert probe["status"] == "server_wins" and probe["canonical_record"]["weight"] == 99
+    other_account = asyncio.run(server_module.sync_hub.handle_push([{
+        "table": "exercise_daily_logs", "change_id": "cross-account-probe", "operation": "probe",
+        "payload": {"id": "local-cross", "date": "2026-10-27", "plan_version": "v5", "exercise_type": "daily"}
+    }], user_id=2))["operation_results"][0]
+    assert other_account["status"] == "authority_missing" and "canonical_record" not in other_account
+    absent = push("absent", "2026-10-26", 98, 29, None, "probe")
+    assert absent["status"] == "authority_missing"
+    assert push("empty", "2026-10-26", None, None, "0")["status"] == "accepted"
+    assert push("fill", "2026-10-26", 90, 28, "0")["status"] == "accepted"
+    mixed = asyncio.run(server_module.sync_hub.handle_push([
+        {"table": "exercise_daily_logs", "change_id": "mixed-conflict", "operation": "upsert", "base_version": "0",
+         "payload": {"id": "mixed-conflict", "date": "2026-10-27", "plan_version": "v5", "exercise_type": "daily", "weight": 98}},
+        {"table": "exercise_daily_logs", "change_id": "mixed-fresh", "operation": "upsert", "base_version": "0",
+         "payload": {"id": "mixed-fresh", "date": "2026-10-28", "plan_version": "v5", "exercise_type": "daily", "weight": 91}},
+    ], user_id=1))
+    assert [item["status"] for item in mixed["operation_results"]] == ["server_wins", "accepted"]
+    outside = push("outside", "2026-10-20", 99, 30.5)
+    assert outside["status"] == "rejected" and outside["reason"] == "body_metrics_recovery_window_expired"
 
 
 def test_exercise_checkin_persists_completed_time(client_with_db):

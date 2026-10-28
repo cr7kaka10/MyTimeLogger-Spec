@@ -119,6 +119,26 @@ describe('SyncWorker version cursor', () => {
     expect(markOutboxSynced).toHaveBeenCalledWith([1], expect.any(String))
   })
 
+  it('probes exhausted changes and merges the authoritative record without another write', async () => {
+    const worker = new SyncWorker()
+    const resolved = vi.fn()
+    const upsert = vi.spyOn(worker as any, '_upsertLocal').mockReturnValue(null)
+    const entry = { id: 1, table_name: 'exercise_daily_logs', record_id: 'local-1',
+      change_id: 'change-1', operation: 'upsert', status: 'exhausted', retry_count: 4,
+      payload_json: '{"id":"local-1","date":"2026-10-28","weight":98}' }
+    const db: any = { setEnqueue() {}, getConfig: () => '', setConfig() {},
+      getPendingOutbox: () => [entry], markOutboxSending() {}, runInTransaction: (fn: () => void) => fn(),
+      getRecordById: () => ({ id: 'local-1' }), resolveOutbox: resolved }
+    const post = vi.fn(async (_path: string, data: any) => ({ ok: true, data: { status: 'ok',
+      operation_results: [{ change_id: 'change-1', status: 'server_wins', reason: 'retry_limit_reached',
+        canonical_record: { id: 'server-1', date: '2026-10-28', weight: 99 } }] } }))
+    worker.bind({ post } as any, db)
+    expect(await (worker as any)._flushOutbox()).toMatchObject({ ok: true })
+    expect(post.mock.calls[0][1].operations[0].operation).toBe('probe')
+    expect(resolved).toHaveBeenCalledWith(1, 'resolved', 'retry_limit_reached')
+    expect(upsert).toHaveBeenCalledWith('exercise_daily_logs', expect.objectContaining({ id: 'local-1', weight: 99 }), expect.any(String), expect.any(String))
+  })
+
   it('recovers interrupted sending once before startup sync', () => {
     const worker = new SyncWorker()
     const recover = vi.fn()
@@ -840,7 +860,7 @@ describe('SyncWorker version cursor', () => {
     worker.bind(api, db)
     const result = await worker.flushNow(false, { syncRunId: 'run-1', reason: 'sleep-date-switch' })
 
-    expect(result.ok).toBe(true)
+    expect(result.ok).toBe(false)
     expect(result.merged).toBe(1)
     expect(savedVersion).toBe(71)
     expect(result.diagnostics?.push.error).toBe('cors_preflight_failed')
