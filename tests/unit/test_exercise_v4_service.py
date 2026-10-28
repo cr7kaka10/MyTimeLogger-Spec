@@ -322,7 +322,8 @@ def test_v4_diet_deadline_penalties_are_idempotent_and_offline_completion_repair
         rows = conn.execute("SELECT amount FROM server_reward_ledger WHERE user_id=1 AND source_type='exercise_diet_penalty'").fetchall()
         assert [row[0] for row in rows] == [-20.0, -20.0, -20.0]
         assert conn.execute("SELECT balance FROM server_user_wallets WHERE user_id=1").fetchone()[0] == -60
-        service.set_diet(conn, 1, date, DIET_RULES[0], True, "2026-09-14 23:59:00", datetime(2026, 9, 15, 1, tzinfo=BJ))
+        service.set_diet(conn, 1, date, DIET_RULES[0], True, "2026-09-14 23:59:00", datetime(2026, 9, 15, 1, tzinfo=BJ),
+            recorded_at="2026-09-14 23:59:00")
         rows = conn.execute("SELECT amount FROM server_reward_ledger WHERE user_id=1 AND source_type='exercise_diet_penalty'").fetchall()
         assert [row[0] for row in rows] == [-20.0, -20.0]
         assert conn.execute("SELECT balance FROM server_user_wallets WHERE user_id=1").fetchone()[0] == -40
@@ -344,6 +345,29 @@ def test_v4_user_marked_diet_failure_is_zero_score_without_early_penalty(tmp_db_
     assert tuple(fact) == ("failed", "user_marked_failed", None)
     assert score["cats"]["饮食约束"] == {"s": 0.0, "m": 15.0}
     assert len(penalties) == len(set(penalties)) == 2
+
+
+def test_v5_late_sync_repairs_only_auto_failure_with_original_time(tmp_db_path):
+    store, _ = _setup(tmp_db_path)
+    service = ExerciseV4Service(store.reward_wallet_service, lambda *args: None, "v5")
+    date = "2026-10-28"
+    with store._transact() as conn:
+        conn.execute("INSERT OR IGNORE INTO server_exercise_policy_metadata VALUES('v5_meal_timing','2026-10-26','2026-10-25')")
+        service.close_diet(conn, 1, date, datetime(2026, 10, 28, 13, 32, tzinfo=BJ))
+        source = f"exercise-diet-penalty:1:{date}:v5:lunch_on_time"
+        assert conn.execute("SELECT amount FROM server_reward_ledger WHERE id=?", (source,)).fetchone()[0] == -20
+        service.set_diet(conn, 1, date, "lunch_on_time", "completed", f"{date} 13:30:00",
+            datetime(2026, 10, 28, 14, tzinfo=BJ), recorded_at=f"{date} 13:30:00")
+        assert conn.execute("SELECT status FROM server_exercise_diet_checkins WHERE user_id=1 AND date=? AND rule_key='lunch_on_time'", (date,)).fetchone()[0] == "completed"
+        assert conn.execute("SELECT 1 FROM server_reward_ledger WHERE id=?", (source,)).fetchone() is None
+        assert conn.execute("SELECT balance FROM server_user_wallets WHERE user_id=1").fetchone()[0] == -20
+        service.set_diet(conn, 1, date, "dinner_on_time", "failed", f"{date} 14:00:00", datetime(2026, 10, 28, 14, tzinfo=BJ))
+        with pytest.raises(ValueError, match="diet_deadline_passed"):
+            service.set_diet(conn, 1, date, "dinner_on_time", "completed", f"{date} 18:59:00",
+                datetime(2026, 10, 28, 19, 3, tzinfo=BJ), recorded_at=f"{date} 18:59:00")
+        with pytest.raises(ValueError, match="diet_deadline_passed"):
+            service.set_diet(conn, 1, date, "dinner_on_time", "completed", f"{date} 19:02:00",
+                datetime(2026, 10, 28, 19, 3, tzinfo=BJ), recorded_at=f"{date} 19:02:00")
 
 
 def test_v4_full_domains_keep_exercise_completion_reward_at_100(tmp_db_path):

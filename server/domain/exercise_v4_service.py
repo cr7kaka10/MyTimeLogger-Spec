@@ -142,7 +142,7 @@ class ExerciseV4Service:
                 self._change(conn, user_id, "server_exercise_diet_checkins", row_id)
 
     def set_diet(self, conn, user_id: int, date: str, rule_key: str, status: str | bool,
-                 occurred_at: str | None, now: datetime) -> dict:
+                 occurred_at: str | None, now: datetime, recorded_at: str | None = None) -> dict:
         if rule_key not in self._diet_rules_for_date(conn, user_id, date):
             raise ValueError("unknown_diet_rule")
         if isinstance(status, bool):
@@ -152,13 +152,16 @@ class ExerciseV4Service:
         self.ensure_diet_rows(conn, user_id, date, now)
         event_time = _dt(occurred_at) if occurred_at else now.astimezone(TZ)
         deadline = _diet_deadline(date, rule_key)
+        recorded_time = _dt(recorded_at) if recorded_at else None
+        late_evidence = bool(recorded_time and event_time <= recorded_time < deadline)
         if status == "completed" and (event_time < _deadline(date) - timedelta(days=1) or
-                event_time >= deadline or now.astimezone(TZ) >= deadline):
+                event_time >= deadline or (now.astimezone(TZ) >= deadline and not late_evidence)):
             raise ValueError("diet_deadline_passed")
         row = conn.execute("""SELECT * FROM server_exercise_diet_checkins
             WHERE user_id=? AND date=? AND plan_version=? AND rule_key=?""",
             (user_id, date, self.plan_version, rule_key)).fetchone()
-        if (row["status"] == "failed" and status == "completed") or (status == "pending" and
+        auto_failed = row["status"] == "failed" and row["failure_reason"] in {"meal_window_passed", "not_completed_before_midnight"}
+        if (row["status"] == "failed" and status == "completed" and not (auto_failed and late_evidence)) or (status == "pending" and
                 now.astimezone(TZ) >= deadline):
             raise ValueError("diet_deadline_passed")
         stamp = _now_text(now)
