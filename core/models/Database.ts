@@ -2874,6 +2874,12 @@ export class Database {
     const keys = AUTHORITATIVE_DIET_RULE_KEYS[planVersion]
     if (this.isExerciseDateLocked(date) || !keys?.includes(ruleKey)) return;
     if (typeof status === 'boolean') status = status ? 'completed' : 'pending';
+    if (status === 'completed') {
+      const times: Record<string, string> = { breakfast_on_time: '08:30:00', lunch_on_time: '13:31:00', dinner_on_time: '19:01:00' }
+      const cutoff = times[ruleKey] ? new Date(`${date}T${times[ruleKey]}+08:00`).getTime()
+        : new Date(`${date}T00:00:00+08:00`).getTime() + 86_400_000
+      if (Date.now() >= cutoff) return
+    }
     const now = this._now(); const id = `diet:${date}:${planVersion}:${ruleKey}`;
     const deadline = new Date(`${date}T00:00:00+08:00`); deadline.setDate(deadline.getDate() + 1);
     this._run(`INSERT INTO exercise_diet_checkins

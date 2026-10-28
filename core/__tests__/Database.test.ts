@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll } from 'vitest'
+import { describe, it, expect, beforeAll, vi } from 'vitest'
 import { createBetterSqliteAdapter } from '../models/BetterSqliteAdapter'
 import { Database } from '../models/Database'
 import { initDatabase as initSchema } from '../models/Schema'
@@ -12,6 +12,25 @@ describe('Database', () => {
   })
 
   const createIsolatedDb = () => new Database(createBetterSqliteAdapter())
+
+  it('午餐截止前打卡保留原始时间与 outbox，截止后不倒填完成', () => {
+    const local = createIsolatedDb()
+    try {
+      vi.useFakeTimers()
+      vi.setSystemTime(new Date('2026-10-28T13:30:00+08:00'))
+      local.toggleExerciseDietCheckin('2026-10-28', 'lunch_on_time', 'completed', 'v5')
+      const row = local.allRaw("SELECT status,occurred_at FROM exercise_diet_checkins WHERE date='2026-10-28' AND rule_key='lunch_on_time'")[0]
+      const queued = local.getPendingOutbox(20).find(item => item.table_name === 'exercise_diet_checkins')
+      expect(row.status).toBe('completed')
+      expect(row.occurred_at).toBe('2026-10-28 13:30:00')
+      expect(JSON.parse(String(queued?.payload_json)).occurred_at).toBe(row.occurred_at)
+      vi.setSystemTime(new Date('2026-10-28T13:31:00+08:00'))
+      local.toggleExerciseDietCheckin('2026-10-28', 'lunch_on_time', 'completed', 'v5')
+      expect(local.allRaw("SELECT occurred_at FROM exercise_diet_checkins WHERE date='2026-10-28' AND rule_key='lunch_on_time'")[0].occurred_at).toBe(row.occurred_at)
+      local.toggleExerciseDietCheckin('2026-10-28', 'breakfast_on_time', 'completed', 'v5')
+      expect(local.allRaw("SELECT id FROM exercise_diet_checkins WHERE date='2026-10-28' AND rule_key='breakfast_on_time'")).toHaveLength(0)
+    } finally { vi.useRealTimers() }
+  })
 
   it('空PC库只初始化一次默认分类且不预填登录凭据', () => {
     const sqlDb = createBetterSqliteAdapter()
