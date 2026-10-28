@@ -155,6 +155,29 @@ describe('SyncWorker version cursor', () => {
     expect(db.allRaw('SELECT payload_json FROM sync_outbox WHERE id=?', [original.id])[0].payload_json).toContain('"weight":98')
   })
 
+  it('stops writing after four failed attempts then probes and adopts server body values', async () => {
+    const db = new Database(createBetterSqliteAdapter())
+    db.upsertExerciseDailyLog('2026-10-28', 44, '周三', 98, 0, 0, 'v5', undefined, 'gym', 29)
+    const original = db.getPendingOutbox(10).find(row => row.table_name === 'exercise_daily_logs')!
+    const calls: string[] = []
+    const worker = new SyncWorker()
+    worker.bind({ post: vi.fn(async (_path: string, data: any) => {
+      const operation = data.operations[0].operation
+      calls.push(operation)
+      return operation === 'probe'
+        ? { ok: true, data: { status: 'ok', operation_results: [{ change_id: original.change_id,
+          status: 'server_wins', canonical_record: { id: 'server-id', date: '2026-10-28',
+            plan_version: 'v5', exercise_type: 'daily', weight: 99, body_fat_rate: 30.5 } }] } }
+        : { ok: false, error: 'push_failed' }
+    }) } as any, db)
+    for (let attempt = 0; attempt < 4; attempt++) expect((await (worker as any)._flushOutbox()).ok).toBe(false)
+    expect(db.getPendingOutbox(10).find(row => row.id === original.id)).toMatchObject({ status: 'exhausted', retry_count: 4 })
+    expect((await (worker as any)._flushOutbox()).ok).toBe(true)
+    expect(calls).toEqual(['upsert', 'upsert', 'upsert', 'upsert', 'probe'])
+    expect(db.getExerciseDailyLog('2026-10-28', 'v5')).toMatchObject({ weight: 99, body_fat_rate: 30.5 })
+    expect(db.getPendingOutbox(10).some(row => row.id === original.id)).toBe(false)
+  })
+
   it('backs off automatic retries without an unbounded immediate loop', async () => {
     vi.useFakeTimers()
     try {
