@@ -18,6 +18,7 @@ public class MainActivity extends BridgeActivity {
         super.onCreate(savedInstanceState);
         MorningDiaryReminderReceiver.scheduleInitial(this,System.currentTimeMillis());
         DietCheckinReminderReceiver.schedule(this,System.currentTimeMillis());
+        MealDeadlineReceiver.schedule(this,System.currentTimeMillis());
         applySystemBars(getResources().getConfiguration());
         if (bridge == null) return;
         bridge.getWebView().setBackgroundColor(Color.WHITE);
@@ -47,6 +48,7 @@ public class MainActivity extends BridgeActivity {
     @Override public void onResume() {
         super.onResume();
         DietCheckinReminderReceiver.schedule(this,System.currentTimeMillis());
+        MealDeadlineReceiver.schedule(this,System.currentTimeMillis());
         if (dailyWidgetBridge != null) dailyWidgetBridge.setForeground(true);
     }
 
