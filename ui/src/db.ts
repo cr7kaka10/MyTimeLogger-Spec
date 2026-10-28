@@ -90,6 +90,8 @@ export function emitSharedSyncStatus(state: SharedSyncState, error?: string): vo
   const issues = applicationDatabase?.getOutboxIssues?.()
   if (state === 'synced' && issues?.count > 0) {
     state = 'partial'; error = `${issues.count} 项 · ${issues.firstError || '待处理'}`
+  } else if (state === 'failed' && issues?.count > 0) {
+    error = `${issues.count} 项 · ${issues.firstError || error || '同步失败'}`
   }
   const target = globalThis as any
   if (typeof target.dispatchEvent !== 'function' || typeof target.CustomEvent !== 'function') return

@@ -139,6 +139,23 @@ describe('SyncWorker version cursor', () => {
     expect(upsert).toHaveBeenCalledWith('exercise_daily_logs', expect.objectContaining({ id: 'local-1', weight: 99 }), expect.any(String), expect.any(String))
   })
 
+  it('backs off automatic retries without an unbounded immediate loop', async () => {
+    vi.useFakeTimers()
+    try {
+      const worker = new SyncWorker()
+      const request = vi.spyOn(worker, 'requestSync').mockResolvedValue({ ok: false, merged: 0 })
+      ;(worker as any)._running = true
+      for (const delay of [1000, 2000, 4000]) {
+        ;(worker as any)._scheduleOutboxRetry()
+        await vi.advanceTimersByTimeAsync(delay - 1)
+        expect(request).toHaveBeenCalledTimes([1000, 2000, 4000].indexOf(delay))
+        await vi.advanceTimersByTimeAsync(1)
+      }
+      expect(request).toHaveBeenCalledTimes(3)
+      worker.stop()
+    } finally { vi.useRealTimers() }
+  })
+
   it('recovers interrupted sending once before startup sync', () => {
     const worker = new SyncWorker()
     const recover = vi.fn()
