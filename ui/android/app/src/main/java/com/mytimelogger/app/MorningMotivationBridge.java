@@ -1,11 +1,17 @@
 package com.mytimelogger.app;
 
 import android.app.NotificationManager;
+import android.app.AlarmManager;
 import android.content.Context;
 import android.webkit.JavascriptInterface;
+import android.os.Build;
+import androidx.core.app.NotificationManagerCompat;
 import org.json.JSONArray;
 import org.json.JSONObject;
 import java.time.LocalDate;
+import java.time.Instant;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
 
 public final class MorningMotivationBridge {
     static final String JAVASCRIPT_NAME = "MorningMotivationBridge";
@@ -36,5 +42,26 @@ public final class MorningMotivationBridge {
         context.getSharedPreferences("morning_motivation_v1", Context.MODE_PRIVATE).edit().remove("last_notified").apply();
         context.getSystemService(NotificationManager.class).cancel(870);
         context.getSystemService(NotificationManager.class).cancel(871);
+    }
+    @JavascriptInterface public String status() {
+        var prefs = context.getSharedPreferences("morning_motivation_v1", Context.MODE_PRIVATE);
+        AlarmManager alarms = (AlarmManager) context.getSystemService(Context.ALARM_SERVICE);
+        boolean exact = alarms != null && (Build.VERSION.SDK_INT < 31 || alarms.canScheduleExactAlarms());
+        String next = Instant.ofEpochMilli(MorningMotivationReceiver.next(System.currentTimeMillis()))
+            .atZone(ZoneId.of("Asia/Shanghai")).format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"));
+        try { return new JSONObject().put("enabled", prefs.getBoolean("enabled", true))
+            .put("permission", NotificationManagerCompat.from(context).areNotificationsEnabled())
+            .put("exactAlarm", exact).put("next", next)
+            .put("lastResult", prefs.getString("last_result", "未投递"))
+            .put("lastAt", prefs.getString("last_at", "")).toString(); }
+        catch (Exception error) { return "{}"; }
+    }
+    @JavascriptInterface public void setEnabled(boolean enabled) {
+        context.getSharedPreferences("morning_motivation_v1", Context.MODE_PRIVATE).edit().putBoolean("enabled", enabled).apply();
+        MorningMotivationReceiver.schedule(context, System.currentTimeMillis());
+        if (!enabled) context.getSystemService(NotificationManager.class).cancel(870);
+    }
+    @JavascriptInterface public boolean trial() {
+        return MorningMotivationNotifier.notifyAt(context, System.currentTimeMillis(), true);
     }
 }
