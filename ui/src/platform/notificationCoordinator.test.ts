@@ -21,4 +21,12 @@ facts = [...facts, { id: 'retry', amount: 5, source_type: 'task_complete' }]
 await coordinator.reconcile(); assert(!delivered.includes('ledger:retry'), 'failed delivery stays pending')
 await coordinator.reconcile(); await coordinator.reconcile()
 assert(delivered.filter(key => key === 'ledger:retry').length === 1, 'successful retry is delivered once')
+const dietValues = new Map<string, string>()
+const dietPreferences = createNotificationPreferences({ ...store, get: async key => dietValues.get(key) ?? null, set: async (key, value) => { dietValues.set(key, value) } })
+let dietFacts: any[] = []
+const dietCoordinator = createNotificationCoordinator({ readFacts: () => ({ external: [], ledger: dietFacts }), preferences: dietPreferences, notifications, isForeground: () => true })
+await dietCoordinator.reconcile()
+dietFacts = [{ id: 'diet', amount: -20, source_type: 'exercise_diet_penalty', source_id: 'exercise-diet-penalty:1:2026-10-28:v5:lunch_on_time', target_date: '2026-10-28' }]
+await dietCoordinator.reconcile()
+assert(delivered.includes('ledger:diet'), 'meal penalty is visible immediately in foreground')
 console.log('notification foreground policy tests passed')

@@ -21,7 +21,7 @@ export function createNotificationCoordinator(dependencies: Dependencies) {
     const handled = new Set(batch.handledKeys)
     for (const message of batch.notifications) {
       for (const key of message.handledKeys) handled.delete(key)
-      if (!settings.master || !settings[message.channel] || (dependencies.isForeground() && !settings.foreground)) continue
+      if (!settings.master || !settings[message.channel] || (dependencies.isForeground() && !settings.foreground && message.title !== '饮食打卡逾期')) continue
       try { if (await dependencies.notifications.notify(message) === 'delivered') { delivered += 1; message.handledKeys.forEach(key => handled.add(key)) } } catch { /* retry on next reconciliation */ }
     }
     await dependencies.preferences.markHandled([...handled])

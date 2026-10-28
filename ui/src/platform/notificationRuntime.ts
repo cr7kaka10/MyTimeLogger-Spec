@@ -71,7 +71,7 @@ export async function installNotificationRuntime(runtime: PlatformRuntime, db: a
     }
   }
   const reconcile = () => { void current?.coordinator.reconcile().catch(() => {}); void reconcileSleep().catch(() => {}) }
-  const events = ['sync-pull-complete', 'balance-updated', 'mtl:goals-settled']
+  const events = ['sync-pull-complete', 'balance-updated', 'mtl:goals-settled', 'focus', 'visibilitychange', 'mtl:notification-permission-restored']
   events.forEach(event => window.addEventListener(event, reconcile))
   const authExpired = () => { void (async () => {
     const context = current; if (!context || !await context.preferences.beginAuthExpiry()) return
