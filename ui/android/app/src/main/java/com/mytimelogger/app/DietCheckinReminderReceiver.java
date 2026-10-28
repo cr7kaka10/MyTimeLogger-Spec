@@ -34,10 +34,13 @@ public final class DietCheckinReminderReceiver extends BroadcastReceiver {
         if (intent == null) return;
         long now = System.currentTimeMillis();
         if (ACTION.equals(intent.getAction())) {
-            try { if (DietCheckinReminderStore.needsReminder(context, now)) notifyPending(context, now); }
+            try { deliverAt(context, now); }
             catch (RuntimeException error) { Log.w("DietReminder", "notify_failed", error); }
         }
         schedule(context, now);
+    }
+    static void deliverAt(Context context, long now) {
+        if (DietCheckinReminderStore.needsReminder(context, now)) notifyPending(context, now);
     }
     private static void notifyPending(Context context, long now) {
         String day = DailyWidgetStore.dayAt(now);
