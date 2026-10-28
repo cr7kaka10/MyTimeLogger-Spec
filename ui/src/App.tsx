@@ -160,6 +160,8 @@ const AppSession = ({ initialAuthenticated, onAccountActivated }: { initialAuthe
         if (detail?.focusAi) setTimerAiFocusRequest(current => current + 1)
       } else if (detail?.route === 'checklist') {
         handleNavigate('checklist')
+      } else if (detail?.route === 'exercise') {
+        handleNavigate('exercise')
       }
     }
     window.addEventListener('mtl:navigate', navigate)

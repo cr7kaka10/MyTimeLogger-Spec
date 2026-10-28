@@ -17,6 +17,7 @@ public class MainActivity extends BridgeActivity {
     @Override protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         MorningDiaryReminderReceiver.scheduleInitial(this,System.currentTimeMillis());
+        DietCheckinReminderReceiver.schedule(this,System.currentTimeMillis());
         applySystemBars(getResources().getConfiguration());
         if (bridge == null) return;
         bridge.getWebView().setBackgroundColor(Color.WHITE);
@@ -45,6 +46,7 @@ public class MainActivity extends BridgeActivity {
 
     @Override public void onResume() {
         super.onResume();
+        DietCheckinReminderReceiver.schedule(this,System.currentTimeMillis());
         if (dailyWidgetBridge != null) dailyWidgetBridge.setForeground(true);
     }
 
@@ -56,7 +58,7 @@ public class MainActivity extends BridgeActivity {
     private void dispatchWidgetRoute(Intent intent) {
         if (bridge == null || intent == null) return;
         String route = intent.getStringExtra("route");
-        if (!("timer".equals(route) || "checklist".equals(route))) return;
+        if (!("timer".equals(route) || "checklist".equals(route) || "exercise".equals(route))) return;
         boolean focusAi = intent.getBooleanExtra("focus_ai_prompt", false);
         bridge.getWebView().post(() -> bridge.getWebView().evaluateJavascript(
                 "window.__mtlPendingNavigation={route:'" + route + "',focusAi:" + focusAi + "};" +

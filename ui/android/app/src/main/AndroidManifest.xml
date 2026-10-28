@@ -67,6 +67,14 @@
             </intent-filter>
         </receiver>
         <receiver android:name=".MorningDiaryReminderReceiver" android:exported="false" />
+        <receiver android:name=".DietCheckinReminderReceiver" android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+                <action android:name="android.intent.action.TIME_SET" />
+                <action android:name="android.intent.action.TIMEZONE_CHANGED" />
+            </intent-filter>
+        </receiver>
         <receiver android:name=".TimerWidgetBootReceiver" android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />

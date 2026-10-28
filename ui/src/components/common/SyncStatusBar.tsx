@@ -8,6 +8,7 @@ const labels: Record<SharedSyncState, string> = {
   synced: '已同步',
   offline: '离线',
   failed: '同步失败',
+  partial: '部分记录需处理',
 }
 
 const dotTones: Record<SharedSyncState, string> = {
@@ -16,6 +17,7 @@ const dotTones: Record<SharedSyncState, string> = {
   synced: 'bg-emerald-500',
   offline: 'bg-gray-400 dark:bg-gray-500',
   failed: 'bg-red-500',
+  partial: 'bg-amber-500',
 }
 
 const initialStatus = (): SharedSyncStatus => ({

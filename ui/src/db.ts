@@ -79,7 +79,7 @@ export interface SyncChangeResult {
   sync: SyncNowResult
 }
 
-export type SharedSyncState = 'connecting' | 'syncing' | 'synced' | 'offline' | 'failed'
+export type SharedSyncState = 'connecting' | 'syncing' | 'synced' | 'offline' | 'failed' | 'partial'
 export type SharedSyncStatus = { state: SharedSyncState; at: string; error?: string }
 let latestSharedSyncSequence = 0
 const checklistSyncErrors = new Map<string, string>()
@@ -87,6 +87,10 @@ const checklistSyncErrors = new Map<string, string>()
 export function emitSharedSyncStatus(state: SharedSyncState, error?: string): void {
   const checklistError = checklistSyncErrors.get(activeAccountStorageKey || '')
   if (state === 'synced' && checklistError) { state = 'failed'; error = checklistError }
+  const issues = applicationDatabase?.getOutboxIssues?.()
+  if (state === 'synced' && issues?.count > 0) {
+    state = 'partial'; error = `${issues.count} 项 · ${issues.firstError || '待处理'}`
+  }
   const target = globalThis as any
   if (typeof target.dispatchEvent !== 'function' || typeof target.CustomEvent !== 'function') return
   target.dispatchEvent(new target.CustomEvent('mtl:sync-status', { detail: { state, at: formatBeijingDateTime(), error } satisfies SharedSyncStatus }))
