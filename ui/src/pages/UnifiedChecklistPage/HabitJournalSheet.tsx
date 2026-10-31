@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { BottomSheet } from '../../components/common/BottomSheet'
-import { getCurrentTimerClient, syncNow } from '../../db'
+import { getCurrentTimerClient, getDatabase, syncNow } from '../../db'
+import { LOCAL_HABITS_UPDATED } from '../../hooks/useLocalHabitMutation'
 
 interface Props { habitId: string; name: string; date: string; initialNote?: string; onClose: () => void; onSaved?: () => void }
 const moods = ['😭', '☹️', '😐', '🙂', '🥰']
@@ -29,11 +30,25 @@ export function HabitJournalSheet({ habitId, name, date, initialNote = '', onClo
     } catch (reason) { setError(reason instanceof Error ? reason.message : '日志保存失败') }
     finally { setBusy(false) }
   }
+  const disablePrompt = async () => {
+    if (busy) return
+    setBusy(true); setError('')
+    try {
+      const db = await getDatabase()
+      db.setHabitJournalPrompt(habitId, false)
+      const result = await syncNow({ reason: 'habit-journal-prompt' })
+      if (!result.ok) throw new Error('设置已保存在本机，暂未同步；请重试')
+      window.dispatchEvent(new Event(LOCAL_HABITS_UPDATED))
+      onClose()
+    } catch (reason) { setError(reason instanceof Error ? reason.message : '设置失败，请重试') }
+    finally { setBusy(false) }
+  }
   return <BottomSheet open ariaLabel={`习惯日志 ${name}`} onClose={() => { if (!busy) onClose() }} panelClass="p-5 sm:mb-6 sm:max-w-xl sm:rounded-3xl">
     <div className="space-y-4 text-gray-900 dark:text-gray-100">
       <header className="flex items-start justify-between"><div><h2 className="text-lg font-bold">{name}</h2><p className="text-sm text-gray-500">{date} · 打卡日志</p></div><button type="button" disabled={busy} aria-label="关闭日志" onClick={onClose}>×</button></header>
       <div className="flex justify-between gap-1" aria-label="选择心情">{moods.map(item => <button key={item} type="button" aria-label={`心情 ${item}`} aria-pressed={mood === item} onClick={() => setMood(mood === item ? '' : item)} className={`rounded-xl px-2 py-1 text-2xl ${mood === item ? 'bg-blue-100 dark:bg-blue-900' : 'hover:bg-gray-100 dark:hover:bg-gray-800'}`}>{item}</button>)}</div>
       <textarea value={note} maxLength={1990} onChange={event => setNote(event.target.value)} placeholder="打卡成功！记录一下心得吧" aria-label="打卡日志内容" className="min-h-28 w-full rounded-xl border border-gray-200 bg-gray-50 p-3 text-sm dark:border-gray-700 dark:bg-gray-800" />
+      <button type="button" disabled={busy} onClick={() => void disablePrompt()} className="text-left text-xs text-gray-500 underline disabled:opacity-50">本习惯不再显示打卡日志</button>
       {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
       <div className="flex justify-end gap-2"><button type="button" disabled={busy} onClick={onClose} className="rounded-xl border px-4 py-2 text-sm dark:border-gray-700">跳过</button><button type="button" disabled={busy} onClick={() => void save()} className="theme-accent-button rounded-xl px-5 py-2 text-sm disabled:opacity-50">{busy ? '保存中…' : '保存'}</button></div>
     </div>
