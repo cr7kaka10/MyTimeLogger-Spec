@@ -298,6 +298,16 @@ def ensure_server_schema(conn: sqlite3.Connection):
         FOREIGN KEY(user_id) REFERENCES users(id))""")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_habit_day_ignores_user_date "
                  "ON server_habit_day_ignores(user_id,date,is_ignored)")
+    conn.execute("""CREATE TABLE IF NOT EXISTS server_habit_windows (
+        id TEXT PRIMARY KEY, user_id INTEGER NOT NULL, habit_id TEXT NOT NULL,
+        effective_from TEXT NOT NULL, start_minute INTEGER, end_minute INTEGER,
+        created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+        UNIQUE(user_id, habit_id, effective_from),
+        CHECK ((start_minute IS NULL AND end_minute IS NULL) OR
+               (start_minute >= 0 AND start_minute < end_minute AND end_minute <= 1440)),
+        FOREIGN KEY(user_id) REFERENCES users(id))""")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_habit_windows_user_day "
+                 "ON server_habit_windows(user_id,effective_from,habit_id)")
 
     # 9. 奖励商品配置表
     conn.execute(

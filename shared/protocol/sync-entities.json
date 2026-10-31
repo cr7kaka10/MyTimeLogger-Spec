@@ -78,6 +78,18 @@
       "serverFields": ["user_id", "server_version"]
     },
     {
+      "name": "habit_windows",
+      "clientTable": "habit_windows",
+      "serverTable": "server_habit_windows",
+      "primaryKey": "id",
+      "naturalKeys": ["habit_id", "effective_from"],
+      "ownership": "server_owned",
+      "direction": "pull_only",
+      "outbox": false,
+      "deletePolicy": "no_delete",
+      "serverFields": ["user_id", "server_version"]
+    },
+    {
       "name": "goals",
       "clientTable": "goals",
       "serverTable": "server_goals",
