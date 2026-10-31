@@ -32,6 +32,33 @@ class HabitDomainService:
                 conn, user_id, "server_habit_checkins", record_id, operation, fields or {"id": str(record_id)}
             )
 
+    def timed_checkin_guard(self, conn, user_id, habit_id, date_str, desired_status, automatic=False):
+        window = conn.execute("""SELECT start_minute,end_minute FROM server_habit_windows
+            WHERE user_id=? AND habit_id=? AND effective_from<=? ORDER BY effective_from DESC LIMIT 1""",
+            (user_id, habit_id, date_str)).fetchone()
+        if not window or window["start_minute"] is None:
+            return None
+        if desired_status == 0:
+            raise ValueError("timed_habit_immutable")
+        existing = conn.execute("""SELECT id,status FROM server_habit_checkins
+            WHERE user_id=? AND habit_id=? AND COALESCE(checkin_date,date)=?""",
+            (user_id, habit_id, date_str)).fetchone()
+        if existing:
+            if int(existing["status"] or 0) == desired_status:
+                return existing["id"]
+            raise ValueError("timed_habit_final")
+        if automatic:
+            return None
+        today, clock = self._now().split(" ", 1)
+        if date_str != today:
+            raise ValueError("timed_habit_wrong_day")
+        minute = int(clock[:2]) * 60 + int(clock[3:5])
+        if minute < window["start_minute"]:
+            raise ValueError("timed_habit_before_window")
+        if minute >= window["end_minute"]:
+            raise ValueError("timed_habit_after_window")
+        return None
+
     def checkin_habit(self, user_id, habit_id, date_str) -> bool:
         """习惯打卡。
 
@@ -70,6 +97,9 @@ class HabitDomainService:
         """在调用方事务内登记服务端确认的打卡和全部派生奖励事实。"""
         if not self._active_in_txn(conn, user_id, habit_id):
             return None
+        duplicate = self.timed_checkin_guard(conn, user_id, habit_id, date_str, 2)
+        if duplicate:
+            return duplicate
         habit = conn.execute(
             "SELECT name, difficulty, icon FROM server_habits WHERE id=? AND user_id=?",
             (habit_id, user_id),
@@ -121,8 +151,11 @@ class HabitDomainService:
         ).fetchone()
         return not checkin or int(checkin["status"] or 0) != 2 or self.can_cancel_checkin_in_txn(conn, user_id, habit_id, date_str)
 
-    def mark_failed_habit_in_txn(self, conn, user_id, habit_id, date_str) -> str | None:
+    def mark_failed_habit_in_txn(self, conn, user_id, habit_id, date_str, automatic=False) -> str | None:
         """记录失败状态，并用既有奖励规则结算失败流水。"""
+        duplicate = self.timed_checkin_guard(conn, user_id, habit_id, date_str, 1, automatic)
+        if duplicate:
+            return duplicate
         if not self.can_mark_failed_in_txn(conn, user_id, habit_id, date_str):
             return None
         habit = conn.execute(
@@ -188,6 +221,7 @@ class HabitDomainService:
 
     def cancel_checkin_habit_in_txn(self, conn, user_id, habit_id, date_str) -> bool:
         """在调用方事务内撤销打卡、金币、自动商品及其使用流水。"""
+        self.timed_checkin_guard(conn, user_id, habit_id, date_str, 0)
         if not self.can_cancel_checkin_in_txn(conn, user_id, habit_id, date_str):
             return False
         checkin = conn.execute(

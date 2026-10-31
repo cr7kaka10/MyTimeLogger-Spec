@@ -31,8 +31,10 @@ class HabitCheckinCommandService:
                 applicable = self._can_apply(user_id, habit_id, checkin_date, desired_status)
             except HabitUnavailable as exc:
                 return self._commands.mark(user_id, idempotency_key, "failed", error_code=str(exc))
-            except ValueError:
-                return self._commands.mark(user_id, idempotency_key, "retryable_failed", error_code="cancel_not_allowed")
+            except ValueError as exc:
+                code = str(exc) if str(exc).startswith("timed_habit_") else "cancel_not_allowed"
+                return self._commands.mark(user_id, idempotency_key,
+                    "failed" if code.startswith("timed_habit_") else "retryable_failed", error_code=code)
             if not applicable:
                 return self._commands.mark(user_id, idempotency_key, "retryable_failed", error_code="cancel_not_allowed")
             self._commands.begin_attempt(user_id, idempotency_key)
@@ -64,13 +66,16 @@ class HabitCheckinCommandService:
                     self._commands.mark_in_txn(conn, user_id, idempotency_key, "confirmed")
         except HabitUnavailable as exc:
             return self._commands.mark(user_id, idempotency_key, "failed", error_code=str(exc))
-        except ValueError:
-            return self._commands.mark(user_id, idempotency_key, "retryable_failed", error_code="cancel_not_allowed")
+        except ValueError as exc:
+            code = str(exc) if str(exc).startswith("timed_habit_") else "cancel_not_allowed"
+            return self._commands.mark(user_id, idempotency_key,
+                "failed" if code.startswith("timed_habit_") else "retryable_failed", error_code=code)
         return self._commands.get(user_id, idempotency_key)
 
     def _can_apply(self, user_id: int, habit_id: str, checkin_date: str, desired_status: int) -> bool:
         with self._transact() as conn:
             self._require_active(conn, user_id, habit_id)
+            self._habits.timed_checkin_guard(conn, user_id, habit_id, checkin_date, desired_status)
             if int(desired_status) == 2:
                 return True
             if int(desired_status) == 1:
