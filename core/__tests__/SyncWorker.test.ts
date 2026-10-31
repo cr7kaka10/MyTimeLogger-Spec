@@ -119,6 +119,28 @@ describe('SyncWorker version cursor', () => {
     expect(markOutboxSynced).toHaveBeenCalledWith([1], expect.any(String))
   })
 
+  it('applies ignored and revoked habit days from the server without replaying legacy writes', async () => {
+    const db = new Database(createBetterSqliteAdapter())
+    const post = vi.fn()
+    db.createOutboxOperation('habit_day_ignores', 'ignore-1', 'upsert', { id: 'ignore-1', is_ignored: 1 })
+    const states = [1, 0]
+    const get = vi.fn(async () => {
+      const ignored = states.shift() ?? 0
+      return { ok: true, data: { status: 'ok', from_version: ignored ? 0 : 1,
+        to_version: ignored ? 1 : 2, server_time: '2026-10-31 18:00:00',
+        tables: { habit_day_ignores: [{ id: 'ignore-1', habit_id: 'local_h', date: '2026-10-31',
+          is_ignored: ignored, created_at: '2026-10-31 09:00:00', updated_at: '2026-10-31 18:00:00' }] } } }
+    })
+    const worker = new SyncWorker(); worker.bind({ post, get } as any, db)
+    await worker.flushNow(true)
+    expect(db.getIgnoredHabitIds('2026-10-31').has('local_h')).toBe(true)
+    await worker.flushNow(true)
+    expect(db.getIgnoredHabitIds('2026-10-31').has('local_h')).toBe(false)
+    expect(db.getIgnoredHabitIds('2026-11-01').size).toBe(0)
+    expect(db.getPendingOutbox(20).some(row => row.table_name === 'habit_day_ignores')).toBe(false)
+    expect(post).not.toHaveBeenCalled()
+  })
+
   it('isolates a locally blocked task without a server task and retains its payload', async () => {
     const db = new Database(createBetterSqliteAdapter())
     db.createOutboxOperation('tasks', 'local_orphan', 'delete', { id: 'local_orphan', source: 'ticktick', title: '原内容' })
