@@ -183,8 +183,11 @@ class HabitDomainService:
                    VALUES (?,?,?,?,?,?,1,?,?)""",
                 (checkin_id, user_id, habit_id, date_str, date_str, now_ts.split(" ")[1], now_ts, now_ts),
             )
-        reward = self._reward_rules.calculate_habit_fail(user_id, habit_id, habit["name"], habit["difficulty"] or "easy")
-        self._reward_settlement.settle_habit_fail_in_txn(conn, user_id, habit_id, reward.title, reward.amount, date_str)
+        configured = conn.execute("SELECT penalty FROM server_reward_config WHERE user_id=? AND item_type='habit' AND item_id=?",
+                                  (user_id, habit_id)).fetchone() if automatic else None
+        if not automatic or (configured and configured["penalty"] is not None and float(configured["penalty"]) > 0):
+            reward = self._reward_rules.calculate_habit_fail(user_id, habit_id, habit["name"], habit["difficulty"] or "easy")
+            self._reward_settlement.settle_habit_fail_in_txn(conn, user_id, habit_id, reward.title, reward.amount, date_str)
         self._record_change(conn, user_id, checkin_id, "upsert")
         return checkin_id
 
