@@ -62,7 +62,7 @@ class HabitAutoFailureService:
             count = 0
             for habit in habits:
                 if scheduled_for_date(habit["repeat_rule"], target):
-                    if self._habits.mark_failed_habit_in_txn(conn, user_id, habit["id"], target):
+                    if self._habits.mark_failed_habit_in_txn(conn, user_id, habit["id"], target, automatic=True):
                         count += 1
             state["done"] = target
             conn.execute("UPDATE server_system_config SET value=?,updated_at=? WHERE user_id=? AND key=?",
