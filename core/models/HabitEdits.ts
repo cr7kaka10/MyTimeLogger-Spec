@@ -3,6 +3,11 @@ export type HabitEdits = {
   category_id?: number | null; sort_order?: number; repeat_rule?: string | null
 }
 
+export type HabitWindowEdits = {
+  start_minute: number | null
+  end_minute: number | null
+}
+
 export function normalizeHabitEdits(fields: HabitEdits): Record<string, unknown> {
   const allowed = new Set(['name', 'title', 'icon', 'color', 'category_id', 'sort_order', 'repeat_rule'])
   const result: Record<string, unknown> = {}

@@ -1273,6 +1273,17 @@ export class Database {
     return this._all("SELECT * FROM habits WHERE is_active=0 AND source='local' ORDER BY sort_order") as Habit[]
   }
 
+  getIgnoredHabitIds(date: string): Set<string> {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return new Set()
+    return new Set(this._all('SELECT habit_id FROM habit_day_ignores WHERE date=? AND is_ignored=1', [date])
+      .map(row => String(row.habit_id)))
+  }
+
+  getIgnoredHabitRows(date: string): Record<string, any>[] {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return []
+    return this._all('SELECT * FROM habit_day_ignores WHERE date=? AND is_ignored=1 ORDER BY habit_id', [date])
+  }
+
   getArchivedLocalHabits(): Habit[] {
     return this._all("SELECT * FROM habits WHERE source='local' AND is_active=1 ORDER BY updated_at DESC") as Habit[]
   }

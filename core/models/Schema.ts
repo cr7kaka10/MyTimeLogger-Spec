@@ -103,6 +103,27 @@ export const DDL_STATEMENTS: string[] = [
     pushed_at TEXT,                               -- 服务端同步时间戳
     FOREIGN KEY(habit_id) REFERENCES habits(id)
   )`,
+  `CREATE TABLE IF NOT EXISTS habit_day_ignores (
+    id TEXT PRIMARY KEY,
+    habit_id TEXT NOT NULL,
+    date TEXT NOT NULL,
+    is_ignored INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    pulled_at TEXT,
+    UNIQUE(habit_id, date)
+  )`,
+  `CREATE TABLE IF NOT EXISTS habit_windows (
+    id TEXT PRIMARY KEY,
+    habit_id TEXT NOT NULL,
+    effective_from TEXT NOT NULL,
+    start_minute INTEGER,
+    end_minute INTEGER,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    pulled_at TEXT,
+    UNIQUE(habit_id, effective_from)
+  )`,
 
   // 6. 目标挑战 (🔴 TEXT UUID)
   `CREATE TABLE IF NOT EXISTS goals (
@@ -930,6 +951,7 @@ function applyCompatibilityMigrations(db: SqlDB): void {
   runIgnoreError(db, "ALTER TABLE tasks ADD COLUMN source_modified_time TEXT")
   runIgnoreError(db, "ALTER TABLE tasks ADD COLUMN source TEXT NOT NULL DEFAULT 'ticktick'")
   runIgnoreError(db, "ALTER TABLE habits ADD COLUMN source TEXT NOT NULL DEFAULT 'ticktick'")
+  runIgnoreError(db, "ALTER TABLE habits ADD COLUMN is_active INTEGER NOT NULL DEFAULT 0")
   runIgnoreError(db, "ALTER TABLE habits ADD COLUMN journal_prompt_enabled INTEGER NOT NULL DEFAULT 1")
   for (const column of ['archived_at TEXT', 'archive_reason TEXT',
     'lifecycle_version INTEGER NOT NULL DEFAULT 0', 'restored_version INTEGER NOT NULL DEFAULT 0', 'provider_binding_id TEXT', 'provider_id TEXT']) {
