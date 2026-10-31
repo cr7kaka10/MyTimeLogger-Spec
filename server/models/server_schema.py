@@ -298,6 +298,10 @@ def ensure_server_schema(conn: sqlite3.Connection):
         FOREIGN KEY(user_id) REFERENCES users(id))""")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_habit_day_ignores_user_date "
                  "ON server_habit_day_ignores(user_id,date,is_ignored)")
+    conn.execute("""CREATE TABLE IF NOT EXISTS server_habit_day_ignore_commands (
+        user_id INTEGER NOT NULL, command_id TEXT NOT NULL, habit_id TEXT NOT NULL,
+        date TEXT NOT NULL, is_ignored INTEGER NOT NULL, created_at TEXT NOT NULL,
+        PRIMARY KEY(user_id,command_id), FOREIGN KEY(user_id) REFERENCES users(id))""")
     conn.execute("""CREATE TABLE IF NOT EXISTS server_habit_windows (
         id TEXT PRIMARY KEY, user_id INTEGER NOT NULL, habit_id TEXT NOT NULL,
         effective_from TEXT NOT NULL, start_minute INTEGER, end_minute INTEGER,
