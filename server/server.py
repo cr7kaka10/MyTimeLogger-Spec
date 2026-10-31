@@ -184,6 +184,7 @@ try:
     from .domain.atimelogger_final_backup import ATimeLoggerFinalBackupWorker
     from .domain.ticktick_task_mutation_service import TickTickTaskMutationService
     from .domain.habit_checkin_command_service import HabitCheckinCommandService
+    from .domain.habit_day_ignore_service import HabitDayIgnoreService
     from .domain.habit_auto_failure_service import HabitAutoFailureService
     from .domain.management_plan_service import ManagementPlanError, ManagementPlanService
     from .domain.user_behavior_audit_service import UserBehaviorAuditService
@@ -226,6 +227,7 @@ except (ImportError, ValueError):
     from domain.atimelogger_final_backup import ATimeLoggerFinalBackupWorker
     from domain.ticktick_task_mutation_service import TickTickTaskMutationService
     from domain.habit_checkin_command_service import HabitCheckinCommandService
+    from domain.habit_day_ignore_service import HabitDayIgnoreService
     from domain.habit_auto_failure_service import HabitAutoFailureService
     from domain.management_plan_service import ManagementPlanError, ManagementPlanService
     from domain.user_behavior_audit_service import UserBehaviorAuditService
@@ -294,6 +296,7 @@ habit_checkin_command_store = HabitCheckinCommandStore(store._connect)
 habit_checkin_command_service = HabitCheckinCommandService(
     store._transact, store.habit_domain_service, habit_checkin_command_store
 )
+habit_day_ignore_service = HabitDayIgnoreService(store._transact, store._record_server_change, lambda: _beijing_now())
 habit_auto_failure_service = HabitAutoFailureService(store._transact, store.habit_domain_service)
 management_plan_service = ManagementPlanService(store._connect)
 def _behavior_audit_service() -> UserBehaviorAuditService:
@@ -4874,6 +4877,17 @@ def get_today_summary(date: str, user: dict = Depends(get_current_user_optional)
     return {"status": "ok", "summary": summary}
 
 # --- 3. 习惯管理 (Habits) ---
+@app.post("/api/habits/day-ignores")
+async def set_habit_day_ignore(request: Request, user: dict = Depends(get_current_user)):
+    body = await request.json()
+    try:
+        result = habit_day_ignore_service.set(int(user["id"]), str(body.get("habit_id") or ""),
+            str(body.get("date") or ""), str(body.get("idempotency_key") or ""), body.get("ignore"))
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    sync_hub._notify_clients(["habit_day_ignores"], int(user["id"]))
+    return result
+
 @app.get("/api/habits")
 def get_habits(user: dict = Depends(get_current_user_optional)):
     habit_auto_failure_service.run(user_id=int(user["id"]))
