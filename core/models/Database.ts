@@ -91,6 +91,7 @@ export interface Habit {
   source?: string; repeat_rule?: string | null
   journal_prompt_enabled?: number
   updated_at?: string; pushed_at?: string | null
+  window_start_minute?: number | null; window_end_minute?: number | null
 }
 
 export interface CategoryNormalizationPreview {
@@ -1271,6 +1272,16 @@ export class Database {
   getHabits(): Habit[] {
     // is_active = 0 表示正常（与 TickTick 一致），is_active = 1 表示归档
     return this._all("SELECT * FROM habits WHERE is_active=0 AND source='local' ORDER BY sort_order") as Habit[]
+  }
+
+  getHabitWindowsForDate(date: string): Map<string, { start_minute: number | null; end_minute: number | null }> {
+    const windows = new Map<string, { start_minute: number | null; end_minute: number | null }>()
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return windows
+    for (const row of this._all('SELECT habit_id,start_minute,end_minute FROM habit_windows WHERE effective_from<=? ORDER BY effective_from DESC', [date])) {
+      const id = String(row.habit_id)
+      if (!windows.has(id)) windows.set(id, { start_minute: row.start_minute == null ? null : Number(row.start_minute), end_minute: row.end_minute == null ? null : Number(row.end_minute) })
+    }
+    return windows
   }
 
   getIgnoredHabitIds(date: string): Set<string> {

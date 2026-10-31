@@ -43,6 +43,8 @@ export interface Habit {
   repeat_rule?: string | null
   journal_prompt_enabled?: number
   category_id?: number | null
+  window_start_minute?: number | null
+  window_end_minute?: number | null
 }
 
 export interface HabitCheckin {

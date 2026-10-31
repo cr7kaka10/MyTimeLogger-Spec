@@ -27,6 +27,17 @@ export function isHabitScheduledForDate(repeatRule: string | undefined | null, d
   return scheduledForDate(repeatRule, dateStr)
 }
 
+export function timedHabitBlock(habit: Habit, date: string, status: number, now = new Date()): string | null {
+  if (habit.window_start_minute == null || habit.window_end_minute == null) return null
+  if (status === 1 || status === 2) return '定时习惯结果已锁定，不能修改'
+  if (date !== dateToShanghaiDateString(now)) return '定时习惯只能在当天时间段内打卡'
+  const parts = new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Shanghai', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(now)
+  const minutes = Number(parts.find(part => part.type === 'hour')?.value) * 60 + Number(parts.find(part => part.type === 'minute')?.value)
+  if (minutes < habit.window_start_minute) return '打卡时间未到'
+  if (minutes >= habit.window_end_minute) return '打卡已超时，等待自动判定失败'
+  return null
+}
+
 export const useHabits = (): UseHabitsReturn => {
   const [habits, setHabits] = useState<Habit[]>([])
   const [todayCheckins, setTodayCheckins] = useState<HabitCheckin[]>([])
@@ -46,6 +57,12 @@ export const useHabits = (): UseHabitsReturn => {
     getDatabase().then(db => {
       // 获取所有习惯（不按日期过滤，习惯每天都显示）
       const all = db.getHabits() as any[]
+      const windows = db.getHabitWindowsForDate(selectedDate)
+      for (const habit of all) {
+        const window = windows.get(String(habit.id))
+        habit.window_start_minute = window?.start_minute ?? null
+        habit.window_end_minute = window?.end_minute ?? null
+      }
       
       // 获取选中日期的打卡记录
       const checkinsForSelectedDate = db.getTodayCheckins(selectedDate) as any[]
@@ -88,6 +105,7 @@ export const useHabits = (): UseHabitsReturn => {
   }, [refreshTrigger, syncRefresh, selectedDate])
 
   const setHabitIgnored = useCallback(async (habitId: number | string, ignore: boolean) => {
+    if (habits.concat(ignoredHabits).some(habit => String(habit.id) === String(habitId) && habit.window_start_minute != null)) return false
     const api = getCurrentTimerClient()
     if (!api) return false
     const response = await api.post('/api/habits/day-ignores', {
@@ -98,7 +116,7 @@ export const useHabits = (): UseHabitsReturn => {
     await syncNow({ reason: 'habit-day-ignore' })
     setRefreshTrigger(previous => previous + 1)
     return true
-  }, [selectedDate])
+  }, [selectedDate, habits, ignoredHabits])
 
 
   const submitHabitCommand = useCallback(async (habitId: number | string, date: string, desiredStatus: number, idempotencyKey: string, retry = false) => {
@@ -150,13 +168,19 @@ export const useHabits = (): UseHabitsReturn => {
     navigator.vibrate?.(10)
     const targetDate = date || getLocalYYYYMMDD()
     const existing = todayCheckins.find(item => String(item.habit_id) === String(habitId))
+    const habit = habits.find(item => String(item.id) === String(habitId))
+    const blocked = habit && timedHabitBlock(habit, targetDate, Number(existing?.status || 0))
+    if (blocked) {
+      window.dispatchEvent(new CustomEvent('habit-lifecycle-error', { detail: blocked }))
+      return { confirmed: false, checkedIn: false, date: targetDate }
+    }
     let desiredStatus = forceStatus ?? (existing?.status === 2 ? 0 : 2)
     if (forceStatus !== undefined && existing?.status === forceStatus) desiredStatus = 0
     const cryptoApi = globalThis.crypto
     const idempotencyKey = cryptoApi?.randomUUID?.() || `habit-${Date.now()}-${Math.random().toString(16).slice(2)}`
     const confirmed = await submitHabitCommand(habitId, targetDate, desiredStatus, idempotencyKey)
     return { confirmed: Boolean(confirmed), checkedIn: desiredStatus === 2, date: targetDate }
-  }, [submitHabitCommand, todayCheckins])
+  }, [submitHabitCommand, todayCheckins, habits])
 
   const retryHabitCheckin = useCallback(async (habitId: number | string) => {
     const habitKey = String(habitId)
