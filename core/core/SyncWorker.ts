@@ -396,8 +396,40 @@ export class SyncWorker {
     })
     const ids = entries.filter((entry: any) => !ignoredIds.includes(entry.id) && !blockedTaskIds.includes(entry.id) && !deferredProviderIds.includes(entry.id)).map((entry: any) => entry.id)
     if (ignoredIds.length) (this._db as any).markOutboxSynced?.(ignoredIds, this._now())
-    if (blockedTaskIds.length) (this._db as any).markOutboxFailed?.(blockedTaskIds, 'task_structure_requires_command')
-    if (operations.length === 0) return { ok: true, diagnostics: {
+    let blockedError: string | undefined
+    const failBlocked = (rows: any[], reason: string) => {
+      const retry = rows.filter(entry => Number(entry.retry_count || 0) < 3).map(entry => entry.id)
+      const isolate = rows.filter(entry => Number(entry.retry_count || 0) >= 3)
+      if (retry.length) (this._db as any).markOutboxFailed?.(retry, reason)
+      for (const entry of isolate) (this._db as any).resolveOutbox?.(entry.id, 'terminated', reason)
+    }
+    if (blockedTaskIds.length) {
+      const authority = await this._api.get('/api/tasks', undefined, SYNC_CONFIG.timeout.pull, context.syncRunId)
+      this._emitAuthState(authority.status)
+      if (!authority.ok || authority.data?.status !== 'ok' || !Array.isArray(authority.data.tasks)) {
+        blockedError = authority.error || 'task_authority_unavailable'
+        failBlocked(entries.filter((item: any) => blockedTaskIds.includes(item.id)), blockedError)
+      } else {
+        const tasks = new Map<string, Record<string, any>>(authority.data.tasks.map((task: any) => [String(task.id), task]))
+        for (const entry of entries.filter((item: any) => blockedTaskIds.includes(item.id))) {
+          const canonical = tasks.get(String(entry.record_id))
+          try {
+            this._db.runInTransaction(() => {
+              ;(this._db as any).resolveOutbox?.(entry.id, canonical ? 'resolved' : 'terminated',
+                canonical ? 'task_structure_server_wins' : 'task_structure_authority_missing')
+              if (canonical) {
+                const error = this._upsertLocal('tasks', canonical, this._now(), this._now())
+                if (error) throw new Error(error)
+              }
+            })
+          } catch (error) {
+            blockedError = error instanceof Error ? error.message : 'task_authority_merge_failed'
+            failBlocked([entry], blockedError)
+          }
+        }
+      }
+    }
+    if (operations.length === 0) return { ok: !blockedError, error: blockedError, diagnostics: {
       scope, provider_requested: deferredProviderIds.length > 0, provider_executed: false, provider_blocked: deferredProviderIds.length,
     } }
     ;(this._db as any).markOutboxSending?.(ids)
@@ -503,8 +535,8 @@ export class SyncWorker {
         accepted: acceptedIds.length,
         failed: failed.length,
       })
-      if (failed.length > 0) {
-        const error = failed[0].reason || 'operation_rejected'
+      if (failed.length > 0 || blockedError) {
+        const error = failed[0]?.reason || blockedError || 'operation_rejected'
         return { ok: false, statsStr, error, diagnostics: responseDiagnostics, operationResults: results }
       }
       return { ok: true, statsStr, diagnostics: responseDiagnostics, operationResults: results }

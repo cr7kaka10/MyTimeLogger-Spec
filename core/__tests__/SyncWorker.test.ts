@@ -119,6 +119,47 @@ describe('SyncWorker version cursor', () => {
     expect(markOutboxSynced).toHaveBeenCalledWith([1], expect.any(String))
   })
 
+  it('isolates a locally blocked task without a server task and retains its payload', async () => {
+    const db = new Database(createBetterSqliteAdapter())
+    db.createOutboxOperation('tasks', 'local_orphan', 'delete', { id: 'local_orphan', source: 'ticktick', title: '原内容' })
+    const entry = db.getPendingOutbox(10)[0]
+    const get = vi.fn(async () => ({ ok: true, data: { status: 'ok', tasks: [] } }))
+    const post = vi.fn()
+    const worker = new SyncWorker(); worker.bind({ get, post } as any, db)
+    expect((await (worker as any)._flushOutbox({ scope: 'checklist' })).ok).toBe(true)
+    expect(get).toHaveBeenCalled()
+    expect(post).not.toHaveBeenCalled()
+    expect(db.getPendingOutbox(10)).toHaveLength(0)
+    expect(db.allRaw('SELECT status,payload_json FROM sync_outbox WHERE id=?', [entry.id])[0]).toMatchObject({ status: 'terminated' })
+    expect(db.allRaw('SELECT payload_json FROM sync_outbox WHERE id=?', [entry.id])[0].payload_json).toContain('原内容')
+  })
+
+  it('adopts a server task when a local protected task write was blocked', async () => {
+    const db = new Database(createBetterSqliteAdapter())
+    db.runRaw("INSERT INTO tasks (id,title,priority,status,due_date,tags,raw_json,updated_at) VALUES (?,'本地标题',0,0,'2026-10-31','[]','{}','2026-10-31 08:00:00')", ['remote-1'])
+    db.createOutboxOperation('tasks', 'remote-1', 'delete', { id: 'remote-1', source: 'ticktick', title: '本地标题' })
+    const entry = db.getPendingOutbox(10)[0]
+    const get = vi.fn(async () => ({ ok: true, data: { status: 'ok', tasks: [{ id: 'remote-1', title: '服务端标题', source: 'ticktick', due_date: '2026-10-31' }] } }))
+    const post = vi.fn()
+    const worker = new SyncWorker(); worker.bind({ get, post } as any, db)
+    expect((await (worker as any)._flushOutbox({ scope: 'checklist' })).ok).toBe(true)
+    expect(db.getRecordById('tasks', 'remote-1')).toMatchObject({ title: '服务端标题' })
+    expect(db.allRaw('SELECT status,payload_json FROM sync_outbox WHERE id=?', [entry.id])[0]).toMatchObject({ status: 'resolved' })
+    expect(post).not.toHaveBeenCalled()
+  })
+
+  it('stops retrying an unavailable task authority after four attempts', async () => {
+    const db = new Database(createBetterSqliteAdapter())
+    db.createOutboxOperation('tasks', 'local_retry', 'archive', { id: 'local_retry', title: '可恢复内容' })
+    const entry = db.getPendingOutbox(10)[0]
+    const get = vi.fn(async () => ({ ok: false, error: 'request_timeout' }))
+    const worker = new SyncWorker(); worker.bind({ get, post: vi.fn() } as any, db)
+    for (let attempt = 0; attempt < 4; attempt++) await (worker as any)._flushOutbox({ scope: 'checklist' })
+    expect(get).toHaveBeenCalledTimes(4)
+    expect(db.getPendingOutbox(10)).toHaveLength(0)
+    expect(db.allRaw('SELECT status,payload_json FROM sync_outbox WHERE id=?', [entry.id])[0]).toMatchObject({ status: 'terminated' })
+  })
+
   it('probes exhausted changes and merges the authoritative record without another write', async () => {
     const worker = new SyncWorker()
     const resolved = vi.fn()
