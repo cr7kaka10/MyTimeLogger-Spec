@@ -246,6 +246,7 @@ def ensure_server_schema(conn: sqlite3.Connection):
             category_id INTEGER DEFAULT NULL,     -- 关联分类ID
             difficulty TEXT DEFAULT 'medium',     -- 难度（easy/medium/hard）
             repeat_rule TEXT DEFAULT NULL,        -- 重复规则（滴答清单 RRULE）
+            journal_prompt_enabled INTEGER NOT NULL DEFAULT 1,
             is_active INTEGER DEFAULT 0,          -- 是否归档（1归档,0未归档，正常显示）
             raw_json TEXT,                        -- 滴答清单原始数据快照（完整JSON）
             source TEXT NOT NULL DEFAULT 'ticktick', -- 来源(local/ticktick)
@@ -2004,6 +2005,7 @@ def ensure_server_schema(conn: sqlite3.Connection):
     })
     migrate_provider_mirror_identity(conn)
     _ensure_columns(conn, "server_habits", {
+        "journal_prompt_enabled": "INTEGER NOT NULL DEFAULT 1",
         "archived_at": "TEXT", "archive_reason": "TEXT",
         "lifecycle_version": "INTEGER NOT NULL DEFAULT 0",
         "provider_binding_id": "TEXT", "provider_id": "TEXT",

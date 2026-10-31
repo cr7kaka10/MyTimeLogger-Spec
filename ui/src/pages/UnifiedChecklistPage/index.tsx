@@ -35,7 +35,7 @@ export const UnifiedChecklistPage = memo(({
     pendingHabit.current.add(key)
     try {
       const result = await habits.toggleCheckin(habitId, date, status)
-      if (result.confirmed && result.checkedIn) {
+      if (result.confirmed && result.checkedIn && habits.habits.find(item => String(item.id) === key)?.journal_prompt_enabled !== 0) {
         setJournal({ habitId: key, name: habits.habits.find(item => String(item.id) === key)?.name || '习惯', date: result.date })
       }
     } finally { pendingHabit.current.delete(key) }

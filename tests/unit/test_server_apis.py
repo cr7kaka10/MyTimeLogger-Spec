@@ -1349,6 +1349,42 @@ def test_v5_late_offline_meal_sync_repairs_auto_penalty(client_with_db, monkeypa
         assert conn.execute("SELECT 1 FROM server_reward_ledger WHERE user_id=1 AND id=?", (f"exercise-diet-penalty:1:{date}:v5:lunch_on_time",)).fetchone() is None
 
 
+def test_habit_journal_prompt_survives_legacy_client_push(client_with_db):
+    client, store = client_with_db
+    _login_headers(client, "journal_preference_user")
+
+    def push(change_id, payload):
+        return asyncio.run(server_module.sync_hub.handle_push([{
+            "table": "habits", "change_id": change_id, "operation": "upsert", "payload": payload,
+        }], user_id=1, sync_scope="checklist"))["operation_results"][0]
+
+    base = {"id": "local_journal", "name": "本地习惯", "source": "local", "is_active": 0,
+            "created_at": "2026-10-31 10:00:00", "updated_at": "2026-10-31 10:00:00"}
+    assert push("journal-new", {**base, "journal_prompt_enabled": 0})["status"] == "accepted"
+    with store._connect() as conn:
+        assert conn.execute("SELECT journal_prompt_enabled FROM server_habits WHERE user_id=1 AND id='local_journal'").fetchone()[0] == 0
+    assert push("journal-old-client", {**base, "updated_at": "2026-10-31 10:01:00"})["status"] == "accepted"
+    with store._connect() as conn:
+        row = conn.execute("SELECT journal_prompt_enabled FROM server_habits WHERE user_id=1 AND id='local_journal'").fetchone()
+    assert row[0] == 0
+
+
+def test_provider_habit_accepts_only_journal_prompt(client_with_db):
+    client, store = client_with_db
+    _login_headers(client, "provider_journal_user")
+    with store._connect() as conn:
+        conn.execute("INSERT INTO server_habits (id,user_id,name,source,created_at,updated_at) VALUES ('provider-1',1,'服务端名称','ticktick','2026-10-31','2026-10-31')")
+        conn.commit()
+    result = asyncio.run(server_module.sync_hub.handle_push([{
+        "table": "habits", "change_id": "provider-journal", "operation": "upsert",
+        "payload": {"id": "provider-1", "source": "ticktick", "journal_prompt_enabled": 0},
+    }], user_id=1, sync_scope="checklist"))["operation_results"][0]
+    assert result["status"] == "accepted"
+    with store._connect() as conn:
+        row = conn.execute("SELECT name,journal_prompt_enabled FROM server_habits WHERE user_id=1 AND id='provider-1'").fetchone()
+    assert tuple(row) == ("服务端名称", 0)
+
+
 def test_body_metrics_recovery_and_server_wins(client_with_db, monkeypatch):
     client, store = client_with_db
     _login_headers(client, "body_recovery_user")

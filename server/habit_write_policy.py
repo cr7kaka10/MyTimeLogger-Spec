@@ -24,13 +24,17 @@ def local_habit_write(conn, user_id, data, now):
     row = conn.execute("SELECT * FROM server_habits WHERE user_id=? AND id=?", (user_id, hid)).fetchone()
     if tombstone:
         raise ValueError('habit_deleted')
+    if row and row['source'] != 'local' and set(data) <= {'id', 'source', 'journal_prompt_enabled'} and 'journal_prompt_enabled' in data:
+        if type(data['journal_prompt_enabled']) is not int or data['journal_prompt_enabled'] not in (0, 1):
+            raise ValueError('invalid_journal_prompt_enabled')
+        return {'id': hid, 'journal_prompt_enabled': data['journal_prompt_enabled']}
     if (row and row['source'] != 'local') or not hid.startswith('local_') or data.get('source', 'local') != 'local':
         raise ValueError('provider_habit_readonly')
     if row and row['is_active'] != 0:
         raise ValueError('habit_archived')
     if row and data.get('updated_at') and _timestamp(data['updated_at']) < _timestamp(row['updated_at']):
         raise ValueError('stale_habit_version')
-    allowed = {'id','name','icon','color','sort_order','category_id','repeat_rule','is_active','created_at','updated_at'}
+    allowed = {'id','name','icon','color','sort_order','category_id','repeat_rule','is_active','created_at','updated_at','journal_prompt_enabled'}
     result = {k: v for k, v in data.items() if k in allowed}
     name = result.get('name', row['name'] if row else None)
     if not isinstance(name, str) or not name.strip():
@@ -43,6 +47,8 @@ def local_habit_write(conn, user_id, data, now):
             raise ValueError('invalid_habit_text')
     if type(result.get('is_active', 0)) is not int or result.get('is_active', 0) not in (0, 1):
         raise ValueError('invalid_habit_lifecycle')
+    if 'journal_prompt_enabled' in result and (type(result['journal_prompt_enabled']) is not int or result['journal_prompt_enabled'] not in (0, 1)):
+        raise ValueError('invalid_journal_prompt_enabled')
     result.update(source='local', name=name.strip(), difficulty=row['difficulty'] if row else 'easy')
     if result.get('is_active') == 1:
         result.update(archived_at=now, archive_reason='local_user')

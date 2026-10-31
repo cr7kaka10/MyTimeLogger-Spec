@@ -12,6 +12,7 @@ export function HabitActions({ habit, categories = [], onClose, onEditReward }: 
   const [mode, setMode] = useState<'view' | 'edit' | 'delete'>('view')
   const [journal, setJournal] = useState<{ date: string; note: string } | null>(null)
   const [journalRefresh, setJournalRefresh] = useState(0)
+  const [journalPrompt, setJournalPrompt] = useState(habit.journal_prompt_enabled !== 0)
   const mutation = useLocalHabitMutation()
   if (journal) return <HabitJournalSheet habitId={String(habit.id)} name={habit.name} date={journal.date} initialNote={journal.note}
     onClose={() => setJournal(null)} onSaved={() => setJournalRefresh(value => value + 1)} />
@@ -26,6 +27,7 @@ export function HabitActions({ habit, categories = [], onClose, onEditReward }: 
         <button type="button" disabled={mutation.busy} onClick={onClose} aria-label="关闭习惯管理" className="rounded-xl p-2 text-xl text-gray-400 hover:bg-gray-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-500 dark:hover:bg-gray-800">×</button>
       </header>
       <main className="min-h-0 flex-1 space-y-4 overflow-y-auto p-5">
+        <label className="flex items-center justify-between gap-3 rounded-xl border border-gray-200 p-3 text-sm dark:border-gray-700"><span>打卡后弹出日志</span><input type="checkbox" checked={journalPrompt} disabled={mutation.busy} onChange={event => { const enabled = event.target.checked; void mutation.run(db => db.setHabitJournalPrompt(habit.id, enabled)).then(ok => { if (ok) setJournalPrompt(enabled) }) }} aria-label="本习惯打卡后弹出日志" /></label>
         <HabitDetails id={habit.id} onEditHabit={() => setMode('edit')} onEditReward={() => onEditReward(habit)} onEditJournal={(date, note) => setJournal({ date, note })} refreshKey={journalRefresh} />
         {mode === 'delete' ? <section aria-label="删除确认" className="rounded-2xl border border-red-200 bg-red-50/70 p-4 dark:border-red-900 dark:bg-red-950/30">
           <h3 className="font-semibold text-red-700 dark:text-red-300">从清单隐藏，保留历史</h3><p className="mt-1 text-sm text-red-600 dark:text-red-300">历史打卡和已结算奖励不会删除，变更会同步到其他设备。</p>

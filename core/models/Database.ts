@@ -89,6 +89,7 @@ export interface Habit {
   category_id: number | null; sort_order: number
   is_active: number; difficulty: string; created_at?: string
   source?: string; repeat_rule?: string | null
+  journal_prompt_enabled?: number
   updated_at?: string; pushed_at?: string | null
 }
 
@@ -1320,6 +1321,14 @@ export class Database {
     vals.push(id)
     this._run(`UPDATE habits SET ${sets.join(', ')} WHERE id = ?`, vals)
     this._afterWrite('habits', id)
+  }
+
+  setHabitJournalPrompt(id: string | number, enabled: boolean): void {
+    const row = this.getRecordById('habits', id)
+    if (!row || row.is_active !== 0) throw new Error('习惯不存在或已归档')
+    this._run('UPDATE habits SET journal_prompt_enabled=?,updated_at=? WHERE id=?', [enabled ? 1 : 0, this._now(), id])
+    if (row.source === 'local') this._afterWrite('habits', id)
+    else this.createOutboxOperation('habits', String(id), 'upsert', { id: String(id), source: row.source || 'ticktick', journal_prompt_enabled: enabled ? 1 : 0 })
   }
 
   deleteHabit(id: string | number, expectedUpdatedAt?: string): void {

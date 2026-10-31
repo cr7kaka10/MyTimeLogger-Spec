@@ -76,6 +76,7 @@ export const DDL_STATEMENTS: string[] = [
     is_active INTEGER NOT NULL DEFAULT 0,         -- 是否归档（1归档,0未归档，正常显示）
     difficulty TEXT DEFAULT 'medium',             -- 习惯难度(trivial/easy/medium/hard)
     repeat_rule TEXT DEFAULT NULL,                -- 重复规则(如一周哪几天，RRULE)
+    journal_prompt_enabled INTEGER NOT NULL DEFAULT 1,
     raw_json TEXT,                                -- 滴答清单原始完整JSON数据
     source TEXT NOT NULL DEFAULT 'ticktick',      -- 来源(local/ticktick)
     source_etag TEXT,                             -- 滴答清单 etag 指纹
@@ -929,6 +930,7 @@ function applyCompatibilityMigrations(db: SqlDB): void {
   runIgnoreError(db, "ALTER TABLE tasks ADD COLUMN source_modified_time TEXT")
   runIgnoreError(db, "ALTER TABLE tasks ADD COLUMN source TEXT NOT NULL DEFAULT 'ticktick'")
   runIgnoreError(db, "ALTER TABLE habits ADD COLUMN source TEXT NOT NULL DEFAULT 'ticktick'")
+  runIgnoreError(db, "ALTER TABLE habits ADD COLUMN journal_prompt_enabled INTEGER NOT NULL DEFAULT 1")
   for (const column of ['archived_at TEXT', 'archive_reason TEXT',
     'lifecycle_version INTEGER NOT NULL DEFAULT 0', 'restored_version INTEGER NOT NULL DEFAULT 0', 'provider_binding_id TEXT', 'provider_id TEXT']) {
     runIgnoreError(db, `ALTER TABLE habits ADD COLUMN ${column}`)

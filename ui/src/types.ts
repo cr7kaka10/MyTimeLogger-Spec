@@ -41,6 +41,7 @@ export interface Habit {
   is_active: number
   sort_order: number
   repeat_rule?: string | null
+  journal_prompt_enabled?: number
   category_id?: number | null
 }
 
