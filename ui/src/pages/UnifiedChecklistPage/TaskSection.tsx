@@ -290,6 +290,7 @@ export const TaskSection = memo(({
                 </span>
                 <ChecklistItemsPreview items={task.items} />
               </div>
+              <button type="button" disabled title="已完成任务需在滴答清单中调整" aria-label={`更新任务：${task.title}`} className="rounded-lg border px-2 py-1 text-xs text-gray-400 dark:border-gray-700">✎</button>
             </div>
           )
         })}
@@ -414,6 +415,7 @@ export const TaskSection = memo(({
 
             {/* 右侧动作区 */}
             <div className="flex items-center gap-2">
+              <button type="button" disabled={Boolean(task.repeat_flag) || !task.project_id} onClick={() => setEditingTask(task)} aria-label={`更新任务：${task.title}`} title={task.repeat_flag ? '重复任务需在滴答清单中调整' : !task.project_id ? '任务同步信息不完整' : '更新任务'} className="theme-surface rounded-lg border px-2 py-1 text-xs text-blue-600 disabled:text-gray-400 dark:text-blue-400 dark:disabled:text-gray-500">✎</button>
               {!isCompleted ? (
                 <button
                   type="button"
