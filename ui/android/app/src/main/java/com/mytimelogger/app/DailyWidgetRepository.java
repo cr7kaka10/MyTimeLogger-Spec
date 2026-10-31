@@ -43,12 +43,15 @@ final class DailyWidgetRepository {
             Map<String, Integer> checkins = new HashMap<>();
             for (Map<String, Object> item : db.query("SELECT habit_id,status FROM habit_checkins WHERE checkin_date=?", Collections.singletonList(today)))
                 checkins.put(text(item.get("habit_id")), ((Number) item.get("status")).intValue());
+            Map<String, Boolean> ignored = new HashMap<>();
+            for (Map<String, Object> item : db.query("SELECT habit_id,is_ignored FROM habit_day_ignores WHERE date=?", Collections.singletonList(today)))
+                ignored.put(text(item.get("habit_id")), ((Number) item.get("is_ignored")).intValue() == 1);
             List<Row> result = new ArrayList<>();
             List<Row> habits = new ArrayList<>();
             for (Map<String, Object> item : db.query("SELECT id,name FROM habits WHERE is_active=0 AND source='local' ORDER BY sort_order,id", Collections.emptyList())) {
                 String id = text(item.get("id"));
                 int status = checkins.getOrDefault(id, 0);
-                if (includeHabit(scheduled, checkins, id) && unhandled(status) && !store.isIgnored(id, today)
+                if (includeHabit(scheduled, checkins, id) && unhandled(status) && !store.isIgnored(id, today, ignored.get(id))
                         && !store.isDone("habit", id, today))
                     habits.add(new Row("habit", id, text(item.get("name")),
                             badge("今天", store.pendingState("habit", id, today)), today, false, false));

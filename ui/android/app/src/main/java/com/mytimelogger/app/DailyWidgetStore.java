@@ -56,7 +56,13 @@ final class DailyWidgetStore {
                 && day.equals(string(hidden, "date")) && hidden.getAsJsonObject("ids").has(id); }
         catch (RuntimeException ignored) { return false; }
     }
-    boolean isIgnored(String id, String day) { return ignored(snapshot(), readObject("ignored"), day, id); }
+    boolean isIgnored(String id, String day) { return isIgnored(id, day, null); }
+    boolean isIgnored(String id, String day, Boolean authoritative) {
+        if (authoritative != null) return authoritative;
+        JsonObject owner = snapshot(), pending = readObject("pending_ignore");
+        return ignored(owner, readObject("ignored"), day, id)
+                || (pending.has(id) && matchesCommand(owner, pending.getAsJsonObject(id), day));
+    }
     boolean ignoreHabit(String id, String day) { synchronized (DailyWidgetStore.class) {
         JsonObject owner = snapshot();
         if (owner == null || !today().equals(day) || id == null || id.isEmpty()) return false;
