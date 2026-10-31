@@ -378,7 +378,7 @@ export class SyncWorker {
         ignoredIds.push(entry.id)
         return []
       }
-      if (entry.table_name === 'tasks' && (
+      if (entry.table_name === 'tasks' && String(payload.source || 'ticktick') !== 'local' && (
         entry.operation === 'delete' || entry.operation === 'archive' || String(payload.id || entry.record_id || '').startsWith('local_')
       )) {
         blockedTaskIds.push(entry.id)

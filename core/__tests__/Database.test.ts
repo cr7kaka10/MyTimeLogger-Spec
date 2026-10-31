@@ -85,6 +85,18 @@ describe('Database', () => {
     expect(local.allRaw('SELECT * FROM habit_checkins WHERE habit_id = ?', [id])).toHaveLength(1)
   })
 
+  it('习惯日志偏好默认开启且镜像习惯仅推送偏好字段', () => {
+    const local = createIsolatedDb()
+    const localId = local.addHabit('晨间拉伸')
+    expect(local.getRecordById('habits', localId)?.journal_prompt_enabled).toBe(1)
+    local.setHabitJournalPrompt(localId, false)
+    expect(local.getRecordById('habits', localId)?.journal_prompt_enabled).toBe(0)
+    local.runRaw("INSERT INTO habits(id,name,icon,color,sort_order,is_active,difficulty,source,created_at) VALUES('provider-1','签到','✅','#A3BE8C',0,0,'easy','ticktick','2026-10-31')")
+    local.setHabitJournalPrompt('provider-1', false)
+    const entry = local.getPendingOutbox(20).find(item => item.record_id === 'provider-1')
+    expect(JSON.parse(String(entry?.payload_json))).toEqual({ id: 'provider-1', source: 'ticktick', journal_prompt_enabled: 0 })
+  })
+
   it('管理方案本地缓存可写入读取但不创建 outbox', () => {
     const local = createIsolatedDb()
     const planId = local.saveManagementPlan({ plan_key: 'cached-plan', title: '缓存方案' })

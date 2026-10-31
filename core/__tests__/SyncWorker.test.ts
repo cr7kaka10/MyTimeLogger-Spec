@@ -160,6 +160,18 @@ describe('SyncWorker version cursor', () => {
     expect(db.allRaw('SELECT status,payload_json FROM sync_outbox WHERE id=?', [entry.id])[0]).toMatchObject({ status: 'terminated' })
   })
 
+  it('pushes a local task instead of treating its local id as protected provider structure', async () => {
+    const db = new Database(createBetterSqliteAdapter())
+    db.createOutboxOperation('tasks', 'local_new', 'upsert', { id: 'local_new', title: '本地任务', source: 'local' })
+    const get = vi.fn()
+    const post = vi.fn(async () => ({ ok: true, data: { status: 'ok', server_time: '2026-10-31 12:00:00', operation_results: [] } }))
+    const worker = new SyncWorker(); worker.bind({ get, post } as any, db)
+    expect((await (worker as any)._flushOutbox({ scope: 'checklist' })).ok).toBe(true)
+    expect(post).toHaveBeenCalled()
+    expect(get).not.toHaveBeenCalled()
+    expect(db.getPendingOutbox(10)).toHaveLength(0)
+  })
+
   it('probes exhausted changes and merges the authoritative record without another write', async () => {
     const worker = new SyncWorker()
     const resolved = vi.fn()
