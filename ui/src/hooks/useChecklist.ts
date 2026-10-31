@@ -12,6 +12,7 @@ export interface UseChecklistReturn {
   tasks: TaskItem[]
   isLoading: boolean
   syncStatus: string
+  syncDetails: string
   unknownTaskRequestId: string | null
   addTask: (title: string, dueDate: string) => Promise<void>
   completeTask: (task: TaskItem) => Promise<void>
@@ -127,8 +128,18 @@ export const useChecklist = (): UseChecklistReturn => {
   const [tasks, setTasks] = useState<TaskItem[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [syncStatus, setSyncStatus] = useState('就绪')
+  const [syncDetails, setSyncDetails] = useState('')
   const [unknownTaskRequestId, setUnknownTaskRequestId] = useState<string | null>(null)
   const [refreshTrigger, setRefreshTrigger] = useState(0)
+  useEffect(() => {
+    let active = true
+    getDatabase().then(db => {
+      const rows = db.allRaw("SELECT table_name,status,COUNT(*) AS count FROM sync_outbox WHERE status IN ('pending','failed','exhausted','terminated') GROUP BY table_name,status ORDER BY table_name,status")
+      const issues = db.getOutboxIssues()
+      if (active) setSyncDetails([`构建 ${import.meta.env.VITE_BUILD_VERSION || '未知'}`, ...rows.map((row: any) => `${row.table_name} · ${row.status} ${row.count}项`), `首个完整错误码：${issues.firstError || '无'}`].join('\n'))
+    }).catch(error => { if (active) setSyncDetails(`诊断读取失败：${String(error)}`) })
+    return () => { active = false }
+  }, [syncStatus])
   const syncSeqRef = useRef(0)
   const latestProviderRequestIdRef = useRef<string | null>(null)
   const latestProviderSeqRef = useRef(0)
@@ -432,9 +443,9 @@ export const useChecklist = (): UseChecklistReturn => {
   }, [beginSyncStatus, setLatestSyncStatus])
 
   return useMemo(() => ({
-    tasks, isLoading, syncStatus, unknownTaskRequestId,
+    tasks, isLoading, syncStatus, syncDetails, unknownTaskRequestId,
     addTask, completeTask, deleteTask, updateTaskTitle, updateTask,
     refreshFromTickTick, updateTaskPriority,
     pushOnly: pushOnlyAction, reconcileUnknownTask,
-  }), [tasks, isLoading, syncStatus, unknownTaskRequestId, addTask, completeTask, deleteTask, updateTaskTitle, updateTask, refreshFromTickTick, updateTaskPriority, pushOnlyAction, reconcileUnknownTask])
+  }), [tasks, isLoading, syncStatus, syncDetails, unknownTaskRequestId, addTask, completeTask, deleteTask, updateTaskTitle, updateTask, refreshFromTickTick, updateTaskPriority, pushOnlyAction, reconcileUnknownTask])
 }

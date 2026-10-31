@@ -162,6 +162,10 @@ export const UnifiedChecklistPage = memo(({
           >
             {checklist.syncStatus} · {checklist.tasks.length}任务
           </div>
+          <details className="relative shrink-0 text-xs">
+            <summary className="theme-surface flex h-9 cursor-pointer items-center rounded-lg border px-2 text-blue-600 dark:text-blue-400" aria-label="展开同步诊断">详情</summary>
+            <pre className="theme-surface absolute right-0 top-10 z-30 w-72 max-w-[85vw] whitespace-pre-wrap break-all rounded-lg border p-3 text-left text-xs shadow-lg">{checklist.syncStatus}{'\n'}{checklist.syncDetails}</pre>
+          </details>
           {checklist.unknownTaskRequestId && (
             <button
               type="button"
