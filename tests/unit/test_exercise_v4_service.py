@@ -68,6 +68,19 @@ def test_body_penalty_rebuild_keeps_old_date_and_skips_new_date(tmp_db_path):
         assert rows == [("2026-10-31", -50)]
 
 
+def test_optional_body_policy_skips_nine_oclock_scheduler(tmp_db_path, monkeypatch):
+    store, _ = _setup(tmp_db_path)
+    with store._transact() as conn:
+        conn.execute("INSERT INTO server_exercise_policy_metadata VALUES(?,?,?)", (OPTIONAL_BODY_POLICY_KEY, "2026-11-01", "2026-10-31"))
+    monkeypatch.setattr(server_module, "store", store)
+    monkeypatch.setattr(server_module, "_exercise_conn", store._connect)
+    monkeypatch.setattr(server_module, "_beijing_now", lambda: datetime(2026, 11, 1, 9, 2, tzinfo=BJ))
+    assert server_module._lock_overdue_body_metrics() == 0
+    assert server_module._exercise_weight_window("2026-11-01")["overdue"] is False
+    with store._connect() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM server_reward_ledger WHERE source_type='body_metric_deadline_penalty'").fetchone()[0] == 0
+
+
 def test_v4_is_complete_idempotent_and_user_isolated(tmp_db_path):
     store, _ = _setup(tmp_db_path, (1, 4))
     repaired = SampleDataInitializationService(tmp_db_path).repair_v4_diet_rule_keys(1)

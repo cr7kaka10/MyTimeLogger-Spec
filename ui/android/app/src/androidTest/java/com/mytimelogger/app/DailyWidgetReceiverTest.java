@@ -27,7 +27,7 @@ public class DailyWidgetReceiverTest {
     private final Context context = InstrumentationRegistry.getInstrumentation().getTargetContext();
     private final String database = "daily-widget-receiver-test.db";
     private SharedPreferences capacitor, runtime, widget;
-    private String oldDatabase, oldRuntime, oldSnapshot, oldPending, oldDone, oldMenu;
+    private String oldDatabase, oldRuntime, oldSnapshot, oldPending, oldDone, oldMenu, oldIgnored;
     private SqliteConnection db;
     @Before public void setup() {
         capacitor = context.getSharedPreferences("CapacitorStorage", Context.MODE_PRIVATE);
@@ -37,10 +37,11 @@ public class DailyWidgetReceiverTest {
         oldRuntime = runtime.getString("runtime", null);
         oldSnapshot = widget.getString("snapshot", null); oldPending = widget.getString("pending", null);
         oldDone = widget.getString("done", null); oldMenu = widget.getString("menu", null);
-        widget.edit().remove("snapshot").remove("pending").remove("done").remove("menu").commit();
+        oldIgnored = widget.getString("ignored", null);
+        widget.edit().remove("snapshot").remove("pending").remove("done").remove("menu").remove("ignored").commit();
         context.deleteDatabase(database);
         db = new SqliteConnection(context, database); db.open();
-        db.execute("CREATE TABLE tasks(id TEXT PRIMARY KEY,status INTEGER,deleted_at TEXT,title TEXT,due_date TEXT,priority INTEGER,updated_at TEXT,pushed_at TEXT)", Collections.emptyList());
+        db.execute("CREATE TABLE tasks(id TEXT PRIMARY KEY,status INTEGER,deleted_at TEXT,title TEXT,due_date TEXT,priority INTEGER,updated_at TEXT,pushed_at TEXT,raw_json TEXT)", Collections.emptyList());
         db.execute("CREATE TABLE habits(id TEXT,name TEXT,is_active INTEGER,source TEXT,sort_order INTEGER,repeat_rule TEXT)", Collections.emptyList());
         db.execute("CREATE TABLE habit_checkins(habit_id TEXT,status INTEGER,checkin_date TEXT)", Collections.emptyList());
         db.execute("CREATE TABLE rewards(id TEXT,title TEXT,unlock_task_id TEXT,is_active INTEGER)", Collections.emptyList());
@@ -73,6 +74,7 @@ public class DailyWidgetReceiverTest {
         restore(runtime, "runtime", oldRuntime);
         restore(widget, "snapshot", oldSnapshot); restore(widget, "pending", oldPending); restore(widget, "done", oldDone);
         restore(widget, "menu", oldMenu);
+        restore(widget, "ignored", oldIgnored);
     }
     private void tap(String kind, String id, String action) {
         context.sendBroadcast(new Intent(DailyWidgetCommandReceiver.ACTION)
@@ -138,6 +140,23 @@ public class DailyWidgetReceiverTest {
         db.execute("UPDATE habits SET repeat_rule='FREQ=DAILY' WHERE id='habit-1'", Collections.emptyList());
         db.close();
         assertTrue(new DailyWidgetRepository(context).load().stream().anyMatch(row -> "habit-1".equals(row.id)));
+    }
+    @Test public void ignoreTodayHidesHabitWithoutWritingCheckinOrOutbox() throws Exception {
+        assertTrue(new DailyWidgetRepository(context).load().stream().anyMatch(row -> "habit-1".equals(row.id)));
+        tap("habit", "habit-1", "menu_open"); awaitMenu(true);
+        tap("habit", "habit-1", "menu_ignore");
+        for (int i = 0; i < 60 && !new DailyWidgetStore(context).isIgnored("habit-1", DailyWidgetStore.today()); i++)
+            Thread.sleep(100);
+        assertTrue(new DailyWidgetStore(context).isIgnored("habit-1", DailyWidgetStore.today()));
+        assertFalse(new DailyWidgetRepository(context).load().stream().anyMatch(row -> "habit-1".equals(row.id)));
+        assertFalse(new DailyWidgetStore(context).isIgnored("habit-1",
+                DailyWidgetStore.dayAt(System.currentTimeMillis() + 86_400_000L)));
+        db.open();
+        assertEquals(0, ((Number) db.query("SELECT COUNT(*) AS value FROM habit_checkins", Collections.emptyList())
+                .get(0).get("value")).intValue());
+        assertEquals(0, ((Number) db.query("SELECT COUNT(*) AS value FROM sync_outbox", Collections.emptyList())
+                .get(0).get("value")).intValue());
+        assertEquals(0, new DailyWidgetStore(context).pending().size());
     }
     @Test public void todayHabitShowsDateAndNeutralMenu() {
         assertEquals("今天 · " + DailyWidgetStore.today(),
