@@ -1,5 +1,6 @@
 import type { NotificationChannel, NotificationRoute } from './services'
 import { parseLedgerDisplay } from '../utils/ledgerDisplay'
+import type { PlatformRuntime } from './runtime'
 
 type ExternalFact = { id: string | number; ext_id?: string; item_type: string; item_name?: string; coins: number; status: number }
 type LedgerFact = { id: string | number; amount: number; source_type: string; description?: string; source_id?: string; target_date?: string; display_title?: string }
@@ -10,8 +11,10 @@ export const ledgerNotificationKey = (fact: LedgerFact) => `ledger:${fact.id}`
 const externalKey = externalNotificationKey
 const ledgerKey = ledgerNotificationKey
 
-export function classifyNotificationEvents(external: ExternalFact[], ledger: LedgerFact[]) {
+export function classifyNotificationEvents(external: ExternalFact[], ledger: LedgerFact[], context: { runtime?: PlatformRuntime; today?: string } = {}) {
   const notifications: BusinessNotification[] = []; const handledKeys = [...external.map(externalKey), ...ledger.map(ledgerKey)]
+  if (context.runtime === 'electron') return { handledKeys, notifications }
+  ledger = context.today ? ledger.filter(fact => !fact.target_date || fact.target_date >= context.today!) : ledger
   for (const fact of external.filter(item => item.status === 0 && item.item_type === 'goal' && Number(item.coins) !== 0)) {
     const positive = Number(fact.coins) > 0; const key = externalKey(fact)
     notifications.push({ eventKey: key, handledKeys: [key], channel: 'achievements', title: positive ? '目标达成' : '目标未达成', body: positive ? `${fact.item_name || '目标'}，待领取 +${amount(fact.coins)} 金币` : `${fact.item_name || '目标'}，待扣除 -${amount(fact.coins)} 金币`, route: 'goals' })

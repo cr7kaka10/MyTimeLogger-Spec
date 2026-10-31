@@ -29,4 +29,12 @@ await dietCoordinator.reconcile()
 dietFacts = [{ id: 'diet', amount: -20, source_type: 'exercise_diet_penalty', source_id: 'exercise-diet-penalty:1:2026-10-28:v5:lunch_on_time', target_date: '2026-10-28' }]
 await dietCoordinator.reconcile()
 assert(delivered.includes('ledger:diet'), 'meal penalty is visible immediately in foreground')
+const desktopValues = new Map<string, string>()
+const desktopPreferences = createNotificationPreferences({ ...store, get: async key => desktopValues.get(key) ?? null, set: async (key, value) => { desktopValues.set(key, value) } })
+let desktopFacts: any[] = [{ id: 'historical', amount: -20, source_type: 'exercise_diet_penalty', target_date: '2026-10-29' }]
+const desktopCoordinator = createNotificationCoordinator({ readFacts: () => ({ external: [], ledger: desktopFacts }), preferences: desktopPreferences, notifications, isForeground: () => false, runtime: 'electron', today: () => '2026-10-31' })
+await desktopCoordinator.reconcile()
+desktopFacts = [...desktopFacts, { id: 'new', amount: -20, source_type: 'exercise_diet_penalty', target_date: '2026-10-31' }]
+await desktopCoordinator.reconcile(); await desktopCoordinator.reconcile()
+assert(!delivered.includes('ledger:new'), 'desktop does not re-notify business facts on reconnect')
 console.log('notification foreground policy tests passed')

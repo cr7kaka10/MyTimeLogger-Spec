@@ -40,7 +40,8 @@ const buildRuntime = (runtime: PlatformRuntime, db: any, lifecycle: LifecycleSer
       })
       return { external: db.getUnclaimedRewards(), ledger }
     },
-    preferences, notifications, isForeground: () => foreground,
+    preferences, notifications, isForeground: () => foreground, runtime,
+    today: () => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date()),
   })
   return { notifications, preferences, coordinator, lifecycle, runtimeState, isForeground: () => foreground, setForeground: (value: boolean) => { foreground = value } }
 }
@@ -86,6 +87,7 @@ export async function installNotificationRuntime(runtime: PlatformRuntime, db: a
   }
   await reconcileMorning().catch(() => {})
   const reconcileSleep = async () => {
+    if (runtime === 'electron') return
     const deviceId = String(db.ensureDeviceId?.() || ''); if (!deviceId) return
     const rows = db.allRaw("SELECT n.* FROM sleep_notifications n LEFT JOIN sleep_notification_receipts r ON r.notification_id=n.id AND r.device_id=? WHERE r.id IS NULL AND n.sleep_date = strftime('%Y-%m-%d', 'now', '+8 hours')", [deviceId])
     for (const item of classifySleepNotificationEvents(rows)) if (await current?.notifications.notify(item) === 'delivered') {
@@ -105,7 +107,7 @@ export async function installNotificationRuntime(runtime: PlatformRuntime, db: a
   const authExpired = () => { void (async () => {
     const context = current; if (!context || !await context.preferences.beginAuthExpiry()) return
     const settings = await context.preferences.getSettings()
-    if (settings.master && settings.account && (!context.isForeground() || settings.foreground)) await context.notifications.notify({ eventKey: 'auth:expired', channel: 'account', title: '登录已失效', body: '请重新登录后继续同步', route: 'settings' })
+    if (runtime !== 'electron' && settings.master && settings.account && (!context.isForeground() || settings.foreground)) await context.notifications.notify({ eventKey: 'auth:expired', channel: 'account', title: '登录已失效', body: '请重新登录后继续同步', route: 'settings' })
   })().catch(() => {}) }
   const authRestored = () => { void current?.preferences.clearAuthExpiry() }
   window.addEventListener('mtl:auth-expired', authExpired); window.addEventListener('mtl:auth-restored', authRestored)
