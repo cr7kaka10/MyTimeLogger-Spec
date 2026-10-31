@@ -28,6 +28,7 @@ public final class DailyWidgetProvider extends AppWidgetProvider {
                 || Intent.ACTION_TIME_CHANGED.equals(intent.getAction()))) refresh(context);
     }
     static void refresh(Context context) {
+        DailyWidgetCommandReceiver.retryPendingIgnore(context);
         AppWidgetManager manager = AppWidgetManager.getInstance(context);
         int[] ids = manager.getAppWidgetIds(new ComponentName(context, DailyWidgetProvider.class));
         for (int id : ids) {

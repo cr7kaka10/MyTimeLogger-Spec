@@ -38,6 +38,24 @@ final class DailyWidgetHabitClient {
         } catch (Exception ignored) { return "retryable"; }
     }
 
+    String ignore(WidgetTimerRuntimeStore.Config runtime, JsonObject command) {
+        if (runtime == null || command == null) return "retryable";
+        try {
+            JsonObject body = new JsonObject();
+            body.addProperty("habit_id", command.get("id").getAsString());
+            body.addProperty("date", command.get("date").getAsString());
+            body.addProperty("ignore", true);
+            body.addProperty("idempotency_key", command.get("commandId").getAsString());
+            Response response = transport.post(runtime.serverUrl + "/api/habits/day-ignores", runtime.authToken, body.toString());
+            if (response.code == 401 || response.code == 403) return "unauthorized";
+            if (response.code == 429 || response.code >= 500) return "retryable";
+            if (response.code < 200 || response.code >= 300) return "rejected";
+            JsonObject value = JsonParser.parseString(response.body).getAsJsonObject();
+            return "confirmed".equals(value.get("status").getAsString()) && value.get("is_ignored").getAsBoolean()
+                    ? "applied" : "rejected";
+        } catch (Exception ignored) { return "retryable"; }
+    }
+
     private static final class HttpTransport implements Transport {
         public Response post(String url, String token, String body) throws Exception {
             HttpURLConnection connection = (HttpURLConnection) new URL(url).openConnection();

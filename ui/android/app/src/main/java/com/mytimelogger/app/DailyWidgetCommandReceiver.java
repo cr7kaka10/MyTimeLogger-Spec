@@ -53,7 +53,7 @@ public final class DailyWidgetCommandReceiver extends BroadcastReceiver {
             }
         if (!eligible) return;
         if ("menu_ignore".equals(action)) {
-            if (store.ignoreHabit(id, day)) { store.clearMenu(); DailyWidgetProvider.refresh(context); }
+            if (store.ignoreHabit(id, day)) { store.clearMenu(); DailyWidgetProvider.refresh(context); retryPendingIgnore(context); }
             return;
         }
         if ("menu_open".equals(action)) {
@@ -84,6 +84,28 @@ public final class DailyWidgetCommandReceiver extends BroadcastReceiver {
                         "操作未确认，点击可重试", Toast.LENGTH_SHORT).show());
             } finally { IN_FLIGHT.remove(commandId); pending.finish(); }
         }, "DailyWidgetCommand").start();
+    }
+    static void retryPendingIgnore(Context context) {
+        Context app = context.getApplicationContext();
+        DailyWidgetStore store = new DailyWidgetStore(app);
+        JsonObject command = store.pendingIgnore();
+        if (command == null) return;
+        String commandId = command.get("commandId").getAsString();
+        if (!IN_FLIGHT.add(commandId)) return;
+        new Thread(() -> {
+            try {
+                WidgetTimerRuntimeStore.Config runtime = new WidgetTimerRuntimeStore(app).read();
+                String result = runtime != null && runtime.verifiedUserId.equals(command.get("userId").getAsString())
+                        && runtime.generation == command.get("generation").getAsLong()
+                        ? new DailyWidgetHabitClient().ignore(runtime, command) : "retryable";
+                if ("applied".equals(result) || "rejected".equals(result)) {
+                    store.ackIgnore(commandId, "applied".equals(result));
+                    DailyWidgetProvider.refresh(app);
+                }
+                if ("rejected".equals(result)) new Handler(Looper.getMainLooper()).post(() ->
+                        Toast.makeText(app, "忽略今天未被接受，请刷新", Toast.LENGTH_SHORT).show());
+            } finally { IN_FLIGHT.remove(commandId); }
+        }, "DailyWidgetIgnore").start();
     }
     private static void openChecklist(Context context) {
         context.startActivity(new Intent(context, MainActivity.class)
