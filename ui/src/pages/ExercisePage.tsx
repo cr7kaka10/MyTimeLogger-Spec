@@ -68,8 +68,6 @@ export const ExercisePage = memo(({ theme, onToggleTheme, onStartFocus }: Props)
   const isPastDate = date < dateForTab(todayTab())
   const isBeijingToday = date === beijingNow.date
   useEffect(() => { setRain(x.log?.exercise_variant === 'rain') }, [date, x.log?.exercise_variant])
-  const isWeightWindow = isBeijingToday && beijingNow.hour >= 6 && beijingNow.hour < 9
-  const isWeightOverdue = isBeijingToday && beijingNow.hour >= 9
   const bodyDeadlineFact = x.deadlineFacts.find((fact: any) => fact.fact_type === 'body_metrics')
   const isBodyMetricLocked = bodyDeadlineFact?.status === 'failed'
   const canEditWeight = isBeijingToday && !x.locked
@@ -96,7 +94,7 @@ export const ExercisePage = memo(({ theme, onToggleTheme, onStartFocus }: Props)
   const hasCurrentV5Score = x.planVersion === 'v5' && v5ScoreView.current
   const historicalV5Score = x.planVersion === 'v5' ? v5ScoreView.historicalScore : null
   const displayScore = x.planVersion === 'v5' ? v5ScoreView.planScore : authoritative ? actualScore! : (isPastDate && savedScore ? savedScore : score)
-  const bodyPoints = x.planVersion === 'v5' && displayScore.cats['身体记录']?.m === 0 ? 0 : (def as any).bodyPoints
+  const bodyPoints = displayScore.cats['身体记录']?.m === 0 ? 0 : (def as any).bodyPoints
   const displayScoreCategories = useMemo(() => {
     const cats = displayScore.cats || {}
     const ordered = (def.categoryOrder || []).filter(c => cats[c])
@@ -204,7 +202,7 @@ export const ExercisePage = memo(({ theme, onToggleTheme, onStartFocus }: Props)
           <div id="exercise-body-metrics" className="body-metrics">
             <label className="body-metric"><span>体重</span><span className="body-metric-input"><input
               type="number" inputMode="decimal" min="30" max="200" step=".1" placeholder="体重" value={weight}
-              disabled={!canEditWeight} title="当天全天可录入；北京时间 06:00-09:00 计为按时称重" onPointerDown={event => requestCapacitorInputFocus(event.currentTarget)} onChange={event => setWeight(event.target.value)}
+              disabled={!canEditWeight} title="当天可按实际情况记录体重" onPointerDown={event => requestCapacitorInputFocus(event.currentTarget)} onChange={event => setWeight(event.target.value)}
             /><em>公斤</em></span><span className="body-metric-meta"><span>{bodyPoints === 0 ? '不计分' : `${weightScore}/5 分`}</span><span>{metricStatus(log?.weight, weightFact, weightScore)}</span></span></label>
             <label className="body-metric"><span>体脂率</span><span className="body-metric-input"><input
               type="number" inputMode="decimal" min="3" max="75" step=".1" placeholder="体脂率" value={bodyFatRate}
@@ -212,8 +210,8 @@ export const ExercisePage = memo(({ theme, onToggleTheme, onStartFocus }: Props)
             /><em>%</em></span><span className="body-metric-meta"><span>{bodyPoints === 0 ? '不计分' : `${bodyFatScore}/5 分`}</span><span>{metricStatus(log?.body_fat_rate, bodyFatFact, bodyFatScore)}</span></span></label>
             <button disabled={!canEditWeight} onClick={saveWeightAndDay}>保存</button>
           </div>
-          {!isWeightWindow && isBeijingToday && (isBodyMetricLocked || log?.weight == null) && (
-            <p>{isBodyMetricLocked ? '已超过北京时间 09:00，可补录体重和体脂率；-50 金币处罚不变。' : isWeightOverdue ? '已超过北京时间 09:00，正在等待服务端确认截止结果。' : '当前可记录体重；北京时间 06:00-09:00 计为按时称重。'}</p>
+          {isBeijingToday && (isBodyMetricLocked || log?.weight == null) && (
+            <p>{isBodyMetricLocked ? '历史截止结果已固定，仍可补录体重和体脂率。' : '体重和体脂率可按实际情况自愿记录。'}</p>
           )}
           {x.syncError && <p className="sync-warning">打卡已保存，等待同步：{x.syncError}</p>}
           {log && <p>✓ {log.weight == null ? '体重未填' : `${log.weight}公斤`} · {log.body_fat_rate == null ? '体脂率未填' : `${log.body_fat_rate}%`} | 打卡{log.completed_items}/{log.total_items}项({Math.round(log.completed_items / (log.total_items || 1) * 100)}%) | {log.date}</p>}

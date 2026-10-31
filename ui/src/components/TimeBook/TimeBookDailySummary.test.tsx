@@ -15,6 +15,8 @@ const base = { date: '2026-10-03', planVersion: 'v4', dietRulesValid: true,
   ] }
 
 const pending = buildDailySummary({ ...base, diary: null, nowMs: beforeNine })
+const optionalBody = buildDailySummary({ ...base, date: '2026-11-01', bodyMetrics: {}, ledger: [], diary: null }).find(item => item.key === 'body-metrics')
+assert(optionalBody?.consequence === 'reward_only' && optionalBody.ruleAmount === undefined && optionalBody.status === 'pending', 'unrecorded body metrics are optional without a new penalty')
 assert(pending[0].status === 'pending' && pending[1].status === 'pending', 'sleep items must remain pending before 09:00')
 const overdue = buildDailySummary({ ...base, diary: { report_status: 0 }, nowMs: afterNine })
 assert(overdue[0].status === 'overdue' && overdue[1].status === 'overdue', 'sleep items must become overdue at 09:00')

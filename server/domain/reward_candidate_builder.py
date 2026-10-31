@@ -6,6 +6,7 @@ import json
 import re
 from .habit_frozen_rewards import preserve_frozen_habits
 from .reward_fragment_provenance import RewardFragmentProvenance
+from .exercise_v4_service import optional_body_policy_active
 from datetime import date, datetime, timedelta, timezone
 
 try:
@@ -406,6 +407,8 @@ class RewardCandidateBuilder:
         ).fetchall()
         for row in rows:
             target_date = str(row["date"])[:10]
+            if optional_body_policy_active(conn, target_date):
+                continue
             amount = float(row["deadline_penalty_amount"] or 0)
             if amount:
                 source_id = str(row["deadline_penalty_source_id"])
@@ -424,6 +427,8 @@ class RewardCandidateBuilder:
         ).fetchall()
         for row in v4_rows:
             target_date = str(row["date"])[:10]
+            if optional_body_policy_active(conn, target_date):
+                continue
             self.store.reward_wallet_service.append_ledger_in_txn(
                 conn, user_id, float(row["penalty_amount"]), "body_metric_deadline_penalty",
                 f"body-metric-deadline:{target_date}", "体重体脂逾期未填写（09:00）", target_date,
@@ -453,6 +458,8 @@ class RewardCandidateBuilder:
         expected = []
         for row in rows:
             target_date, version, log_id = str(row["date"])[:10], str(row["plan_version"] or ""), str(row["id"])
+            if optional_body_policy_active(conn, target_date):
+                continue
             complete = conn.execute("SELECT 1 FROM server_exercise_daily_logs WHERE user_id=? AND date=? AND weight IS NOT NULL AND body_fat_rate IS NOT NULL", (user_id, target_date)).fetchone()
             items = conn.execute("SELECT item FROM server_exercise_plan_schedule_items WHERE user_id=? AND plan_version=? AND schedule_type=? ORDER BY sort_order", (user_id, version, "rest" if self._day_name(target_date) in {"六", "日"} else "weekday")).fetchall()
             index = next((i for i, item in enumerate(items) if "体重" in str(item["item"] or "") and "体脂" in str(item["item"] or "")), None)

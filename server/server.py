@@ -211,7 +211,7 @@ try:
     from . import analyzer as sleep_analyzer_module
     from .domain.sleep_automation_service import BEIJING, SleepAutomationService, STEP_BEDTIME_DEADLINE, STEP_TIMER_SWITCH, due_step, beijing_now
     from .domain.sleep_reward_service import BEDTIME_COIN_EFFECTIVE_DATE
-    from .domain.exercise_v4_service import PLAN_POLICIES, ExerciseV4Service
+    from .domain.exercise_v4_service import PLAN_POLICIES, ExerciseV4Service, OPTIONAL_BODY_POLICY_KEY, optional_body_policy_active
     from .huawei_sleep_sync import (
         SleepDataSource,
         normalize_structured_sleep_payload,
@@ -253,7 +253,7 @@ except (ImportError, ValueError):
     import analyzer as sleep_analyzer_module
     from domain.sleep_automation_service import BEIJING, SleepAutomationService, STEP_BEDTIME_DEADLINE, STEP_TIMER_SWITCH, due_step, beijing_now
     from domain.sleep_reward_service import BEDTIME_COIN_EFFECTIVE_DATE
-    from domain.exercise_v4_service import PLAN_POLICIES, ExerciseV4Service
+    from domain.exercise_v4_service import PLAN_POLICIES, ExerciseV4Service, OPTIONAL_BODY_POLICY_KEY, optional_body_policy_active
     from huawei_sleep_sync import (
         SleepDataSource,
         normalize_structured_sleep_payload,
@@ -949,6 +949,10 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"❌ 服务端启动 core 同步历史版本迁移失败: {e}")
     _cleanup_stale_temp_upload_images(max_age_seconds=0)
+    with store._transact() as conn:
+        today = _beijing_now().date()
+        conn.execute("INSERT OR IGNORE INTO server_exercise_policy_metadata(policy_key,effective_date,created_at) VALUES(?,?,?)",
+                     (OPTIONAL_BODY_POLICY_KEY, (today + timedelta(days=1)).isoformat(), _exercise_now_str()))
     try:
         time_logger_db.reload_category_cache()
         logger.info("✅ 已完成服务端 server_categories 缓存预热同步")
@@ -3681,19 +3685,23 @@ def _exercise_weight_window(date: str, existing_weight=None) -> dict:
     now = _beijing_now()
     today = now.strftime("%Y-%m-%d")
     hour = now.hour
+    with store._connect() as conn:
+        optional = optional_body_policy_active(conn, date)
     editable = date == today
     reason = ""
     if date < today:
         reason = "历史日期已锁定"
     elif date > today:
         reason = "未来日期不能录入体重"
+    elif optional:
+        reason = "体重和体脂率可自愿记录，不设 09:00 截止处罚"
     elif hour < 6:
         reason = "当前可记录体重；北京时间 06:00-09:00 计为按时称重"
     elif hour >= 9:
         reason = "已超过北京时间 09:00，仍可补录体重；守时结果保持逾期"
     return {
         "editable": editable,
-        "overdue": date == today and hour >= 9 and existing_weight is None,
+        "overdue": not optional and date == today and hour >= 9 and existing_weight is None,
         "reason": reason,
         "start_hour": 6,
         "end_hour": 9,
@@ -3921,6 +3929,8 @@ def _lock_overdue_body_metrics() -> int:
         return 0
     date, now_text, changed_users = now.strftime("%Y-%m-%d"), now.strftime("%Y-%m-%d %H:%M:%S"), set()
     with _exercise_conn() as conn:
+        if optional_body_policy_active(conn, date):
+            return 0
         for user_row in conn.execute("SELECT id FROM users").fetchall():
             user_id = int(user_row["id"])
             plan_version = _exercise_active_plan(conn, user_id)

@@ -29,6 +29,12 @@ PLAN_POLICIES = {
     ), "diet_penalty": 0, "effective_from": "2026-10-18"},
 }
 SCOPES = {"training", "diet", "body"}
+OPTIONAL_BODY_POLICY_KEY = "optional_body_exercise_200_v1"
+
+
+def optional_body_policy_active(conn, date: str) -> bool:
+    row = conn.execute("SELECT effective_date FROM server_exercise_policy_metadata WHERE policy_key=?", (OPTIONAL_BODY_POLICY_KEY,)).fetchone()
+    return bool(row and date >= str(row[0]))
 
 
 def _dt(value: str) -> datetime:
@@ -245,6 +251,8 @@ class ExerciseV4Service:
         return changed
 
     def settle_body_deadline(self, conn, user_id: int, date: str, now: datetime) -> dict | None:
+        if optional_body_policy_active(conn, date):
+            return None
         if now.astimezone(TZ) < _deadline(date, 9):
             return None
         existing_metric = conn.execute("""SELECT status FROM server_exercise_deadline_facts
@@ -300,6 +308,7 @@ class ExerciseV4Service:
             "SELECT item_key,status FROM server_exercise_checkins WHERE user_id=? AND date=? AND plan_version=?", (user_id, date, self.plan_version))}
         facts = []
         new_policy = self._new_v5_policy(conn, date)
+        optional_body = optional_body_policy_active(conn, date)
         training_items = conn.execute("""SELECT * FROM server_exercise_plan_items WHERE user_id=? AND plan_version=?
             AND day_key=? AND variant='gym' AND is_active=1 ORDER BY sort_order""", (user_id, self.plan_version, day)).fetchall()
         raw_training_total = sum(float(json.loads(item["tags_json"] or "{}").get("scorePoints") or 0) for item in training_items)
@@ -330,7 +339,7 @@ class ExerciseV4Service:
             return (5 if value is not None else 0, "有效身体记录")
         weight_points, weight_reason = body_points("body_weight", log["weight"] if log else None)
         fat_points, fat_reason = body_points("body_fat_rate", log["body_fat_rate"] if log else None)
-        body_maximum = 0 if new_policy else 5
+        body_maximum = 0 if new_policy or optional_body else 5
         facts.extend((("body:weight", "body", weight_points if body_maximum else 0, body_maximum, weight_reason),
                       ("body:body_fat_rate", "body", fat_points if body_maximum else 0, body_maximum, fat_reason)))
         stamp, categories = _now_text(now), {scope: {"s": 0.0, "m": 0.0} for scope in SCOPES}
@@ -367,8 +376,8 @@ class ExerciseV4Service:
         settlement_id = f"exercise-settlement:{user_id}:{self.plan_version}:{date}"
         settlement_values = (json.dumps(snapshot, ensure_ascii=False, sort_keys=True), total,
             json.dumps(snapshot["cats"], ensure_ascii=False, sort_keys=True), sum(1 for _,_,e,m,_ in facts if m > 0 and e == m),
-            sum(1 for _,_,_,m,_ in facts if m > 0), self.rule_version, int(complete), 100 if complete else 0,
-            f"三个{self.plan_version.upper()}评分域均满分" if complete else "训练、饮食或身体记录尚未满分")
+            sum(1 for _,_,_,m,_ in facts if m > 0), self.rule_version, int(complete), (200 if optional_body else 100) if complete else 0,
+            "全部应评分项满分" if complete and optional_body else f"三个{self.plan_version.upper()}评分域均满分" if complete else "应评分项尚未满分")
         previous = conn.execute("""SELECT score_snapshot,score_total,category_scores,completed_items,total_items,rule_version,
             is_all_complete,completion_reward_amount,completion_reason FROM server_exercise_settlements
             WHERE user_id=? AND business_date=? AND plan_version=?""", (user_id, date, self.plan_version)).fetchone()
@@ -394,7 +403,7 @@ class ExerciseV4Service:
         ledger_id = f"exercise-completion-reward:{user_id}:{self.plan_version}:{date}"
         existing = conn.execute("SELECT 1 FROM server_reward_ledger WHERE user_id=? AND id=?", (user_id, ledger_id)).fetchone()
         if complete and not existing:
-            self.wallet.append_ledger_in_txn(conn, user_id, 100, "exercise_completion_reward",
+            self.wallet.append_ledger_in_txn(conn, user_id, 200 if optional_body_policy_active(conn, date) else 100, "exercise_completion_reward",
                 f"exercise-completion:{self.plan_version}:{date}", f"{self.plan_version.upper()}运动指标全完成奖励", date, ledger_id, stamp)
             self._change(conn, user_id, "server_reward_ledger", ledger_id)
             self.wallet.rebuild_wallet_snapshot_in_txn(conn, user_id, lambda: stamp)

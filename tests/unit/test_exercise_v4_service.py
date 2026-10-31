@@ -5,8 +5,9 @@ import sqlite3
 import pytest
 
 import server.server as server_module
-from server.domain.exercise_v4_service import DIET_RULES, PLAN_POLICIES, V5_DIET_POINTS, V5_MEAL_RULES, ExerciseV4Service
+from server.domain.exercise_v4_service import DIET_RULES, PLAN_POLICIES, V5_DIET_POINTS, V5_MEAL_RULES, ExerciseV4Service, OPTIONAL_BODY_POLICY_KEY, optional_body_policy_active
 from server.domain.sample_data_initialization_service import SampleDataInitializationService
+from server.domain.reward_candidate_builder import RewardCandidateBuilder
 from server.store import ServerSleepStore
 
 
@@ -31,6 +32,40 @@ def _daily(conn, user_id, date, weight=None, body_fat=None):
         (id,user_id,date,plan_version,exercise_type,weight,body_fat_rate,created_at,updated_at)
         VALUES (?,?,?,?, 'daily',?,?,?,?)""",
         (f"log-{user_id}-{date}", user_id, date, "v4", weight, body_fat, date, date))
+
+
+def test_optional_body_policy_date_boundary_and_200_reward(tmp_db_path):
+    store, service = _setup(tmp_db_path)
+    with store._transact() as conn:
+        conn.execute("INSERT INTO server_exercise_policy_metadata VALUES(?,?,?)", (OPTIONAL_BODY_POLICY_KEY, "2026-11-01", "2026-10-31"))
+        assert not optional_body_policy_active(conn, "2026-10-31")
+        assert optional_body_policy_active(conn, "2026-11-01")
+        assert service.settle_body_deadline(conn, 1, "2026-11-01", datetime(2026, 11, 1, 10, tzinfo=BJ)) is None
+        score = service.settle(conn, 1, "2026-11-01", datetime(2026, 11, 1, 10, tzinfo=BJ))
+        assert score["cats"]["身体记录"]["m"] == 0
+        assert conn.execute("SELECT COUNT(*) FROM server_reward_ledger WHERE source_type='body_metric_deadline_penalty'").fetchone()[0] == 0
+        service._reconcile_completion_reward(conn, 1, "2026-11-01", True, "2026-11-01 10:00:00")
+        service._reconcile_completion_reward(conn, 1, "2026-11-01", True, "2026-11-01 10:00:00")
+        v5 = ExerciseV4Service(store.reward_wallet_service, lambda *args: None, plan_version="v5")
+        assert v5.settle_body_deadline(conn, 1, "2026-11-01", datetime(2026, 11, 1, 10, tzinfo=BJ)) is None
+        v5._reconcile_completion_reward(conn, 1, "2026-11-01", True, "2026-11-01 10:00:00")
+        service._reconcile_completion_reward(conn, 1, "2026-10-31", True, "2026-10-31 10:00:00")
+        amounts = [row[0] for row in conn.execute("SELECT amount FROM server_reward_ledger WHERE source_type='exercise_completion_reward' ORDER BY target_date, id")]
+        assert amounts == [100, 200, 200]
+
+
+def test_body_penalty_rebuild_keeps_old_date_and_skips_new_date(tmp_db_path):
+    store, _ = _setup(tmp_db_path)
+    with store._transact() as conn:
+        conn.execute("INSERT INTO server_exercise_policy_metadata VALUES(?,?,?)", (OPTIONAL_BODY_POLICY_KEY, "2026-11-01", "2026-10-31"))
+        for day in ("2026-10-31", "2026-11-01"):
+            conn.execute("""INSERT INTO server_exercise_deadline_facts
+                (id,user_id,date,plan_version,fact_type,status,deadline_at,reason,penalty_source_id,penalty_amount,created_at,updated_at)
+                VALUES (?,1,?,'v4','body_metrics','failed',?,'missing',?,-50,?,?)""",
+                (f"body-deadline:1:{day}:v4", day, f"{day} 09:00:00", f"body-metric-deadline-penalty:1:{day}", day, day))
+        RewardCandidateBuilder(store)._replay_body_metric_deadline_penalties(conn, 1, "2026-10-31")
+        rows = [tuple(row) for row in conn.execute("SELECT target_date,amount FROM server_reward_ledger WHERE source_type='body_metric_deadline_penalty'")]
+        assert rows == [("2026-10-31", -50)]
 
 
 def test_v4_is_complete_idempotent_and_user_isolated(tmp_db_path):
