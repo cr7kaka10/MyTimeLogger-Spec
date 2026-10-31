@@ -70,7 +70,43 @@ final class DailyWidgetStore {
             hidden.add("ids", new JsonObject());
         }
         hidden.getAsJsonObject("ids").addProperty(id, true);
-        return values.edit().putString("ignored", hidden.toString()).commit();
+        JsonObject pending = readObject("pending_ignore");
+        JsonObject command = pending.has(id) ? pending.getAsJsonObject(id) : new JsonObject();
+        if (!matchesCommand(owner, command, day)) {
+            command = new JsonObject();
+            command.addProperty("id", id); command.addProperty("date", day);
+            command.addProperty("commandId", "daily-ignore-" + UUID.randomUUID());
+            command.addProperty("userId", string(owner, "userId"));
+            command.addProperty("generation", owner.get("generation").getAsLong());
+            command.addProperty("database", string(owner, "database"));
+        }
+        pending.add(id, command);
+        return values.edit().putString("ignored", hidden.toString())
+                .putString("pending_ignore", pending.toString()).commit();
+    } }
+    JsonObject pendingIgnore() {
+        JsonObject owner = snapshot(), pending = readObject("pending_ignore");
+        if (owner == null) return null;
+        for (String key : pending.keySet()) {
+            JsonObject command = pending.getAsJsonObject(key);
+            if (matchesCommand(owner, command, today())) return command;
+        }
+        return null;
+    }
+    void ackIgnore(String commandId, boolean accepted) { synchronized (DailyWidgetStore.class) {
+        JsonObject pending = readObject("pending_ignore");
+        for (String key : pending.keySet()) {
+            JsonObject command = pending.getAsJsonObject(key);
+            if (!commandId.equals(string(command, "commandId"))) continue;
+            pending.remove(key);
+            SharedPreferences.Editor editor = values.edit().putString("pending_ignore", pending.toString());
+            if (!accepted) {
+                JsonObject hidden = readObject("ignored");
+                JsonObject ids = hidden.getAsJsonObject("ids");
+                if (ids != null) { ids.remove(key); editor.putString("ignored", hidden.toString()); }
+            }
+            editor.commit(); return;
+        }
     } }
     static boolean matchesCommand(JsonObject snapshot, JsonObject command, String day) {
         try {
@@ -106,7 +142,8 @@ final class DailyWidgetStore {
             SharedPreferences.Editor editor = values.edit().putString("snapshot", snapshot.toString());
             if (sameAccount) {
                 editor.putString("pending", rebasePending(readObject("pending"), today(), runtime.generation).toString());
-            } else editor.remove("pending").remove("done").remove("expanded_items").remove("ignored");
+                editor.putString("pending_ignore", rebasePending(readObject("pending_ignore"), today(), runtime.generation).toString());
+            } else editor.remove("pending").remove("pending_ignore").remove("done").remove("expanded_items").remove("ignored");
             return editor.commit();
         } catch (Exception ignored) { return false; }
     }
