@@ -61,6 +61,15 @@ const settledFailure = buildDailySummary({ ...base, diary: null, dailyGoals: [{ 
 assert(settledFailure.find(item => item.key === 'goal-g1')?.status === 'failed' && settledFailure.find(item => item.key === 'goal-g1')?.actualAmount === -15, 'settled goal failure must survive later progress changes')
 const settledReward = buildDailySummary({ ...base, diary: null, ledger: [{ id: 'goal-reward', source_type: 'goal_reward', source_id: 'goal_g1_20261003', amount: 10 }] })
 assert(settledReward.find(item => item.key === 'goal-g1')?.status === 'completed' && settledReward.find(item => item.key === 'goal-g1')?.actualAmount === 10, 'settled goal reward must be authoritative')
+const weeklyGoal = { ...base.dailyGoals[0], id: 'weekly', title: '本周输入', period: 'weekly', periodKey: '2026W40', periodEnd: '2026-10-04', current: 30 }
+const monthlyGoal = { ...base.dailyGoals[0], id: 'monthly', title: '本月输入', period: 'monthly', periodKey: '202610', periodEnd: '2026-10-31', current: 30 }
+const sessionGoals = ['s1', 's2'].map(id => ({ ...base.dailyGoals[0], id: 'session', title: '每次输入', period: 'per_session', periodKey: `session_${id}`, current: 60 }))
+const multiPeriod = buildDailySummary({ ...base, diary: null, dailyGoals: [weeklyGoal, monthlyGoal, ...sessionGoals], ledger: [], nowMs: beforeNine })
+assert(multiPeriod.find(item => item.key === 'goal-weekly')?.status === 'in_progress', 'weekly goal must show ongoing period instead of a daily overdue state')
+assert(multiPeriod.find(item => item.key === 'goal-monthly')?.status === 'in_progress', 'monthly goal must show ongoing period')
+assert(multiPeriod.filter(item => item.key.startsWith('goal-session-')).length === 2, 'each session goal must retain its own item')
+const settledWeek = buildDailySummary({ ...base, diary: null, dailyGoals: [weeklyGoal], ledger: [{ id: 'week-reward', source_type: 'goal_reward', source_id: 'goal_weekly_2026W40', amount: 10 }], nowMs: beforeNine })
+assert(settledWeek.find(item => item.key === 'goal-weekly')?.status === 'completed', 'period settlement must override transient progress')
 assert(!buildDailySummary({ ...base, diary: null, summaryReady: false, dailyHabits: [habit], checklistTasks: [task] }).some(item => ['habit-habit-1', 'task-task-1', 'goal-g1'].includes(item.key)), 'unloaded date must not reuse source facts')
 assert(buildDailySummary({ ...base, planVersion: 'v3', diary: null }).every(item => !item.key.startsWith('diet-')), 'non-V4 dates must not fabricate diet items')
 assert(complete.some(item => item.key === 'body-metrics' && item.actualAmount === -50), 'body metrics and actual penalty must render')

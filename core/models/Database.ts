@@ -2245,6 +2245,40 @@ export class Database {
     })
   }
 
+  getSummaryGoalsForDate(date: string): Array<Goal & { current: number; target: number; periodKey: string; periodEnd: string }> {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return []
+    const day = new Date(`${date}T00:00:00Z`)
+    if (Number.isNaN(day.getTime())) return []
+    const monday = new Date(day); monday.setUTCDate(day.getUTCDate() - ((day.getUTCDay() + 6) % 7))
+    const mondayText = monday.toISOString().slice(0, 10)
+    const monthStart = `${date.slice(0, 7)}-01`
+    const monthEnd = new Date(Date.UTC(day.getUTCFullYear(), day.getUTCMonth() + 1, 0)).toISOString().slice(0, 10)
+    const weekEnd = new Date(monday); weekEnd.setUTCDate(monday.getUTCDate() + 6)
+    const bindings = this._all('SELECT goal_id,category_id FROM goal_category_bindings') as Array<{ goal_id: string; category_id: number }>
+    const rows = this._all("SELECT * FROM goals WHERE COALESCE(created_at,'')<=? AND (is_active=1 OR COALESCE(updated_at,'')>?)", [`${date} 23:59:59`, `${date} 23:59:59`]) as Goal[]
+    return rows.flatMap(goal => {
+      const weekdays = parseGoalWeekdays((goal as any).weekdays)
+      if (goal.period === 'custom_weekdays' && !weekdays?.includes(day.getUTCDay() || 7)) return []
+      const categories = bindings.filter(row => String(row.goal_id) === String(goal.id)).map(row => Number(row.category_id))
+      const ids = categories.length ? categories : goal.category_id == null ? [] : [goal.category_id]
+      if (goal.period === 'per_session') {
+        if (!ids.length) return []
+        return (this._all(`SELECT id,net_duration_minutes FROM study_sessions WHERE category_id IN (${ids.map(() => '?').join(',')}) AND date=?`, [...ids, date]) as any[])
+          .map(session => ({ ...goal, weekdays, current: goal.metric === 'duration' ? Number(session.net_duration_minutes || 0) : 1,
+            target: Number(goal.target_value), periodKey: `session_${session.id}`, periodEnd: date }))
+      }
+      const start = goal.period === 'weekly' ? mondayText : goal.period === 'monthly' ? monthStart : date
+      const periodEnd = goal.period === 'weekly' ? weekEnd.toISOString().slice(0, 10) : goal.period === 'monthly' ? monthEnd : date
+      const thursday = new Date(monday); thursday.setUTCDate(monday.getUTCDate() + 3)
+      const isoWeek = Math.floor((thursday.getTime() - Date.UTC(thursday.getUTCFullYear(), 0, 1)) / 604800000) + 1
+      const periodKey = goal.period === 'weekly' ? `${thursday.getUTCFullYear()}W${String(isoWeek).padStart(2, '0')}` : goal.period === 'monthly' ? date.slice(0, 7).replace('-', '') : date.replace(/-/g, '')
+      const aggregate = goal.metric === 'duration' ? 'SUM(net_duration_minutes)' : 'COUNT(*)'
+      const placeholders = ids.map(() => '?').join(',')
+      const current = ids.length ? Number((this._get(`SELECT ${aggregate} AS val FROM study_sessions WHERE category_id IN (${placeholders}) AND date BETWEEN ? AND ?`, [...ids, start, date]) as any)?.val || 0) : 0
+      return [{ ...goal, weekdays, current, target: Number(goal.target_value), periodKey, periodEnd }]
+    })
+  }
+
   getDailySummaryLedger(date: string): LedgerEntry[] {
     const sources = ['body_metric_deadline_penalty', 'exercise_diet_penalty', 'goal_reward', 'goal_penalty', 'sleep_settlement_reward', 'sleep_cycle_penalty', 'sleep_deep_penalty', 'sleep_no_sleep_penalty', 'sleep_completion_reward', 'sleep_bedtime_adjustment', 'sleep_diary_completion_reward', 'sleep_morning_diary_reward', 'sleep_evening_diary_reward']
     const placeholders = sources.map(() => '?').join(',')

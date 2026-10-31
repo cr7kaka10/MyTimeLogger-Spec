@@ -75,7 +75,7 @@ export interface UseTimeBookReturn {
   saveSession: (data: SessionEditData) => void
   todaySummary: { groupName: string; minutes: number; color: string }[]
   diary: { morning_diary?: string; evening_diary?: string; morning_diary_written_at?: string; evening_diary_written_at?: string; image_uploaded_at?: string; report_status?: number; source?: string; sync_status?: string; full_report_state?: string; report_completed_at?: string; morning_diary_reward_status?: string; morning_diary_reward_amount?: number; morning_diary_reward_reason?: string; evening_diary_reward_status?: string; evening_diary_reward_amount?: number; evening_diary_reward_reason?: string } | null
-  dailyGoals: Array<{ id: string | number; title: string; period: string; operator: string; current: number; target: number; rewardCoins: number; penaltyCoins: number }>
+  dailyGoals: Array<{ id: string | number; title: string; period: string; operator: string; current: number; target: number; periodKey?: string; periodEnd?: string; rewardCoins: number; penaltyCoins: number }>
   dailySummaryLedger: Array<{ id: string | number; source_type: string; source_id?: string | number; amount: number; description?: string; occurred_at?: string | null }>
   dailyHabits: Array<{ id: string | number; name: string; icon?: string; repeatRule?: string | null; status: number }>
   saveDiary: (type: 'morning' | 'evening', content: string) => void
@@ -155,7 +155,7 @@ export const useTimeBook = (isActive = true, runtime?: ManagementPlanRuntime): U
     setAvailableDates(db.getAvailableDates() ?? [])
     setCategories(db.getCategories().map((c: any) => ({ id: c.id, name: c.name, icon: c.icon, color: c.color })))
     if (typeof db.getDiaryForDate === 'function') setDiary(db.getDiaryForDate(selectedDate))
-    if (typeof db.getDailyGoalsForDate === 'function') setDailyGoals(db.getDailyGoalsForDate(selectedDate).map((goal: any) => ({ id: goal.id, title: goal.title, period: goal.period, operator: goal.operator, current: goal.current, target: goal.target, rewardCoins: Number(goal.reward_coins || 0), penaltyCoins: Number(goal.penalty_coins || 0) })))
+    if (typeof db.getSummaryGoalsForDate === 'function') setDailyGoals(db.getSummaryGoalsForDate(selectedDate).map((goal: any) => ({ id: goal.id, title: goal.title, period: goal.period, operator: goal.operator, current: goal.current, target: goal.target, periodKey: goal.periodKey, periodEnd: goal.periodEnd, rewardCoins: Number(goal.reward_coins || 0), penaltyCoins: Number(goal.penalty_coins || 0) })))
     if (typeof db.getDailySummaryLedger === 'function') setDailySummaryLedger(db.getDailySummaryLedger(selectedDate) as any)
     if (typeof db.getSleepStatusMap === 'function') setSleepStatusMap(db.getSleepStatusMap())
 

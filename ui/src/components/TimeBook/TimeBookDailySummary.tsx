@@ -7,11 +7,11 @@ import { filterTasksForChecklistDate } from '../../utils/checklistFilter'
 import type { ExercisePlanDefinition } from '@models/ExercisePlanSampleDataInitializer'
 import { planDayForDate } from '../../utils/exerciseDate'
 
-export type DailySummaryStatus = 'pending' | 'completed' | 'failed' | 'overdue' | 'plan_only'
+export type DailySummaryStatus = 'pending' | 'in_progress' | 'completed' | 'failed' | 'overdue' | 'plan_only'
 export type DailySummaryTarget = 'morning-diary' | 'evening-diary'
 export type DailySummaryNavigationIntent = { tab: MainTab; date: string; target?: DailySummaryTarget; nonce: number }
 export type DailySummaryLedger = { id: string | number; source_type: string; source_id?: string | number; amount: number; description?: string; occurred_at?: string | null }
-export type DailySummaryGoal = { id: string | number; title: string; period: string; operator: string; current: number; target: number; rewardCoins: number; penaltyCoins: number }
+export type DailySummaryGoal = { id: string | number; title: string; period: string; operator: string; current: number; target: number; periodKey?: string; periodEnd?: string; rewardCoins: number; penaltyCoins: number }
 export type DailySummaryHabit = { id: string | number; name: string; icon?: string; repeatRule?: string | null; status: number }
 export type DailySummaryItem = { key: string; label: string; status: DailySummaryStatus; tab: MainTab; target?: DailySummaryTarget; consequence: 'penalty' | 'sleep_risk' | 'reward_only'; ruleAmount?: number; actualAmount?: number | null; actualTime?: string; subLabel?: string; rewardSource?: { sourceType: SourceRewardType; sourceId: string }; sourceIds: string[] }
 
@@ -76,13 +76,18 @@ export function buildDailySummary({ date, diary, planVersion, planDefinition, pl
     const fact = exerciseReady ? dietCheckins[key] : null, value = fact?.status, actual = sumMatches(ledger, 'exercise_diet_penalty', key)
     items.push({ key: `diet-${key}`, label, status: planVersion === 'v5' && !fact ? 'plan_only' : value === 'completed' ? 'completed' : value === 'failed' || (actual.amount != null && actual.amount < 0) ? 'failed' : 'pending', tab: 'exercise', consequence: planVersion === 'v4' ? 'penalty' : 'reward_only', ruleAmount: planVersion === 'v4' ? -20 : 0, actualAmount: actual.amount, sourceIds: actual.ids })
   }
-  if (summaryReady) for (const goal of dailyGoals.filter(goal => goal.period === 'daily')) {
+  if (summaryReady) for (const goal of dailyGoals) {
     const met = goal.operator === '<=' ? goal.current <= goal.target : goal.current >= goal.target
-    const claimId = `goal_${goal.id}_${date.replace(/-/g, '')}`
+    const claimId = `goal_${goal.id}_${goal.periodKey || date.replace(/-/g, '')}`
     const rows = ledger.filter(entry => (entry.source_type === 'goal_reward' || entry.source_type === 'goal_penalty') && String(entry.source_id || '') === claimId)
     const actualAmount = rows.length ? rows.reduce((sum, entry) => sum + Number(entry.amount || 0), 0) : null
     const succeeded = actualAmount != null ? actualAmount >= 0 : met
-    items.push({ key: `goal-${goal.id}`, label: goal.title, status: actualAmount != null ? succeeded ? 'completed' : 'failed' : met ? 'completed' : 'pending', tab: 'timebook', consequence: succeeded ? 'reward_only' : 'penalty', ruleAmount: succeeded ? goal.rewardCoins : -Math.abs(goal.penaltyCoins), actualAmount, sourceIds: rows.map(row => String(row.id)) })
+    const ongoing = ['weekly', 'monthly'].includes(goal.period) && actualAmount == null && nowMs < Date.parse(`${goal.periodEnd || date}T23:59:59+08:00`)
+    const label = goal.period === 'weekly' ? `【周目标】${goal.title}` : goal.period === 'monthly' ? `【月目标】${goal.title}` : goal.period === 'per_session' ? `【单次】${goal.title}` : goal.title
+    items.push({ key: goal.period === 'per_session' ? `goal-${goal.id}-${goal.periodKey || date}` : `goal-${goal.id}`, label,
+      status: actualAmount != null ? succeeded ? 'completed' : 'failed' : ongoing ? 'in_progress' : met ? 'completed' : 'pending',
+      tab: 'timebook', consequence: succeeded ? 'reward_only' : 'penalty', ruleAmount: succeeded ? goal.rewardCoins : -Math.abs(goal.penaltyCoins),
+      actualAmount, subLabel: `进度 ${goal.current}/${goal.target} · ${actualAmount == null ? '未结算' : `实际 ${coins(actualAmount)}`}`, sourceIds: rows.map(row => String(row.id)) })
   }
   if (summaryReady) for (const [source, label, ruleAmount] of SLEEP_LEDGER_RULES) {
     const actual = sumMatches(ledger, source)
@@ -94,6 +99,7 @@ export function buildDailySummary({ date, diary, planVersion, planDefinition, pl
 
 const statusView: Record<DailySummaryStatus, [string, string]> = {
   pending: ['待完成', 'border-slate-200 bg-white text-slate-600 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300'], completed: ['已完成', 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900 dark:bg-emerald-950/30 dark:text-emerald-300'],
+  in_progress: ['进行中', 'border-blue-200 bg-blue-50 text-blue-700 dark:border-blue-900 dark:bg-blue-950/30 dark:text-blue-300'],
   failed: ['失败', 'border-red-200 bg-red-50 text-red-700 dark:border-red-900 dark:bg-red-950/30 dark:text-red-300'], overdue: ['已逾期', 'border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-300'],
   plan_only: ['仅展示计划', 'border-slate-200 bg-slate-50 text-slate-500 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-400'],
 }
