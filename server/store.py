@@ -1214,6 +1214,31 @@ class ServerSleepStore:
             conn.close()
 
 
+    def set_habit_window(self, user_id, habit_id, start_minute, end_minute):
+        if (start_minute is None) != (end_minute is None):
+            raise ValueError("invalid_habit_window")
+        if start_minute is not None and (type(start_minute) is not int or type(end_minute) is not int
+                or not 0 <= start_minute < end_minute <= 1440):
+            raise ValueError("invalid_habit_window")
+        stamp = now_str()
+        effective_from = (date.fromisoformat(stamp[:10]) + timedelta(days=1)).isoformat()
+        record_id = f"habit-window:{user_id}:{habit_id}:{effective_from}"
+        with self._transact() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            habit = conn.execute("SELECT 1 FROM server_habits WHERE user_id=? AND id=? AND is_active=0",
+                                 (user_id, habit_id)).fetchone()
+            if not habit:
+                return None
+            prior = conn.execute("SELECT start_minute,end_minute FROM server_habit_windows WHERE user_id=? AND habit_id=? AND effective_from=?",
+                                 (user_id, habit_id, effective_from)).fetchone()
+            if not prior or (prior["start_minute"], prior["end_minute"]) != (start_minute, end_minute):
+                conn.execute("""INSERT INTO server_habit_windows(id,user_id,habit_id,effective_from,start_minute,end_minute,created_at,updated_at)
+                    VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(user_id,habit_id,effective_from)
+                    DO UPDATE SET start_minute=excluded.start_minute,end_minute=excluded.end_minute,updated_at=excluded.updated_at""",
+                    (record_id, user_id, habit_id, effective_from, start_minute, end_minute, stamp, stamp))
+                self._record_server_change(conn, user_id, "server_habit_windows", record_id, "upsert", {"id": record_id})
+        return {"habit_id": habit_id, "effective_from": effective_from, "start_minute": start_minute, "end_minute": end_minute}
+
     def list_today_checkins(self, user_id, date_str):
         conn = self._connect()
         try:

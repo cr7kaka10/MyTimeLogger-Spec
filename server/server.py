@@ -4924,6 +4924,20 @@ async def update_habit(habit_id: str, request: Request, user: dict = Depends(get
         raise HTTPException(status_code=404, detail="Habit not found or update conflict")
     return {"status": "ok"}
 
+@app.put("/api/habits/{habit_id}/window")
+async def set_habit_window(habit_id: str, request: Request, user: dict = Depends(get_current_user)):
+    body = await request.json()
+    if "start_minute" not in body or "end_minute" not in body:
+        raise HTTPException(status_code=422, detail="invalid_habit_window")
+    try:
+        result = store.set_habit_window(int(user["id"]), habit_id, body["start_minute"], body["end_minute"])
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if result is None:
+        raise HTTPException(status_code=404, detail="Habit not found")
+    sync_hub._notify_clients(["habit_windows"], int(user["id"]))
+    return {"status": "ok", **result}
+
 @app.get("/api/habits/today_checkins")
 def get_today_checkins(date: str, user: dict = Depends(get_current_user_optional)):
     habit_auto_failure_service.run(user_id=int(user["id"]))
