@@ -39,4 +39,22 @@ public class DailyWidgetHabitClientTest {
         assertEquals("unauthorized", new DailyWidgetHabitClient((url, token, body) ->
                 new DailyWidgetHabitClient.Response(401, "{}")).apply(runtime, fixed));
     }
+    @Test public void ignoreUsesStableCommandAndRequiresConfirmedIgnoredState() {
+        JsonObject command = command("ignore");
+        DailyWidgetHabitClient client = new DailyWidgetHabitClient((url, token, body) -> {
+            assertEquals("https://example.test/api/habits/day-ignores", url);
+            assertEquals("token", token);
+            JsonObject sent = JsonParser.parseString(body).getAsJsonObject();
+            assertEquals("habit-1", sent.get("habit_id").getAsString());
+            assertEquals("daily-fixed", sent.get("idempotency_key").getAsString());
+            assertTrue(sent.get("ignore").getAsBoolean());
+            return new DailyWidgetHabitClient.Response(200, "{\"status\":\"confirmed\",\"is_ignored\":true}");
+        });
+        assertEquals("applied", client.ignore(runtime, command));
+        assertEquals("applied", client.ignore(runtime, command));
+        assertEquals("retryable", new DailyWidgetHabitClient((url, token, body) ->
+                new DailyWidgetHabitClient.Response(503, "")).ignore(runtime, command));
+        assertEquals("rejected", new DailyWidgetHabitClient((url, token, body) ->
+                new DailyWidgetHabitClient.Response(409, "{}")).ignore(runtime, command));
+    }
 }
