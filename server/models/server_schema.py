@@ -288,6 +288,17 @@ def ensure_server_schema(conn: sqlite3.Connection):
         """
     )
 
+    # 8.1 单日忽略权威记录
+    # 单日忽略保留撤销态，避免跨端拉取时丢失删除事件。
+    conn.execute("""CREATE TABLE IF NOT EXISTS server_habit_day_ignores (
+        id TEXT PRIMARY KEY, user_id INTEGER NOT NULL, habit_id TEXT NOT NULL,
+        date TEXT NOT NULL, is_ignored INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+        UNIQUE(user_id, habit_id, date),
+        FOREIGN KEY(user_id) REFERENCES users(id))""")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_habit_day_ignores_user_date "
+                 "ON server_habit_day_ignores(user_id,date,is_ignored)")
+
     # 9. 奖励商品配置表
     conn.execute(
         """
@@ -479,6 +490,11 @@ def ensure_server_schema(conn: sqlite3.Connection):
         """
     )
     _ensure_columns(conn, "server_goals", {"weekdays": "TEXT", "weekdays_effective_from": "TEXT"})
+    conn.execute("""CREATE TABLE IF NOT EXISTS server_goal_item_claims (
+        id TEXT PRIMARY KEY, user_id INTEGER NOT NULL, goal_id TEXT NOT NULL,
+        period_key TEXT NOT NULL, reward_id TEXT NOT NULL, created_at TEXT NOT NULL,
+        UNIQUE(user_id, goal_id, period_key, reward_id),
+        FOREIGN KEY(user_id) REFERENCES users(id))""")
 
     # 11. 金币收支流水表
     conn.execute(

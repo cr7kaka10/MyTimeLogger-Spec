@@ -66,6 +66,18 @@
       "serverFields": ["user_id", "server_version"]
     },
     {
+      "name": "habit_day_ignores",
+      "clientTable": "habit_day_ignores",
+      "serverTable": "server_habit_day_ignores",
+      "primaryKey": "id",
+      "naturalKeys": ["habit_id", "date"],
+      "ownership": "server_owned",
+      "direction": "pull_only",
+      "outbox": false,
+      "deletePolicy": "no_delete",
+      "serverFields": ["user_id", "server_version"]
+    },
+    {
       "name": "goals",
       "clientTable": "goals",
       "serverTable": "server_goals",
