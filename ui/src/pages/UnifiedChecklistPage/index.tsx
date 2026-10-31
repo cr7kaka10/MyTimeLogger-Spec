@@ -247,6 +247,8 @@ export const UnifiedChecklistPage = memo(({
       {/* 习惯分组（未完成） */}
       <HabitSection
         habits={habits.habits}
+        ignoredHabits={habits.ignoredHabits}
+        onSetIgnored={habits.setHabitIgnored}
         todayCheckins={habits.todayCheckins}
         selectedDate={selectedDate}
         streakMap={habits.streakMap}
@@ -280,6 +282,8 @@ export const UnifiedChecklistPage = memo(({
           {/* 习惯分组（已完成） */}
           <HabitSection
             habits={habits.habits}
+            ignoredHabits={habits.ignoredHabits}
+            onSetIgnored={habits.setHabitIgnored}
             todayCheckins={habits.todayCheckins}
             selectedDate={selectedDate}
             streakMap={habits.streakMap}

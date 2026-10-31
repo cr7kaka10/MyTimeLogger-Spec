@@ -5,10 +5,13 @@ import { getCurrentTimerClient, getDatabase, syncNow } from '../db'
 import { useEventRefresh } from './useEventRefresh'
 import { LOCAL_HABITS_UPDATED } from './useLocalHabitMutation'
 import { isHabitScheduledForDate as scheduledForDate } from '@core/HabitSchedule'
+import { dateToShanghaiDateString } from '../utils/shanghaiDate'
 
 export interface UseHabitsReturn {
   habits: Habit[]
   todayCheckins: HabitCheckin[]
+  ignoredHabits: Habit[]
+  setHabitIgnored: (habitId: number | string, ignore: boolean) => Promise<boolean>
   selectedDate: string
   setSelectedDate: (date: string) => void
   streakMap: Record<number | string, number>
@@ -27,6 +30,7 @@ export function isHabitScheduledForDate(repeatRule: string | undefined | null, d
 export const useHabits = (): UseHabitsReturn => {
   const [habits, setHabits] = useState<Habit[]>([])
   const [todayCheckins, setTodayCheckins] = useState<HabitCheckin[]>([])
+  const [ignoredHabits, setIgnoredHabits] = useState<Habit[]>([])
   const [streakMap, setStreakMap] = useState<Record<number | string, number>>({})
   const [weeklyMap, setWeeklyMap] = useState<Record<number | string, number[]>>({})
   const [refreshTrigger, setRefreshTrigger] = useState(0)
@@ -34,12 +38,7 @@ export const useHabits = (): UseHabitsReturn => {
   const commandKeys = useRef<Record<string, string>>({})
   const syncRefresh = useEventRefresh(['sync-pull-complete', LOCAL_HABITS_UPDATED])
 
-  const getLocalYYYYMMDD = (d: Date = new Date()) => {
-    const year = d.getFullYear()
-    const month = String(d.getMonth() + 1).padStart(2, '0')
-    const day = String(d.getDate()).padStart(2, '0')
-    return `${year}-${month}-${day}`
-  }
+  const getLocalYYYYMMDD = (d: Date = new Date()) => dateToShanghaiDateString(d)
 
   const [selectedDate, setSelectedDate] = useState<string>(() => getLocalYYYYMMDD())
 
@@ -50,10 +49,13 @@ export const useHabits = (): UseHabitsReturn => {
       
       // 获取选中日期的打卡记录
       const checkinsForSelectedDate = db.getTodayCheckins(selectedDate) as any[]
+      const ignoredIds = db.getIgnoredHabitIds(selectedDate)
+      setIgnoredHabits(all.filter(h => Number(h.is_active || 0) === 0 && ignoredIds.has(String(h.id))))
 
       // 过滤习惯：只显示今天有排期的，或者今天已经有打卡记录的（兜底展示）
       const filteredHabits = all.filter(h => {
         if (Number(h.is_active || 0) !== 0) return false
+        if (ignoredIds.has(String(h.id))) return false
         const rrule = h.repeat_rule || h.repeatRule
         const isScheduled = isHabitScheduledForDate(rrule, selectedDate)
         const hasCheckin = checkinsForSelectedDate.some(c => c.habit_id === h.id || c.habitId === h.id)
@@ -84,6 +86,19 @@ export const useHabits = (): UseHabitsReturn => {
       setWeeklyMap(wMap)
     })
   }, [refreshTrigger, syncRefresh, selectedDate])
+
+  const setHabitIgnored = useCallback(async (habitId: number | string, ignore: boolean) => {
+    const api = getCurrentTimerClient()
+    if (!api) return false
+    const response = await api.post('/api/habits/day-ignores', {
+      habit_id: String(habitId), date: selectedDate, ignore,
+      idempotency_key: globalThis.crypto?.randomUUID?.() || `ignore-${Date.now()}`,
+    })
+    if (!response.ok || response.data?.status !== 'confirmed') return false
+    await syncNow({ reason: 'habit-day-ignore' })
+    setRefreshTrigger(previous => previous + 1)
+    return true
+  }, [selectedDate])
 
 
   const submitHabitCommand = useCallback(async (habitId: number | string, date: string, desiredStatus: number, idempotencyKey: string, retry = false) => {
@@ -166,9 +181,9 @@ export const useHabits = (): UseHabitsReturn => {
 
   return useMemo(
     () => ({
-      habits, todayCheckins, selectedDate, setSelectedDate, streakMap, weeklyMap,
+      habits, todayCheckins, ignoredHabits, setHabitIgnored, selectedDate, setSelectedDate, streakMap, weeklyMap,
       toggleCheckin, habitCommandStatus, retryHabitCheckin, addHabit, deleteHabit,
     }),
-    [habits, todayCheckins, selectedDate, setSelectedDate, streakMap, weeklyMap, toggleCheckin, habitCommandStatus, retryHabitCheckin, addHabit, deleteHabit],
+    [habits, todayCheckins, ignoredHabits, setHabitIgnored, selectedDate, setSelectedDate, streakMap, weeklyMap, toggleCheckin, habitCommandStatus, retryHabitCheckin, addHabit, deleteHabit],
   )
 }

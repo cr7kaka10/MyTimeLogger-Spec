@@ -8,9 +8,12 @@ import { getDatabase, syncNow } from '../../db'
 import { HabitActions } from './HabitActions'
 import { useLocalHabitMutation } from '../../hooks/useLocalHabitMutation'
 import { requireActiveHabitRewardSource } from '../../hooks/sourceRewardApi'
+import { dateToShanghaiDateString } from '../../utils/shanghaiDate'
 
 interface HabitSectionProps {
   habits: any[]
+  ignoredHabits: any[]
+  onSetIgnored: (habitId: string | number, ignore: boolean) => Promise<boolean>
   todayCheckins: any[]
   selectedDate: Date
   streakMap: Record<string, number>
@@ -24,6 +27,8 @@ interface HabitSectionProps {
 
 export const HabitSection = memo(({
   habits,
+  ignoredHabits,
+  onSetIgnored,
   todayCheckins,
   selectedDate,
   streakMap,
@@ -38,6 +43,12 @@ export const HabitSection = memo(({
   const [draftHabit, setDraftHabit] = useState('')
   const [managedHabit, setManagedHabit] = useState<any>(null)
   const [rewardError, setRewardError] = useState('')
+  const changeIgnore = async (habitId: string | number, ignore: boolean) => {
+    try {
+      if (!await onSetIgnored(habitId, ignore)) setRewardError('忽略状态未保存，请检查网络后重试')
+      else setRewardError('')
+    } catch { setRewardError('忽略状态未保存，请检查网络后重试') }
+  }
   useEffect(() => {
     const listener = () => setRewardError('习惯已归档、删除或不可用，旧打卡已停止重试，请同步清单')
     window.addEventListener('habit-lifecycle-error', listener)
@@ -148,12 +159,22 @@ export const HabitSection = memo(({
     return sorted
   }, [habits, todayCheckins, mode])
 
+  const ignoredControls = mode === 'incomplete' && ignoredHabits.length > 0 && (
+    <div className="text-xs text-gray-500">今日已忽略：{ignoredHabits.map(habit => (
+      <button key={habit.id} type="button" className="mx-1 underline" onClick={() => void changeIgnore(habit.id, false)}>
+        {habit.name} · 撤销
+      </button>
+    ))}</div>
+  )
+
   if (sortedHabits.length === 0) {
     if (mode === 'completed') return null
     return (
       <div className="theme-surface rounded-xl border p-3 shadow-sm">
         <h3 className="mb-2 px-1 text-sm font-bold text-gray-700">{getDateLabel()}</h3>
+        {rewardError && <p role="alert" className="text-xs text-red-600">{rewardError}</p>}
         {habitCreator}
+        {ignoredControls}
         <div className="flex items-center justify-center gap-2 py-2">
           <span className="text-xl text-gray-300">🌱</span>
           <p className="text-xs font-medium text-gray-400">暂无习惯</p>
@@ -167,6 +188,7 @@ export const HabitSection = memo(({
     <div className="space-y-2" role="region" aria-label={mode === 'completed' ? '已完成习惯' : getDateLabel()}>
       {rewardError && <p role="alert" className="text-sm text-red-600">{rewardError}</p>}
       {mode !== 'completed' && <><h3 className="text-sm font-bold text-gray-700 px-1">{getDateLabel()}</h3>{habitCreator}</>}
+      {ignoredControls}
       {sortedHabits.map((habit) => {
         // 查询选中日期的打卡记录（不再只看今天）
         const checkin = todayCheckins.find(c => c.habit_id === habit.id)
@@ -231,6 +253,8 @@ export const HabitSection = memo(({
             {/* 操作按钮：习惯仅支持打卡，不在清单页启动专注。 */}
             <span className="flex gap-1.5">
               <button type="button" title="习惯详情与管理" aria-label={`管理习惯「${habit.name}」`} onClick={() => setManagedHabit(habit)} className="px-2 text-gray-500">⋯</button>
+              {mode !== 'completed' && selectedDateStr === dateToShanghaiDateString(new Date()) && <button type="button" title="忽略今天" aria-label={`忽略今天的习惯「${habit.name}」`}
+                onClick={() => void changeIgnore(habit.id, true)} className="rounded px-2 text-xs text-gray-500 hover:bg-gray-100">忽略今天</button>}
               <button
                 type="button"
                 onClick={(e) => {
