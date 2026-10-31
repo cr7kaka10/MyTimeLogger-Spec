@@ -51,6 +51,27 @@ final class DailyWidgetStore {
         try { return ownerMatches(value, userId, generation, database) && value.getAsJsonObject("days").has(day); }
         catch (Exception ignored) { return false; }
     }
+    static boolean ignored(JsonObject snapshot, JsonObject hidden, String day, String id) {
+        try { return ownerMatches(snapshot, string(hidden, "userId"), hidden.get("generation").getAsLong(), string(hidden, "database"))
+                && day.equals(string(hidden, "date")) && hidden.getAsJsonObject("ids").has(id); }
+        catch (RuntimeException ignored) { return false; }
+    }
+    boolean isIgnored(String id, String day) { return ignored(snapshot(), readObject("ignored"), day, id); }
+    boolean ignoreHabit(String id, String day) { synchronized (DailyWidgetStore.class) {
+        JsonObject owner = snapshot();
+        if (owner == null || !today().equals(day) || id == null || id.isEmpty()) return false;
+        JsonObject hidden = readObject("ignored");
+        if (!ownerMatches(owner, string(hidden, "userId"),
+                hidden.has("generation") ? hidden.get("generation").getAsLong() : -1, string(hidden, "database"))
+                || !day.equals(string(hidden, "date")) || hidden.getAsJsonObject("ids") == null) {
+            hidden = new JsonObject(); hidden.addProperty("userId", string(owner, "userId"));
+            hidden.addProperty("generation", owner.get("generation").getAsLong());
+            hidden.addProperty("database", string(owner, "database")); hidden.addProperty("date", day);
+            hidden.add("ids", new JsonObject());
+        }
+        hidden.getAsJsonObject("ids").addProperty(id, true);
+        return values.edit().putString("ignored", hidden.toString()).commit();
+    } }
     static boolean matchesCommand(JsonObject snapshot, JsonObject command, String day) {
         try {
             return snapshot != null && command != null && day.equals(string(command, "date"))
@@ -85,7 +106,7 @@ final class DailyWidgetStore {
             SharedPreferences.Editor editor = values.edit().putString("snapshot", snapshot.toString());
             if (sameAccount) {
                 editor.putString("pending", rebasePending(readObject("pending"), today(), runtime.generation).toString());
-            } else editor.remove("pending").remove("done").remove("expanded_items");
+            } else editor.remove("pending").remove("done").remove("expanded_items").remove("ignored");
             return editor.commit();
         } catch (Exception ignored) { return false; }
     }

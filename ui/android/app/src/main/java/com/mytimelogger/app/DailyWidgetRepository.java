@@ -48,7 +48,7 @@ final class DailyWidgetRepository {
             for (Map<String, Object> item : db.query("SELECT id,name FROM habits WHERE is_active=0 AND source='local' ORDER BY sort_order,id", Collections.emptyList())) {
                 String id = text(item.get("id"));
                 int status = checkins.getOrDefault(id, 0);
-                if (includeHabit(scheduled, checkins, id) && unhandled(status)
+                if (includeHabit(scheduled, checkins, id) && unhandled(status) && !store.isIgnored(id, today)
                         && !store.isDone("habit", id, today))
                     habits.add(new Row("habit", id, text(item.get("name")),
                             badge("今天", store.pendingState("habit", id, today)), today, false, false));

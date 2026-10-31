@@ -34,7 +34,7 @@ public final class DailyWidgetCommandReceiver extends BroadcastReceiver {
             return;
         }
         if (!("complete".equals(action) || "menu_open".equals(action)
-                || "menu_cancel".equals(action) || "menu_confirm".equals(action))) return;
+                || "menu_cancel".equals(action) || "menu_confirm".equals(action) || "menu_ignore".equals(action))) return;
         String kind = intent.getStringExtra("kind"), id = intent.getStringExtra("id");
         String day = intent.getStringExtra("date");
         if (kind == null || id == null || day == null || !day.equals(DailyWidgetStore.today())
@@ -52,6 +52,10 @@ public final class DailyWidgetCommandReceiver extends BroadcastReceiver {
                 eligible = true; break;
             }
         if (!eligible) return;
+        if ("menu_ignore".equals(action)) {
+            if (store.ignoreHabit(id, day)) { store.clearMenu(); DailyWidgetProvider.refresh(context); }
+            return;
+        }
         if ("menu_open".equals(action)) {
             if (store.openMenu(id, day)) DailyWidgetProvider.refresh(context);
             return;

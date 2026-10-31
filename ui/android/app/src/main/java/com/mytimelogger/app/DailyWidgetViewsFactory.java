@@ -38,11 +38,13 @@ public final class DailyWidgetViewsFactory implements RemoteViewsService.RemoteV
         view.setViewVisibility(R.id.daily_fail, "habit".equals(row.kind) && !menu ? View.VISIBLE : View.GONE);
         view.setViewVisibility(R.id.daily_cancel, menu ? View.VISIBLE : View.GONE);
         view.setViewVisibility(R.id.daily_confirm, menu ? View.VISIBLE : View.GONE);
+        view.setViewVisibility(R.id.daily_ignore, menu ? View.VISIBLE : View.GONE);
         view.setTextViewText(R.id.daily_check, row.checked ? "☑" : "□");
         view.setContentDescription(R.id.daily_check, row.title + "，标记完成");
         view.setContentDescription(R.id.daily_fail, row.title + "，更多操作");
         view.setContentDescription(R.id.daily_cancel, row.title + "，取消记失败");
         view.setContentDescription(R.id.daily_confirm, row.title + "，确认记失败");
+        view.setContentDescription(R.id.daily_ignore, row.title + "，忽略今天");
         view.setContentDescription(R.id.daily_item_status, row.checked ? "已完成" : "未完成");
         view.setContentDescription(R.id.daily_item_name, "检查项，" + row.title);
         view.setContentDescription(R.id.daily_progress, "检查项 " + row.progress + (row.expanded ? "，收起" : "，展开"));
@@ -66,8 +68,8 @@ public final class DailyWidgetViewsFactory implements RemoteViewsService.RemoteV
                     .putExtra("action", "complete").putExtra("kind", row.kind)
                     .putExtra("id", row.id).putExtra("date", row.day));
             if ("habit".equals(row.kind)) {
-                String[] actions = menu ? new String[]{"menu_cancel", "menu_confirm"} : new String[]{"menu_open"};
-                int[] targets = menu ? new int[]{R.id.daily_cancel, R.id.daily_confirm} : new int[]{R.id.daily_fail};
+                String[] actions = menu ? new String[]{"menu_cancel", "menu_confirm", "menu_ignore"} : new String[]{"menu_open"};
+                int[] targets = menu ? new int[]{R.id.daily_cancel, R.id.daily_confirm, R.id.daily_ignore} : new int[]{R.id.daily_fail};
                 for (int i = 0; i < actions.length; i++) view.setOnClickFillInIntent(targets[i], new Intent()
                         .putExtra("action", actions[i]).putExtra("kind", row.kind)
                         .putExtra("id", row.id).putExtra("date", row.day));

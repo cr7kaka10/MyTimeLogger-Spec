@@ -10,6 +10,21 @@ import java.util.List;
 import org.junit.Test;
 
 public class DailyWidgetContractTest {
+    @Test public void ignoredHabitExpiresWithDayOwnerAndGeneration() {
+        JsonObject owner = new JsonObject(), hidden = new JsonObject(), ids = new JsonObject();
+        owner.addProperty("userId", "7"); owner.addProperty("generation", 3);
+        owner.addProperty("database", "account-7.db"); owner.add("days", new JsonObject());
+        hidden.addProperty("userId", "7"); hidden.addProperty("generation", 3);
+        hidden.addProperty("database", "account-7.db"); hidden.addProperty("date", "2026-10-31");
+        ids.addProperty("habit-1", true); hidden.add("ids", ids);
+        assertTrue(DailyWidgetStore.ignored(owner, hidden, "2026-10-31", "habit-1"));
+        assertFalse(DailyWidgetStore.ignored(owner, hidden, "2026-11-01", "habit-1"));
+        assertFalse(DailyWidgetStore.ignored(owner, hidden, "2026-10-31", "habit-2"));
+        owner.addProperty("generation", 4);
+        assertFalse(DailyWidgetStore.ignored(owner, hidden, "2026-10-31", "habit-1"));
+        owner.addProperty("generation", 3); owner.addProperty("userId", "8");
+        assertFalse(DailyWidgetStore.ignored(owner, hidden, "2026-10-31", "habit-1"));
+    }
     @Test public void beijingMidnightAndDueBucketsStayStable() {
         long before = Instant.parse("2026-10-19T15:59:59Z").toEpochMilli();
         long after = Instant.parse("2026-10-19T16:00:00Z").toEpochMilli();

@@ -29,4 +29,7 @@
     <TextView android:id="@+id/daily_confirm" android:layout_width="84dp" android:layout_height="48dp"
         android:gravity="center_vertical|center_horizontal" android:text="确认记失败" android:textSize="12sp"
         android:textColor="#D6A7AC" android:visibility="gone" />
+    <TextView android:id="@+id/daily_ignore" android:layout_width="76dp" android:layout_height="48dp"
+        android:gravity="center_vertical|center_horizontal" android:text="忽略今天" android:textSize="12sp"
+        android:textColor="#7497FF" android:visibility="gone" />
 </LinearLayout>
