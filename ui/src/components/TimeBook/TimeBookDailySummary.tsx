@@ -12,10 +12,11 @@ export type DailySummaryTarget = 'morning-diary' | 'evening-diary'
 export type DailySummaryNavigationIntent = { tab: MainTab; date: string; target?: DailySummaryTarget; nonce: number }
 export type DailySummaryLedger = { id: string | number; source_type: string; source_id?: string | number; amount: number; description?: string; occurred_at?: string | null }
 export type DailySummaryGoal = { id: string | number; title: string; period: string; operator: string; current: number; target: number; periodKey?: string; periodEnd?: string; rewardCoins: number; penaltyCoins: number }
-export type DailySummaryHabit = { id: string | number; name: string; icon?: string; repeatRule?: string | null; status: number }
+export type DailySummaryHabit = { id: string | number; name: string; icon?: string; repeatRule?: string | null; status: number; source?: string }
 export type DailySummaryItem = { key: string; label: string; status: DailySummaryStatus; tab: MainTab; target?: DailySummaryTarget; consequence: 'penalty' | 'sleep_risk' | 'reward_only'; ruleAmount?: number; actualAmount?: number | null; actualTime?: string; subLabel?: string; rewardSource?: { sourceType: SourceRewardType; sourceId: string }; sourceIds: string[] }
 
 const DIET_RULES = [['no_snacks', '不吃零食'], ['no_sugary_drinks', '不喝含糖饮料'], ['no_refined_staples', '不吃精制主食']] as const
+const DIET_POINTS: Record<string, number> = { no_sugary_drinks: 6, no_refined_staples: 6, no_snacks: 5, breakfast_on_time: 11, lunch_on_time: 11, dinner_on_time: 11 }
 const SLEEP_LEDGER_RULES: Array<[string, string, number | undefined]> = [
   ['sleep_bedtime_adjustment', '按时入睡', undefined], ['sleep_cycle_penalty', '睡眠周期达标', -50],
   ['sleep_deep_penalty', '深睡时长达标', undefined], ['sleep_no_sleep_penalty', '存在有效主睡眠', undefined],
@@ -62,8 +63,15 @@ export function buildDailySummary({ date, diary, planVersion, planDefinition, pl
   ]
   if (!summaryReady) items.length = 0
   else if (!exerciseReady) items.splice(2, 1)
+  const dietMigrated = dailyHabits.some(habit => habit.source === 'system' && String(habit.id).startsWith('diet-v5:'))
   if (summaryReady) for (const habit of dailyHabits) {
     if (!isHabitScheduledForDate(habit.repeatRule, date) && !habit.status) continue
+    if (habit.source === 'system' && String(habit.id).startsWith('diet-v5:')) {
+      const rule = String(habit.id).split(':')[1], points = DIET_POINTS[rule] || 0
+      const actual = sumMatches(ledger, 'exercise_diet_penalty', rule)
+      items.push({ key: `habit-${habit.id}`, label: `${habit.icon?.trim() ? `${habit.icon} ` : ''}${habit.name}`, status: habit.status === 2 ? 'completed' : habit.status === 1 ? 'failed' : 'pending', tab: 'checklist', consequence: actual.amount != null && actual.amount < 0 ? 'penalty' : 'reward_only', ruleAmount: ['breakfast_on_time', 'lunch_on_time', 'dinner_on_time'].includes(rule) ? -20 : 0, actualAmount: actual.amount, subLabel: `${habit.status === 2 ? points : 0}/${points}分`, sourceIds: actual.ids })
+      continue
+    }
     items.push({ key: `habit-${habit.id}`, label: `${habit.icon?.trim() ? `${habit.icon} ` : ''}${habit.name}`, status: habit.status === 2 ? 'completed' : habit.status === 1 ? 'failed' : 'pending', tab: 'checklist', consequence: 'reward_only', rewardSource: { sourceType: 'habit', sourceId: String(habit.id) }, sourceIds: [] })
   }
   const dueTasks = filterTasksForChecklistDate(checklistTasks, new Date(`${date}T12:00:00+08:00`))
@@ -72,7 +80,7 @@ export function buildDailySummary({ date, diary, planVersion, planDefinition, pl
   const v5RestDay = planVersion === 'v5' && dayPlan && !dayPlan.gym.length && !dayPlan.rain.length
   const dietRules: ReadonlyArray<readonly [string, string]> = planVersion === 'v4' ? DIET_RULES : planVersion === 'v5' && planReady && !v5RestDay
     ? (planDefinition?.diet || []).map(rule => [rule.ruleKey || '', rule.time ? `${rule.time} ${rule.content}` : rule.content]) : []
-  if (dietRulesValid) for (const [key, label] of dietRules) {
+  if (dietRulesValid && !dietMigrated) for (const [key, label] of dietRules) {
     const fact = exerciseReady ? dietCheckins[key] : null, value = fact?.status, actual = sumMatches(ledger, 'exercise_diet_penalty', key)
     items.push({ key: `diet-${key}`, label, status: planVersion === 'v5' && !fact ? 'plan_only' : value === 'completed' ? 'completed' : value === 'failed' || (actual.amount != null && actual.amount < 0) ? 'failed' : 'pending', tab: 'exercise', consequence: planVersion === 'v4' ? 'penalty' : 'reward_only', ruleAmount: planVersion === 'v4' ? -20 : 0, actualAmount: actual.amount, sourceIds: actual.ids })
   }

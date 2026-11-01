@@ -77,7 +77,7 @@ export interface UseTimeBookReturn {
   diary: { morning_diary?: string; evening_diary?: string; morning_diary_written_at?: string; evening_diary_written_at?: string; image_uploaded_at?: string; report_status?: number; source?: string; sync_status?: string; full_report_state?: string; report_completed_at?: string; morning_diary_reward_status?: string; morning_diary_reward_amount?: number; morning_diary_reward_reason?: string; evening_diary_reward_status?: string; evening_diary_reward_amount?: number; evening_diary_reward_reason?: string } | null
   dailyGoals: Array<{ id: string | number; title: string; period: string; operator: string; current: number; target: number; periodKey?: string; periodEnd?: string; rewardCoins: number; penaltyCoins: number }>
   dailySummaryLedger: Array<{ id: string | number; source_type: string; source_id?: string | number; amount: number; description?: string; occurred_at?: string | null }>
-  dailyHabits: Array<{ id: string | number; name: string; icon?: string; repeatRule?: string | null; status: number }>
+  dailyHabits: Array<{ id: string | number; name: string; icon?: string; repeatRule?: string | null; status: number; source?: string }>
   saveDiary: (type: 'morning' | 'evening', content: string) => void
   sleepStatusMap: Record<string, number>
   syncError: string
@@ -172,12 +172,13 @@ export const useTimeBook = (isActive = true, runtime?: ManagementPlanRuntime): U
       return /^\d{4}-\d{2}-\d{2}/.test(value) ? value : value && date ? `${date} ${value}` : ''
     }
     const allHabits = (db.getHabits?.() || []) as any[]
+    const habitWindows = db.getHabitWindowsForDate(selectedDate)
     const dayCheckins = (db.getTodayCheckins?.(selectedDate) || []) as any[]
     const habitNames = new Map(allHabits.map((habit: any) => [String(habit.id), String(habit.name || '')]))
     const checkinsByHabit = new Map(dayCheckins.map((checkin: any) => [String(checkin.habit_id ?? checkin.habitId), checkin]))
-    setDailyHabits(allHabits.filter((habit: any) => Number(habit.is_active || 0) === 0).map((habit: any) => ({
+    setDailyHabits(allHabits.filter((habit: any) => Number(habit.is_active || 0) === 0 && (habit.source !== 'system' || habitWindows.has(String(habit.id)))).map((habit: any) => ({
       id: habit.id, name: String(habit.name || habit.title || ''), icon: String(habit.icon || ''),
-      repeatRule: habit.repeat_rule || habit.repeatRule || null, status: Number(checkinsByHabit.get(String(habit.id))?.status || 0),
+      repeatRule: habit.repeat_rule || habit.repeatRule || null, status: Number(checkinsByHabit.get(String(habit.id))?.status || 0), source: habit.source,
     })).filter(habit => habit.name))
     const habitEntries = dayCheckins.flatMap((checkin: any) => {
       const status = Number(checkin.status)
