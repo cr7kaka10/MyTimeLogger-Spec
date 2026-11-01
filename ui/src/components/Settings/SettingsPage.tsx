@@ -186,6 +186,7 @@ export const SettingsPage = memo(({
   const [rewardRebuildFailure, setRewardRebuildFailure] = useState<RewardRebuildFailureView | null>(null)
   const [statisticsStartDateDraft, setStatisticsStartDateDraft] = useState(settings.statistics_start_date)
   const [sleepStatus, setSleepStatus] = useState(() => sleepAutomation.status())
+  const [sleepActionFeedback, setSleepActionFeedback] = useState('')
   const atimeloggerPasswordRef = useRef<HTMLInputElement>(null)
   const desktopCapabilities = getElectronCapabilities()
   const maximumStatisticsStartDate = beijingDateOffset(1)
@@ -198,18 +199,22 @@ export const SettingsPage = memo(({
     const refresh = () => {
       const next = sleepAutomation.status()
       setSleepStatus(next)
-      if (!done(next) && attempts++ < maxAttempts) window.setTimeout(refresh, 1000)
+      if (done(next)) setSleepActionFeedback(next.captureTest?.stage === 'FAILED' || next.stage === 'FAILED' ? `运行失败：${next.captureTest?.reason || next.reason || '请查看运行记录'}` : '本次操作已完成')
+      else if (attempts++ < maxAttempts) window.setTimeout(refresh, 1000)
+      else setSleepActionFeedback('等待超时，请查看最近运行记录或重试')
     }
     window.setTimeout(refresh, 500)
   }, [])
   const testSleepAutomation = useCallback(() => {
     const previousRun = sleepAutomation.status().captureTest?.runId
     const result = sleepAutomation.test()
+    setSleepActionFeedback(result.ok ? '图片采集已受理，正在等待结果…' : `图片采集未受理：${result.error || '请检查权限'}`)
     setSleepStatus(sleepAutomation.status())
     if (result.ok) pollSleepStatus(status => Boolean(status.captureTest?.runId && status.captureTest.runId !== previousRun && status.captureTest.stage !== 'RUNNING'))
   }, [pollSleepStatus])
   const generateSleepReport = useCallback(() => {
     const result = sleepAutomation.generateReport()
+    setSleepActionFeedback(result.ok ? '今日睡眠报告已受理，正在等待结果…' : '今日图片尚未保存或不可读取，请先采集图片')
     setSleepStatus({ ...sleepAutomation.status(), stage: result.ok ? 'PENDING' : 'FAILED', reason: result.ok ? '' : 'capture_required' })
     if (result.ok) {
       let sawProgress = false
@@ -223,6 +228,7 @@ export const SettingsPage = memo(({
     let sawReportProgress = false
     const previousRunId = sleepAutomation.status().captureTest?.runId
     const result = sleepAutomation.oneClick()
+    setSleepActionFeedback(result.ok ? '一键自动化已受理，正在等待采集和报告结果…' : `一键自动化未受理：${result.error || '请检查权限'}`)
     setSleepStatus({ ...sleepAutomation.status(), stage: result.ok ? 'PENDING' : 'FAILED', reason: result.ok ? '' : 'automation_rejected' })
     if (result.ok) pollSleepStatus(status => {
       sawReportProgress ||= ['MEDIA', 'UPLOADED', 'POLLING'].includes(status.stage || '')
@@ -230,7 +236,7 @@ export const SettingsPage = memo(({
       const done = captureFailed || (sawReportProgress && ['SUCCESS', 'FAILED'].includes(status.stage || ''))
       if (sawReportProgress && status.stage === 'SUCCESS') onSleepReportReady()
       return done
-    }, 1800)
+    }, 180)
   }, [onSleepReportReady, pollSleepStatus])
   const previewSleepCapture = useCallback(() => { sleepAutomation.previewCapture(); setSleepStatus(sleepAutomation.status()) }, [])
   const authorizeSleepAutomation = useCallback((permission: keyof SleepPermissions) => { sleepAutomation.authorize(permission) }, [])
@@ -678,7 +684,7 @@ export const SettingsPage = memo(({
 
       {sleepStatus.available ? <SleepAutomationSettings status={sleepStatus} consented={settings.sleep_automation_consent === true} permissions={sleepPermissions}
         onConsent={value => { void updateSleepConsent(value) }} onToggle={toggleSleepAutomation} onAuthorize={authorizeSleepAutomation}
-        onTest={testSleepAutomation} onPreview={previewSleepCapture} onGenerate={generateSleepReport} onOneClick={runOneClickSleepAutomation} />
+        onTest={testSleepAutomation} onPreview={previewSleepCapture} onGenerate={generateSleepReport} onOneClick={runOneClickSleepAutomation} feedback={sleepActionFeedback} />
         : <section className={sectionClass}><div className="px-4 py-3 font-medium">睡眠图片自动分析</div><div className="border-t border-gray-50 px-4 py-3 text-sm text-gray-400">仅 Android 手机端可用；PC/Web 不会访问华为运动健康或本地图片。</div></section>}
 
       {/* 声音设置 */}
