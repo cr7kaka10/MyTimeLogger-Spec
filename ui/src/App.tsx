@@ -162,13 +162,16 @@ const AppSession = ({ initialAuthenticated, onAccountActivated }: { initialAuthe
         handleNavigate('checklist')
       } else if (detail?.route === 'exercise') {
         handleNavigate('exercise')
+      } else if (detail?.route === 'sleep') {
+        sleep.setSelectedDate(new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(new Date()))
+        handleNavigate('sleep')
       }
     }
     window.addEventListener('mtl:navigate', navigate)
     const pending = (window as typeof window & { __mtlPendingNavigation?: { route: string, focusAi: boolean } }).__mtlPendingNavigation
     if (pending) navigate(new CustomEvent('mtl:navigate', { detail: pending }))
     return () => window.removeEventListener('mtl:navigate', navigate)
-  }, [handleNavigate])
+  }, [handleNavigate, sleep.setSelectedDate])
 
   useEffect(() => {
     authenticatedRef.current = authenticated
@@ -376,6 +379,7 @@ const AppSession = ({ initialAuthenticated, onAccountActivated }: { initialAuthe
     if (activeTab === 'timebook') return <TimeBookPage {...timeBook} checklistTasks={checklist.tasks} onNavigate={handleNavigate} onSummaryNavigate={handleSummaryNavigate} />
       if (activeTab === 'sleep') return (
         <SleepPage {...sleep}
+          onAutomationDone={sleep.setSelectedDate}
           onPickImage={sleep.pickImage}
           onSleepAnalysis={sleep.runAnalysis}
           onFullAnalysis={sleep.runFullAnalysis}

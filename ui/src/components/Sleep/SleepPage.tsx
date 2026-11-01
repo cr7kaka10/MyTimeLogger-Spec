@@ -10,6 +10,7 @@ import { BottomSheet } from '../common/BottomSheet'
 import { applySleepReportHeadingAnchors, extractSleepReportOutline } from './sleepReportOutline'
 import { hasSleepSourceEvidence } from '../../utils/sleepSourceStatus'
 import { selectSleepReportSource } from './sleepReportSource'
+import { sleepAutomation } from '../../platform/sleepAutomation'
 
 interface SleepPageProps extends UseSleepReturn {
   onSelectSleepDate?: (date: string) => void
@@ -17,6 +18,7 @@ interface SleepPageProps extends UseSleepReturn {
   onSleepAnalysis?: () => void
   onFullAnalysis?: () => void
   onForceRefresh?: () => void
+  onAutomationDone?: (date: string) => void
   focusIntent?: { date: string; target: 'morning-diary' | 'evening-diary'; nonce: number } | null
   onFocusHandled?: (nonce: number) => void
 }
@@ -710,12 +712,29 @@ const SleepModuleStatus = memo(({ data, statusMessage }: { data?: SleepData | nu
 ))
 SleepModuleStatus.displayName = 'SleepModuleStatus'
 
-export const SleepPage = memo(({ sleepData, selectedDate, setSelectedDate, saveDiary, sleepHistory, onSelectSleepDate, onPickImage, onSleepAnalysis, onFullAnalysis, onForceRefresh, statusMessage, uploadMessage, errorDetails, focusIntent, onFocusHandled }: SleepPageProps) => {
+export const SleepPage = memo(({ sleepData, selectedDate, setSelectedDate, saveDiary, sleepHistory, onSelectSleepDate, onPickImage, onSleepAnalysis, onFullAnalysis, onForceRefresh, onAutomationDone, statusMessage, uploadMessage, errorDetails, focusIntent, onFocusHandled }: SleepPageProps) => {
   const imageInputRef = useRef<HTMLInputElement>(null)
   const reportReaderContentRef = useRef<HTMLDivElement>(null)
   const reportSectionRef = useRef<HTMLElement>(null)
   const [isReportReaderOpen, setIsReportReaderOpen] = useState(false)
   const [focusMessage, setFocusMessage] = useState('')
+  const [automationProgress, setAutomationProgress] = useState('')
+  const handledAutomationRef = useRef('')
+  useEffect(() => {
+    const refresh = () => {
+      const status = sleepAutomation.status()
+      if (!status.phase || status.sleepDate !== selectedDate) { setAutomationProgress(''); return }
+      const labels: Record<string, string> = { ocr: '图片已上传，正在等待 OCR 识别', ocr_ready: 'OCR 识别成功，正在启动睡眠分析', report: '正在生成睡眠分析报告' }
+      setAutomationProgress(status.stage === 'FAILED' ? `自动化失败：${status.reason || '未知错误'}` : status.stage === 'SUCCESS' ? '睡眠分析完成，正在刷新报告' : labels[status.phase] || '正在处理睡眠图片')
+      if (status.stage === 'SUCCESS' && handledAutomationRef.current !== `${status.sleepDate}:${status.updatedAt}`) {
+        handledAutomationRef.current = `${status.sleepDate}:${status.updatedAt}`
+        onAutomationDone?.(status.sleepDate)
+      }
+    }
+    refresh()
+    const timer = window.setInterval(refresh, 2000)
+    return () => window.clearInterval(timer)
+  }, [selectedDate, onAutomationDone])
   const reportOutline = useMemo(() => {
     if (!sleepData) return []
     const reportSource = selectSleepReportSource(sleepData)
@@ -762,6 +781,7 @@ export const SleepPage = memo(({ sleepData, selectedDate, setSelectedDate, saveD
       </div>
       <div className="space-y-4 p-6">
         <SleepModuleStatus data={sleepData} statusMessage={statusMessage} />
+        {automationProgress && <div role="status" className="rounded-xl bg-blue-50 p-3 text-center text-xs text-blue-700">{automationProgress}</div>}
         {/* PC 版操作按钮：始终显示，调用服务端睡眠分析服务 */}
         <div className="grid grid-cols-4 gap-2 font-sans">
           <input ref={imageInputRef} type="file" accept="image/*" className="hidden" onChange={async event => {
