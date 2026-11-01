@@ -10,11 +10,10 @@ public final class SleepAutomationBridge {
         DefaultActions(Context context){launchContext=context;c=context.getApplicationContext();secrets=new SleepAutomationSecretStore(c);}
         boolean accessibility(){return SleepAutomationAccessibility.isEnabled(c);}
         String captureBlocked(){
-            if(!accessibility())return "accessibility_required";
-            if(!NotificationManagerCompat.from(c).areNotificationsEnabled())return "notifications_required";
-            if(Build.VERSION.SDK_INT>=33&&ContextCompat.checkSelfPermission(c,Manifest.permission.READ_MEDIA_IMAGES)!=PackageManager.PERMISSION_GRANTED)return "media_permission_required";
             KeyguardManager lock=(KeyguardManager)c.getSystemService(Context.KEYGUARD_SERVICE);
-            return lock!=null&&lock.isDeviceLocked()?"device_locked":"";
+            return captureBlockReason(accessibility(),NotificationManagerCompat.from(c).areNotificationsEnabled(),
+                Build.VERSION.SDK_INT<33||ContextCompat.checkSelfPermission(c,Manifest.permission.READ_MEDIA_IMAGES)==PackageManager.PERMISSION_GRANTED,
+                lock==null||!lock.isDeviceLocked());
         }
         String version(){try{return c.getPackageManager().getPackageInfo("com.huawei.health",0).versionName;}catch(Exception e){return "missing";}}
         public String status(){try{boolean media=Build.VERSION.SDK_INT<33||ContextCompat.checkSelfPermission(c,Manifest.permission.READ_MEDIA_IMAGES)==PackageManager.PERMISSION_GRANTED;PowerManager power=(PowerManager)c.getSystemService(Context.POWER_SERVICE);JSONObject permissions=new JSONObject().put("accessibility",accessibility()).put("notifications",NotificationManagerCompat.from(c).areNotificationsEnabled()).put("media",media).put("battery",power.isIgnoringBatteryOptimizations(c.getPackageName()));JSONArray history=new JSONArray();SleepAutomationStateStore store=new SleepAutomationStateStore(c);List<SleepAutomationSnapshot> rows=store.history();for(int i=0;i<Math.min(7,rows.size());i++){SleepAutomationSnapshot s=rows.get(i);history.put(new JSONObject().put("date",s.sleepDate).put("stage",s.stage).put("result","SUCCESS".equals(s.stage)?"success":"FAILED".equals(s.stage)?"failure":"running").put("reason",s.reason));}SharedPreferences p=c.getSharedPreferences(SleepAutomationRescheduleReceiver.PREFS,Context.MODE_PRIVATE);long next=p.getLong(SleepAutomationRescheduleReceiver.NEXT,0),retry=store.nextRetryAt();SimpleDateFormat f=new SimpleDateFormat("yyyy-MM-dd HH:mm",Locale.CHINA);f.setTimeZone(SleepAutomationScheduler.BEIJING);JSONObject out=new JSONObject().put("buildId",SleepAutomationRunnerService.AUTOMATION_REVISION).put("enabled",p.getBoolean(SleepAutomationRescheduleReceiver.ENABLED,false)).put("configured",secrets.read()!=null).put("permissions",permissions).put("huaweiVersion",version()).put("history",history).put("lastStartSource",store.lastStartSource()).put("nextRunAt",next>0?f.format(new Date(next)):"").put("nextRetryAt",retry>0?f.format(new Date(retry)):"");HuaweiSleepAutomationService.Snapshot a=HuaweiSleepAutomationService.snapshot();out.put("captureStep",a.step==null?"":a.step).put("captureWindow",a.window==null?"":a.window);if(rows.size()>0){SleepAutomationSnapshot current=rows.get(0);out.put("stage",current.stage).put("sleepDate",current.sleepDate).put("updatedAt",current.updatedAt).put("reason",current.reason).put("mediaSelected",current.mediaUri!=null&&!current.mediaUri.isEmpty()).put("requestIdPresent",current.requestId!=null&&!current.requestId.isEmpty());}return out.toString();}catch(Exception e){return "{\"enabled\":false,\"error\":\"native_error\"}";}}
@@ -41,6 +40,12 @@ public final class SleepAutomationBridge {
         public void clearConfiguration(){secrets.clear();}
     }
     static boolean serverUrlAllowed(String raw,boolean debug){try{URI u=URI.create(raw);String scheme=u.getScheme(),host=u.getHost();if(host==null||u.getUserInfo()!=null)return false;if("https".equalsIgnoreCase(scheme))return true;if(!"http".equalsIgnoreCase(scheme))return false;return debug||privateHttpHost(host);}catch(Exception ignored){return false;}}
+    static String captureBlockReason(boolean accessibility,boolean notifications,boolean media,boolean unlocked){
+        if(!accessibility)return "accessibility_required";
+        if(!notifications)return "notifications_required";
+        if(!media)return "media_permission_required";
+        return unlocked?"":"device_locked";
+    }
     private static boolean privateHttpHost(String host){String h=host.toLowerCase(Locale.ROOT);return "localhost".equals(h)||"127.0.0.1".equals(h)||"::1".equals(h)||h.startsWith("10.")||h.startsWith("192.168.")||h.matches("172\\.(1[6-9]|2[0-9]|3[01])\\..+");}
     private final Actions actions;private final Context context;
     SleepAutomationBridge(Context c){actions=new DefaultActions(c);context=c.getApplicationContext();}
