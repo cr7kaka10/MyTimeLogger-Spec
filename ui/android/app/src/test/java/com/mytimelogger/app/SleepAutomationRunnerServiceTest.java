@@ -62,7 +62,7 @@ public class SleepAutomationRunnerServiceTest {
     }
     @Test public void captureOnlyStartsFreshAndCannotMutateReportState() throws Exception {
         String source=new String(Files.readAllBytes(Paths.get("src/main/java/com/mytimelogger/app/SleepAutomationRunnerService.java")),"UTF-8");
-        String dispatch=source.substring(source.indexOf("if(CAPTURE_ONLY_ACTION.equals(action))"),source.indexOf("recordStartSource(startSource(action))"));
+        String dispatch=source.substring(source.indexOf("if(CAPTURE_ONLY_ACTION.equals(action)||ONE_CLICK_ACTION.equals(action))"),source.indexOf("recordStartSource(startSource(action))"));
         String capture=source.substring(source.indexOf("private void captureOnly("),source.indexOf("private void generateReportFromProbe("));
         assertTrue(dispatch.contains("probes.start(today())")&&dispatch.contains("gate(true)"));
         assertFalse(dispatch.contains("needsCapture(")||dispatch.contains("states.save("));
