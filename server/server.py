@@ -187,6 +187,7 @@ try:
     from .domain.habit_day_ignore_service import HabitDayIgnoreService
     from .domain.habit_auto_failure_service import HabitAutoFailureService
     from .domain.timed_habit_service import TimedHabitService
+    from .domain.diet_habit_migration_service import DietHabitMigrationService
     from .domain.management_plan_service import ManagementPlanError, ManagementPlanService
     from .domain.user_behavior_audit_service import UserBehaviorAuditService
     from .domain.management_planning_policy import system_policy_prompt
@@ -231,6 +232,7 @@ except (ImportError, ValueError):
     from domain.habit_day_ignore_service import HabitDayIgnoreService
     from domain.habit_auto_failure_service import HabitAutoFailureService
     from domain.timed_habit_service import TimedHabitService
+    from domain.diet_habit_migration_service import DietHabitMigrationService
     from domain.management_plan_service import ManagementPlanError, ManagementPlanService
     from domain.user_behavior_audit_service import UserBehaviorAuditService
     from domain.management_planning_policy import system_policy_prompt
@@ -778,6 +780,7 @@ async def _run_goal_settlement_schedule():
 async def _run_habit_auto_failure_schedule():
     while True:
         try:
+            await asyncio.to_thread(_ensure_diet_habits)
             await asyncio.to_thread(habit_auto_failure_service.run)
             changed = await asyncio.to_thread(timed_habit_service.run)
             for owner in changed:
@@ -960,6 +963,7 @@ async def lifespan(app: FastAPI):
         today = _beijing_now().date()
         conn.execute("INSERT OR IGNORE INTO server_exercise_policy_metadata(policy_key,effective_date,created_at) VALUES(?,?,?)",
                      (OPTIONAL_BODY_POLICY_KEY, (today + timedelta(days=1)).isoformat(), _exercise_now_str()))
+    _ensure_diet_habits()
     try:
         time_logger_db.reload_category_cache()
         logger.info("✅ 已完成服务端 server_categories 缓存预热同步")
@@ -4008,6 +4012,23 @@ def _exercise_v4_record_change(conn, user_id: int, table: str, record_id: str, o
                table_name=table, device_id="server-exercise-v4", conn=conn)
 
 
+diet_habit_migration_service = DietHabitMigrationService(_exercise_v4_record_change)
+
+
+def _ensure_diet_habits(user_id: int | None = None) -> set[int]:
+    changed = set()
+    today, now = _beijing_today(), _beijing_now()
+    with store._transact() as conn:
+        users = [user_id] if user_id is not None else [int(row[0]) for row in conn.execute("SELECT id FROM users")]
+        for owner in users:
+            diet_habit_migration_service.switch_date(conn, owner, now)
+            if diet_habit_migration_service.ensure_day(conn, owner, today, now):
+                changed.add(owner)
+    for owner in changed:
+        sync_hub._notify_clients(["habits", "habit_windows"], owner)
+    return changed
+
+
 def _exercise_v4() -> ExerciseV4Service:
     return ExerciseV4Service(store.reward_wallet_service, _exercise_v4_record_change)
 
@@ -4894,6 +4915,7 @@ async def set_habit_day_ignore(request: Request, user: dict = Depends(get_curren
 
 @app.get("/api/habits")
 def get_habits(user: dict = Depends(get_current_user_optional)):
+    _ensure_diet_habits(int(user["id"]))
     habit_auto_failure_service.run(user_id=int(user["id"]))
     if timed_habit_service.run(user_id=int(user["id"])):
         sync_hub._notify_clients(["habit_checkins", "reward_ledger", "user_wallets"], int(user["id"]))
