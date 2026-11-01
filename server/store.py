@@ -1225,7 +1225,7 @@ class ServerSleepStore:
         record_id = f"habit-window:{user_id}:{habit_id}:{effective_from}"
         with self._transact() as conn:
             conn.execute("BEGIN IMMEDIATE")
-            habit = conn.execute("SELECT 1 FROM server_habits WHERE user_id=? AND id=? AND is_active=0",
+            habit = conn.execute("SELECT 1 FROM server_habits WHERE user_id=? AND id=? AND is_active=0 AND source='local'",
                                  (user_id, habit_id)).fetchone()
             if not habit:
                 return None
