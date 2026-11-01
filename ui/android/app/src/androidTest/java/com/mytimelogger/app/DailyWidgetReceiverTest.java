@@ -161,6 +161,7 @@ public class DailyWidgetReceiverTest {
                 .get(0).get("value")).intValue());
         assertEquals(0, ((Number) db.query("SELECT COUNT(*) AS value FROM sync_outbox", Collections.emptyList())
                 .get(0).get("value")).intValue());
+        assertEquals(0, ((Number) db.query("SELECT COUNT(*) AS value FROM reward_ledger", Collections.emptyList()).get(0).get("value")).intValue());
         assertEquals(0, new DailyWidgetStore(context).pending().size());
     }
     @Test public void todayHabitShowsDateAndNeutralMenu() {
