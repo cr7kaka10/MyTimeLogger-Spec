@@ -312,6 +312,13 @@ def ensure_server_schema(conn: sqlite3.Connection):
         FOREIGN KEY(user_id) REFERENCES users(id))""")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_habit_windows_user_day "
                  "ON server_habit_windows(user_id,effective_from,habit_id)")
+    conn.execute("""CREATE TABLE IF NOT EXISTS server_diet_habit_migrations (
+        user_id INTEGER PRIMARY KEY, switch_date TEXT NOT NULL, created_at TEXT NOT NULL,
+        FOREIGN KEY(user_id) REFERENCES users(id))""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS server_diet_habit_rules (
+        user_id INTEGER NOT NULL, rule_key TEXT NOT NULL, habit_id TEXT NOT NULL,
+        PRIMARY KEY(user_id,rule_key), UNIQUE(user_id,habit_id),
+        FOREIGN KEY(user_id) REFERENCES users(id))""")
 
     # 9. 奖励商品配置表
     conn.execute(
