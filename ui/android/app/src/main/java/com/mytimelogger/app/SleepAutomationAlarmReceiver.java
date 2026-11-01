@@ -34,6 +34,18 @@ public final class SleepAutomationAlarmReceiver extends BroadcastReceiver {
                 .edit().putLong(SleepAutomationRescheduleReceiver.NEXT, at).apply();
     }
 
+    static void reconcile(Context context, long now) {
+        android.content.SharedPreferences prefs=context.getSharedPreferences(SleepAutomationRescheduleReceiver.PREFS,Context.MODE_PRIVATE);
+        if(!prefs.getBoolean(SleepAutomationRescheduleReceiver.ENABLED,false))return;
+        long start=prefs.getLong(SleepAutomationRescheduleReceiver.NEXT,0);
+        if(start>now)return;
+        scheduleNext(context,now);
+        if(SleepAutomationScheduler.withinUnlockWindow(now,start)){
+            prefs.edit().putLong(UNLOCK_WINDOW_UNTIL,SleepAutomationScheduler.windowEnd(start)).apply();
+            triggerIfUnlocked(context,prefs,now,start);
+        }
+    }
+
     @Override public void onReceive(Context context, Intent intent) {
         android.content.SharedPreferences prefs=context.getSharedPreferences(SleepAutomationRescheduleReceiver.PREFS,Context.MODE_PRIVATE);
         if(!prefs.getBoolean(SleepAutomationRescheduleReceiver.ENABLED,false))return;

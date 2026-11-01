@@ -38,6 +38,7 @@ public final class SleepAutomationBridge {
     SleepAutomationBridge(Context c){actions=new DefaultActions(c);context=c.getApplicationContext();}
     SleepAutomationBridge(Actions a){actions=a;context=null;}
     private String statusWithCapture(){
+        if(context!=null)SleepAutomationAlarmReceiver.reconcile(context,System.currentTimeMillis());
         String raw=actions.status();if(context==null)return raw;
         try{JSONObject out=new JSONObject(raw);SleepCaptureProbeStore.Snapshot probe=new SleepCaptureProbeStore(context).load();
             if(probe!=null){SimpleDateFormat f=new SimpleDateFormat("yyyy-MM-dd HH:mm:ss",Locale.CHINA);f.setTimeZone(SleepAutomationScheduler.BEIJING);

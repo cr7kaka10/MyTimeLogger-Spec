@@ -20,6 +20,7 @@ public class MainActivity extends BridgeActivity {
         DietCheckinReminderReceiver.schedule(this,System.currentTimeMillis());
         MealDeadlineReceiver.schedule(this,System.currentTimeMillis());
         MorningMotivationReceiver.schedule(this,System.currentTimeMillis());
+        SleepAutomationAlarmReceiver.reconcile(this,System.currentTimeMillis());
         applySystemBars(getResources().getConfiguration());
         if (bridge == null) return;
         bridge.getWebView().setBackgroundColor(Color.WHITE);
