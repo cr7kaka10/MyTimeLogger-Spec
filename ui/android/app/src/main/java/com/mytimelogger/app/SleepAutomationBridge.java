@@ -4,7 +4,7 @@ import androidx.core.app.*;import androidx.core.content.ContextCompat;import org
 
 public final class SleepAutomationBridge {
     public static final String JAVASCRIPT_NAME="MTLSleepAutomation";
-    interface Actions { String status(); boolean enable(); void disable(); boolean test(); boolean retry(); default boolean generateReport(){return false;} default boolean oneClick(){return false;} boolean previewCapture(); void cancel(); boolean configure(String url,String token,String userId); boolean authorize(String permission); void clearConfiguration(); }
+    interface Actions { String status(); boolean enable(); void disable(); boolean test(); boolean retry(); default boolean generateReport(){return false;} default boolean oneClick(){return false;} default String exportCapture(){return "unavailable";} boolean previewCapture(); void cancel(); boolean configure(String url,String token,String userId); boolean authorize(String permission); void clearConfiguration(); }
     static final class DefaultActions implements Actions {
         final Context c,launchContext; final SleepAutomationSecretStore secrets;
         DefaultActions(Context context){launchContext=context;c=context.getApplicationContext();secrets=new SleepAutomationSecretStore(c);}
@@ -26,6 +26,7 @@ public final class SleepAutomationBridge {
                 open(view);return true;
             }catch(Exception e){probes.finish(probe,"FAILED","media_unreadable","",0,0,0);return false;}
         }
+        public String exportCapture(){return SleepCaptureGalleryExporter.export(c,new SleepCaptureProbeStore(c).load(),today());}
         public void cancel(){c.stopService(new Intent(c,SleepAutomationRunnerService.class));HuaweiSleepAutomationService.cancel();}
         public boolean configure(String u,String t,String userId){boolean debug=(c.getApplicationInfo().flags&android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE)!=0;if(t==null||t.isEmpty()||!serverUrlAllowed(u,debug))return false;if(!SleepAutomationStateStore.activateOwner(c,u,userId))return false;secrets.save(u,t);return secrets.read()!=null;}
         private void open(Intent i){if(!(launchContext instanceof Activity))i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);launchContext.startActivity(i);}
@@ -57,5 +58,5 @@ public final class SleepAutomationBridge {
             return out.toString();
         }catch(Exception e){return raw;}
     }
-    @JavascriptInterface public String status(){return statusWithCapture();}@JavascriptInterface public boolean enable(){return actions.enable();}@JavascriptInterface public void disable(){actions.disable();}@JavascriptInterface public boolean test(){return actions.test();}@JavascriptInterface public boolean retry(){return actions.retry();}@JavascriptInterface public boolean generateReport(){return actions.generateReport();}@JavascriptInterface public boolean oneClick(){return actions.oneClick();}@JavascriptInterface public boolean previewCapture(){return actions.previewCapture();}@JavascriptInterface public void cancel(){actions.cancel();}@JavascriptInterface public boolean configure(String u,String t,String userId){return actions.configure(u,t,userId);}@JavascriptInterface public boolean authorize(String p){return actions.authorize(p);}@JavascriptInterface public void clearConfiguration(){actions.clearConfiguration();}
+    @JavascriptInterface public String status(){return statusWithCapture();}@JavascriptInterface public boolean enable(){return actions.enable();}@JavascriptInterface public void disable(){actions.disable();}@JavascriptInterface public boolean test(){return actions.test();}@JavascriptInterface public boolean retry(){return actions.retry();}@JavascriptInterface public boolean generateReport(){return actions.generateReport();}@JavascriptInterface public boolean oneClick(){return actions.oneClick();}@JavascriptInterface public boolean previewCapture(){return actions.previewCapture();}@JavascriptInterface public String exportCapture(){return actions.exportCapture();}@JavascriptInterface public void cancel(){actions.cancel();}@JavascriptInterface public boolean configure(String u,String t,String userId){return actions.configure(u,t,userId);}@JavascriptInterface public boolean authorize(String p){return actions.authorize(p);}@JavascriptInterface public void clearConfiguration(){actions.clearConfiguration();}
 }
