@@ -34,11 +34,11 @@ public final class DailyWidgetViewsFactory implements RemoteViewsService.RemoteV
         view.setViewVisibility(R.id.daily_item_status, item ? View.VISIBLE : View.GONE);
         view.setViewVisibility(R.id.daily_progress, progress ? View.VISIBLE : View.GONE);
         view.setViewVisibility(R.id.daily_badge, menu || item ? View.GONE : View.VISIBLE);
-        view.setViewVisibility(R.id.daily_check, row.header || item ? View.GONE : View.VISIBLE);
-        view.setViewVisibility(R.id.daily_fail, "habit".equals(row.kind) && !menu ? View.VISIBLE : View.GONE);
+        view.setViewVisibility(R.id.daily_check, row.header || item || !row.blocked.isEmpty() ? View.GONE : View.VISIBLE);
+        view.setViewVisibility(R.id.daily_fail, "habit".equals(row.kind) && !menu && row.blocked.isEmpty() ? View.VISIBLE : View.GONE);
         view.setViewVisibility(R.id.daily_cancel, menu ? View.VISIBLE : View.GONE);
-        view.setViewVisibility(R.id.daily_confirm, menu ? View.VISIBLE : View.GONE);
-        view.setViewVisibility(R.id.daily_ignore, menu ? View.VISIBLE : View.GONE);
+        view.setViewVisibility(R.id.daily_confirm, menu && row.blocked.isEmpty() ? View.VISIBLE : View.GONE);
+        view.setViewVisibility(R.id.daily_ignore, menu && !row.timed ? View.VISIBLE : View.GONE);
         view.setTextViewText(R.id.daily_check, row.checked ? "☑" : "□");
         view.setContentDescription(R.id.daily_check, row.title + "，标记完成");
         view.setContentDescription(R.id.daily_fail, row.title + "，更多操作");
@@ -55,7 +55,7 @@ public final class DailyWidgetViewsFactory implements RemoteViewsService.RemoteV
                 : row.badge.equals("处理中") ? Color.rgb(245, 201, 95)
                 : row.badge.equals("今天") || row.badge.equals("习惯") ? Color.rgb(116, 151, 255) : Color.rgb(255, 92, 92));
         view.setContentDescription(R.id.daily_row, item ? row.title + (row.checked ? "，已完成" : "，未完成")
-                : row.header ? row.title : row.title + "，" + row.badge);
+                : row.header ? row.title : row.title + "，" + row.badge + (row.timed ? "，定时习惯不可忽略" : ""));
         if (!row.header) {
             Intent open = new Intent().putExtra("action", "open").putExtra("kind", row.kind)
                     .putExtra("id", row.parentId).putExtra("date", row.day);

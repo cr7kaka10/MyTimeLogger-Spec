@@ -48,7 +48,9 @@ public final class DailyWidgetCommandReceiver extends BroadcastReceiver {
         if ("menu_confirm".equals(action) && !store.consumeMenu(id, day)) return;
         boolean eligible = false;
         for (DailyWidgetRepository.Row row : new DailyWidgetRepository(context).load())
-            if (!row.header && !row.checked && row.kind.equals(kind) && row.id.equals(id) && row.day.equals(day)) {
+            if (!row.header && !row.checked && row.kind.equals(kind) && row.id.equals(id) && row.day.equals(day)
+                    && (row.blocked.isEmpty() || "menu_cancel".equals(action))
+                    && (!"menu_ignore".equals(action) || !row.timed)) {
                 eligible = true; break;
             }
         if (!eligible) return;

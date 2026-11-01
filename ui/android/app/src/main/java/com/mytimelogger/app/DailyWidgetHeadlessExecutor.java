@@ -32,7 +32,7 @@ final class DailyWidgetHeadlessExecutor {
         if ("habit".equals(command.get("kind").getAsString())) {
             boolean eligible = false;
             for (DailyWidgetRepository.Row row : new DailyWidgetRepository(context).load())
-                if (!row.header && "habit".equals(row.kind) && row.id.equals(command.get("id").getAsString())) {
+                if (!row.header && "habit".equals(row.kind) && row.id.equals(command.get("id").getAsString()) && row.blocked.isEmpty()) {
                     eligible = true; break;
                 }
             if (!eligible) return new Outcome("rejected", "习惯状态已变化，请刷新");
