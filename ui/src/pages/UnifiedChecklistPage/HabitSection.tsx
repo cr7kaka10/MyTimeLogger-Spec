@@ -9,6 +9,7 @@ import { HabitActions } from './HabitActions'
 import { useLocalHabitMutation } from '../../hooks/useLocalHabitMutation'
 import { requireActiveHabitRewardSource } from '../../hooks/sourceRewardApi'
 import { dateToShanghaiDateString } from '../../utils/shanghaiDate'
+import { timedHabitBlock } from '../../hooks/useHabits'
 
 interface HabitSectionProps {
   habits: any[]
@@ -43,6 +44,11 @@ export const HabitSection = memo(({
   const [draftHabit, setDraftHabit] = useState('')
   const [managedHabit, setManagedHabit] = useState<any>(null)
   const [rewardError, setRewardError] = useState('')
+  const [clockNow, setClockNow] = useState(() => new Date())
+  useEffect(() => {
+    const timer = window.setInterval(() => setClockNow(new Date()), 30_000)
+    return () => window.clearInterval(timer)
+  }, [])
   const changeIgnore = async (habitId: string | number, ignore: boolean) => {
     try {
       if (!await onSetIgnored(habitId, ignore)) setRewardError('忽略状态未保存，请检查网络后重试')
@@ -50,7 +56,7 @@ export const HabitSection = memo(({
     } catch { setRewardError('忽略状态未保存，请检查网络后重试') }
   }
   useEffect(() => {
-    const listener = () => setRewardError('习惯已归档、删除或不可用，旧打卡已停止重试，请同步清单')
+    const listener = (event: Event) => setRewardError((event as CustomEvent<string>).detail || '习惯状态已变化，请同步清单')
     window.addEventListener('habit-lifecycle-error', listener)
     return () => window.removeEventListener('habit-lifecycle-error', listener)
   }, [])
@@ -193,6 +199,9 @@ export const HabitSection = memo(({
         // 查询选中日期的打卡记录（不再只看今天）
         const checkin = todayCheckins.find(c => c.habit_id === habit.id)
         const todayStatus = checkin ? checkin.status : 0
+        const timed = habit.window_start_minute != null && habit.window_end_minute != null
+        const blocked = timedHabitBlock(habit, selectedDateStr, Number(todayStatus), clockNow)
+        const clockLabel = (minute: number) => minute === 1440 ? '24:00' : `${String(Math.floor(minute / 60)).padStart(2, '0')}:${String(minute % 60).padStart(2, '0')}`
         const streak = streakMap[habit.id] ?? 0
 
         console.log(`习惯 [${habit.name}]:`)
@@ -239,6 +248,7 @@ export const HabitSection = memo(({
               <span className="mt-0.5 flex flex-wrap items-center gap-2 text-xs text-gray-400">
                 <span>连续 {streak} 天</span>
                 <span>{habit.source === 'local' || String(habit.id).startsWith('local_') ? 'MyTimeLogger' : '滴答镜像'}</span>
+                {timed && <span className="text-amber-700">{clockLabel(habit.window_start_minute)}–{clockLabel(habit.window_end_minute)} · {blocked || '时间内可打卡，结果不可更改'}</span>}
                 <SourceRewardSummary
                   sourceType="habit"
                   sourceId={String(habit.id)}
@@ -253,17 +263,18 @@ export const HabitSection = memo(({
             {/* 操作按钮：习惯仅支持打卡，不在清单页启动专注。 */}
             <span className="flex gap-1.5">
               <button type="button" title="习惯详情与管理" aria-label={`管理习惯「${habit.name}」`} onClick={() => setManagedHabit(habit)} className="px-2 text-gray-500">⋯</button>
-              {mode !== 'completed' && selectedDateStr === dateToShanghaiDateString(new Date()) && <button type="button" title="忽略今天" aria-label={`忽略今天的习惯「${habit.name}」`}
+              {mode !== 'completed' && !timed && selectedDateStr === dateToShanghaiDateString(new Date()) && <button type="button" title="忽略今天" aria-label={`忽略今天的习惯「${habit.name}」`}
                 onClick={() => void changeIgnore(habit.id, true)} className="rounded px-2 text-xs text-gray-500 hover:bg-gray-100">忽略今天</button>}
               <button
                 type="button"
+                disabled={Boolean(blocked)}
                 onClick={(e) => {
                   e.stopPropagation()
                   if (todayStatus === 2 && checkin?.note && !window.confirm('撤销打卡会删除这一天的日志，确定继续吗？')) return
                   onToggleCheckin(habit.id, selectedDateStr, 2)
                 }}
                 className={`${statusControlClass(todayStatus === 2 ? 'success' : 'idle')} hover:bg-green-50 hover:text-green-500 hover:border-green-300`}
-                title={todayStatus === 2 ? '取消成功，恢复未完成' : '标记成功'}
+                title={blocked || (todayStatus === 2 ? '取消成功，恢复未完成' : '标记成功')}
                 aria-label={todayStatus === 2 ? `取消习惯「${habit.name}」的成功状态` : `标记习惯「${habit.name}」为成功`}
                 aria-pressed={todayStatus === 2}
               >
@@ -271,13 +282,14 @@ export const HabitSection = memo(({
               </button>
               <button
                 type="button"
+                disabled={Boolean(blocked)}
                 onClick={(e) => {
                   e.stopPropagation()
                   if (todayStatus === 2 && checkin?.note && !window.confirm('改为失败会清除成功打卡日志，确定继续吗？')) return
                   onToggleCheckin(habit.id, selectedDateStr, 1)
                 }}
                 className={`${statusControlClass(todayStatus === 1 ? 'failure' : 'idle')} hover:bg-red-50 hover:text-red-500 hover:border-red-300`}
-                title={todayStatus === 1 ? '取消失败，恢复未完成' : '标记失败'}
+                title={blocked || (todayStatus === 1 ? '取消失败，恢复未完成' : '标记失败')}
                 aria-label={todayStatus === 1 ? `取消习惯「${habit.name}」的失败状态` : `标记习惯「${habit.name}」为失败`}
                 aria-pressed={todayStatus === 1}
               >
