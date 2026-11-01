@@ -193,6 +193,7 @@ export const SettingsPage = memo(({
   const nativeSleepPermissions = (sleepStatus as any).permissions || {}
   const sleepPermissions: SleepPermissions = { accessibility: nativeSleepPermissions.accessibility === true, notifications: nativeSleepPermissions.notifications === true, media: nativeSleepPermissions.media === true, battery: nativeSleepPermissions.battery === true }
   const refreshSleepStatus = useCallback(() => setSleepStatus(sleepAutomation.status()), [])
+  const sleepCaptureBlockMessage = (reason?: string) => ({ accessibility_required: '请先开启辅助功能控制', notifications_required: '请先允许通知提醒', media_permission_required: '请先允许睡眠图片访问', device_locked: '请先解锁手机' } as Record<string, string>)[reason || ''] || '请检查权限和手机状态'
   const toggleSleepAutomation = useCallback((enabled: boolean) => { enabled ? sleepAutomation.enable() : sleepAutomation.disable(); refreshSleepStatus() }, [refreshSleepStatus])
   const pollSleepStatus = useCallback((done: (status: SleepAutomationStatus) => boolean, maxAttempts = 120) => {
     let attempts = 0
@@ -208,7 +209,7 @@ export const SettingsPage = memo(({
   const testSleepAutomation = useCallback(() => {
     const previousRun = sleepAutomation.status().captureTest?.runId
     const result = sleepAutomation.test()
-    setSleepActionFeedback(result.ok ? '图片采集已受理，正在等待结果…' : `图片采集未受理：${result.error || '请检查权限'}`)
+    setSleepActionFeedback(result.ok ? '图片采集已受理，正在等待结果…' : `图片采集未受理：${sleepCaptureBlockMessage(sleepAutomation.status().captureBlockedReason)}`)
     setSleepStatus(sleepAutomation.status())
     if (result.ok) pollSleepStatus(status => Boolean(status.captureTest?.runId && status.captureTest.runId !== previousRun && status.captureTest.stage !== 'RUNNING'))
   }, [pollSleepStatus])
@@ -228,7 +229,7 @@ export const SettingsPage = memo(({
     let sawReportProgress = false
     const previousRunId = sleepAutomation.status().captureTest?.runId
     const result = sleepAutomation.oneClick()
-    setSleepActionFeedback(result.ok ? '一键自动化已受理，正在等待采集和报告结果…' : `一键自动化未受理：${result.error || '请检查权限'}`)
+    setSleepActionFeedback(result.ok ? '一键自动化已受理，正在等待采集和报告结果…' : `一键自动化未受理：${sleepCaptureBlockMessage(sleepAutomation.status().captureBlockedReason)}`)
     setSleepStatus({ ...sleepAutomation.status(), stage: result.ok ? 'PENDING' : 'FAILED', reason: result.ok ? '' : 'automation_rejected' })
     if (result.ok) pollSleepStatus(status => {
       sawReportProgress ||= ['MEDIA', 'UPLOADED', 'POLLING'].includes(status.stage || '')
