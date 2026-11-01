@@ -65,8 +65,9 @@ final class DailyWidgetRepository {
             int minute = clock.get(Calendar.HOUR_OF_DAY) * 60 + clock.get(Calendar.MINUTE);
             List<Row> result = new ArrayList<>();
             List<Row> habits = new ArrayList<>();
-            for (Map<String, Object> item : db.query("SELECT id,name FROM habits WHERE is_active=0 AND source='local' ORDER BY sort_order,id", Collections.emptyList())) {
+            for (Map<String, Object> item : db.query("SELECT id,name,source FROM habits WHERE is_active=0 AND source IN ('local','system') ORDER BY sort_order,id", Collections.emptyList())) {
                 String id = text(item.get("id"));
+                if ("system".equals(text(item.get("source"))) && !windows.containsKey(id)) continue;
                 int status = checkins.getOrDefault(id, 0);
                 int[] window = windows.get(id);
                 String blocked = window == null ? "" : minute < window[0] ? "未到时间" : minute >= window[1] ? "已超时" : "";

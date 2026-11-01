@@ -35,7 +35,7 @@ final class DailyWidgetSchedule {
         try {
             db.open();
             JsonArray ids = new JsonArray();
-            List<Map<String, Object>> rows = db.query("SELECT id,repeat_rule FROM habits WHERE is_active=0 AND source='local' ORDER BY sort_order,id", Collections.emptyList());
+            List<Map<String, Object>> rows = db.query("SELECT id,repeat_rule FROM habits h WHERE is_active=0 AND (source='local' OR (source='system' AND EXISTS (SELECT 1 FROM habit_windows w WHERE w.habit_id=h.id AND w.effective_from<=?))) ORDER BY sort_order,id", Collections.singletonList(day));
             for (Map<String, Object> row : rows)
                 if (scheduled((String) row.get("repeat_rule"), day)) ids.add(String.valueOf(row.get("id")));
             return ids;
