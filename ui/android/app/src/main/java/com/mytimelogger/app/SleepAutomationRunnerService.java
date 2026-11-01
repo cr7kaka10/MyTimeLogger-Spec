@@ -126,7 +126,9 @@ public final class SleepAutomationRunnerService extends Service {
             return START_NOT_STICKY;
         }
         new SleepAutomationStateStore(this).recordStartSource(startSource(action));
-        String blocked = gate(false);
+        SleepAutomationSnapshot pending=new SleepAutomationStateStore(this).load(today());
+        boolean resume=pending!=null&&pending.mode!=null&&!pending.mode.isEmpty()&&!needsCapture(pending);
+        String blocked = resume?"ok":gate(false);
         startForeground(840, notification("ok".equals(blocked) ? normalizeStage(intent == null ? null : intent.getStringExtra(EXTRA_STAGE)) : "FAILED:" + blocked));
         if("already_succeeded".equals(blocked)){stopSelf(id);return START_NOT_STICKY;}
         if (!"ok".equals(blocked)){worker.execute(()->{SleepAutomationStateStore states=new SleepAutomationStateStore(this);SleepAutomationSnapshot old=states.load(today());states.advance(new SleepAutomationSnapshot("FAILED",today(),old==null?"":old.mediaUri,old==null?"":old.requestId,old==null?1:old.attempt,blocked,System.currentTimeMillis()));scheduleRetry(blocked);stopSelf(id);});}else worker.execute(this::capture);
