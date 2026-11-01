@@ -2,15 +2,15 @@ import { memo } from 'react'
 import type { SourceRewardType } from '../../types'
 import { useSourceRewards } from '../../hooks/useSourceRewards'
 
-interface Props { sourceType: SourceRewardType; sourceId: string; onEdit?: () => void; compact?: boolean; hideError?: boolean; displayOnly?: boolean; compactSummary?: boolean }
+interface Props { sourceType: SourceRewardType; sourceId: string; onEdit?: () => void; compact?: boolean; hideError?: boolean; displayOnly?: boolean; compactSummary?: boolean; hideCoins?: boolean }
 
-export const SourceRewardSummary = memo(({ sourceType, sourceId, onEdit, compact = false, hideError = false, displayOnly = false, compactSummary = false }: Props) => {
+export const SourceRewardSummary = memo(({ sourceType, sourceId, onEdit, compact = false, hideError = false, displayOnly = false, compactSummary = false, hideCoins = false }: Props) => {
   const { summary, loading, error, refresh } = useSourceRewards(sourceType, sourceId)
   if (compactSummary && !summary && (loading || error)) return null
   if (loading && !summary) return <span className="text-xs text-gray-400">奖励加载中…</span>
   if (error && !summary) return hideError ? null : displayOnly ? <span className="text-xs text-red-500">奖励读取失败</span> : <button type="button" onClick={() => void refresh().catch(() => undefined)} className="text-xs text-red-500">奖励读取失败，重试</button>
   const content = <>
-    <span aria-label="金币奖励">{compactSummary ? `${summary?.coins ?? 0}🪙` : `🪙 ${summary?.coins ?? 0}`}</span>
+    {!hideCoins && <span aria-label="金币奖励">{compactSummary ? `${summary?.coins ?? 0}🪙` : `🪙 ${summary?.coins ?? 0}`}</span>}
     {(summary?.itemRewards || []).length ? (summary?.itemRewards || []).map(item => {
       if (compactSummary) return <span key={item.id} aria-label="物品奖励">· {item.icon ? `${item.icon} ` : ''}{item.title}</span>
       const progress = summary?.fragmentProgress?.[String(item.id)]

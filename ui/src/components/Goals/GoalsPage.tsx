@@ -5,6 +5,7 @@ import type { UseGoalsReturn } from '../../hooks/useGoals'
 import { EmptyState } from '../common/EmptyState'
 import { ProgressBar } from '../common/ProgressBar'
 import { GoalEditSheet } from './GoalEditSheet'
+import { SourceRewardSummary } from '../Rewards/SourceRewardSummary'
 
 const WEEKDAY_LABELS = ['周一', '周二', '周三', '周四', '周五', '周六', '周日']
 
@@ -76,6 +77,7 @@ export const GoalsPage = memo(({ goals, progressMap, historyMap, addGoal, update
               <div className="font-semibold text-gray-900">{goal.title}</div>
               <div className="mt-1 text-sm text-gray-400">{goal.period === 'daily' ? '日目标' : goal.period === 'weekly' ? '周目标' : goal.period === 'monthly' ? '月目标' : goal.period === 'custom_weekdays' ? `自定义星期：${(goal.weekdays ?? []).map(day => WEEKDAY_LABELS[day - 1]).join('、')} · 每日` : '单次目标'} · {goal.metric === 'duration' ? '时长' : '次数'} · {goal.operator} {goal.target_value}</div>
               <div className="mt-1 text-xs text-gray-400">分类：{(goal.category_ids ?? (goal.category_id == null ? [] : [goal.category_id])).map(id => categories.find(category => category.id === id)?.name || id).join(' + ')}</div>
+              <div className="mt-1"><SourceRewardSummary sourceType="goal" sourceId={String(goal.id)} hideCoins displayOnly /></div>
               <div className="mt-4">{isRestDay ? <div className="text-sm text-gray-400">今天休息，不计入目标</div> : <ProgressBar percent={progress.percent} color={colorForPercent(progress.percent)} />}</div>
 
               {/* 30天专注热力图 */}
