@@ -2,6 +2,7 @@
 import { memo, useCallback, useState } from 'react'
 import type { GoalFormData } from '../../types'
 import { BottomSheet } from '../common/BottomSheet'
+import { SourceRewardEditor } from '../Rewards/SourceRewardEditor'
 
 const WEEKDAYS = [{ value: 1, label: '周一' }, { value: 2, label: '周二' }, { value: 3, label: '周三' }, { value: 4, label: '周四' }, { value: 5, label: '周五' }, { value: 6, label: '周六' }, { value: 7, label: '周日' }]
 
@@ -24,6 +25,7 @@ export const GoalEditSheet = memo(({ goal, categories, onSave, onClose }: Props)
   const [penaltyCoins, setPenaltyCoins] = useState(goal?.penalty_coins || 5)
   const [error, setError] = useState('')
   const [saving, setSaving] = useState(false)
+  const [showItemRewards, setShowItemRewards] = useState(false)
 
   const handleSave = useCallback(async () => {
     if (!title.trim() || targetValue <= 0 || categoryIds.length === 0) return setError('请填写目标名称、至少一个分类和大于零的目标值')
@@ -36,7 +38,7 @@ export const GoalEditSheet = memo(({ goal, categories, onSave, onClose }: Props)
     } finally { setSaving(false) }
   }, [title, categoryIds, metric, targetValue, period, weekdays, operator, rewardCoins, penaltyCoins, goal, onSave])
 
-  return (
+  return <>
     <BottomSheet open onClose={onClose}>
       <div className="space-y-4 p-4">
         <h3 className="text-lg font-bold text-gray-900">{goal?.id ? '编辑目标' : '新建目标'}</h3>
@@ -83,11 +85,13 @@ export const GoalEditSheet = memo(({ goal, categories, onSave, onClose }: Props)
           <label className="flex-1"><span className="text-xs text-gray-400">奖励 🪙</span><input type="number" value={rewardCoins} onChange={e => setRewardCoins(Number(e.target.value))} className="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2 text-sm outline-none focus:border-blue-400" /></label>
           <label className="flex-1"><span className="text-xs text-gray-400">惩罚 🪙</span><input type="number" value={penaltyCoins} onChange={e => setPenaltyCoins(Number(e.target.value))} className="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2 text-sm outline-none focus:border-blue-400" /></label>
         </div>
+        {goal?.id != null ? <button type="button" onClick={() => setShowItemRewards(true)} className="text-sm text-blue-600">设置本目标物品奖励</button> : <p className="text-xs text-gray-500">保存目标后可在目标卡片设置物品奖励。</p>}
         {error && <div className="text-sm text-red-500">{error}</div>}
         <button disabled={saving} onClick={handleSave} className="h-12 w-full rounded-xl bg-blue-500 text-base font-semibold text-white active:bg-blue-600 disabled:bg-gray-300">{saving ? '保存中…' : '保存'}</button>
       </div>
     </BottomSheet>
-  )
+    {showItemRewards && goal?.id != null && <SourceRewardEditor sourceType="goal" sourceId={String(goal.id)} sourceTitle={title} onClose={() => setShowItemRewards(false)} />}
+  </>
 })
 
 GoalEditSheet.displayName = 'GoalEditSheet'

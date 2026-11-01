@@ -40,10 +40,10 @@ export const SourceRewardEditor = ({ sourceType, sourceId, sourceTitle, onClose 
     <BottomSheet open onClose={onClose} layerClass="z-[70]">
       <div className="space-y-4 p-1 text-gray-900 dark:text-gray-100">
         <h3 className="text-lg font-bold">更新奖励</h3>
-        <div className="rounded-xl border border-gray-200 p-3 dark:border-gray-700">
+        {sourceType !== 'goal' && <div className="rounded-xl border border-gray-200 p-3 dark:border-gray-700">
           <label className="text-xs text-gray-500">金币奖励</label>
           <div className="mt-2 flex gap-2"><input type="number" min={0} value={coins} onChange={event => setCoins(Number(event.target.value))} className="min-w-0 flex-1 rounded-lg border border-gray-200 bg-white px-3 py-2 dark:border-gray-700 dark:bg-gray-900" /><button type="button" onClick={() => void source.saveCoins(coins).catch(reason => setError(reason.message))} className="rounded-lg bg-blue-600 px-4 text-sm font-semibold text-white">保存</button></div>
-        </div>
+        </div>}
         <div className="rounded-xl border border-gray-200 p-3 dark:border-gray-700">
           <div className="text-xs text-gray-500">物品奖励</div>
           <p className="mt-1 text-xs text-blue-600 dark:text-blue-300">{fragmentHint}</p>
