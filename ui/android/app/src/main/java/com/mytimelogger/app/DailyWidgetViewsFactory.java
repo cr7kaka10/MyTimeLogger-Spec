@@ -35,9 +35,9 @@ public final class DailyWidgetViewsFactory implements RemoteViewsService.RemoteV
         view.setViewVisibility(R.id.daily_progress, progress ? View.VISIBLE : View.GONE);
         view.setViewVisibility(R.id.daily_badge, menu || item ? View.GONE : View.VISIBLE);
         view.setViewVisibility(R.id.daily_check, row.header || item || !row.blocked.isEmpty() ? View.GONE : View.VISIBLE);
-        view.setViewVisibility(R.id.daily_fail, "habit".equals(row.kind) && !menu && row.blocked.isEmpty() ? View.VISIBLE : View.GONE);
+        view.setViewVisibility(R.id.daily_fail, "habit".equals(row.kind) && !row.timed && !menu && row.blocked.isEmpty() ? View.VISIBLE : View.GONE);
         view.setViewVisibility(R.id.daily_cancel, menu ? View.VISIBLE : View.GONE);
-        view.setViewVisibility(R.id.daily_confirm, menu && row.blocked.isEmpty() ? View.VISIBLE : View.GONE);
+        view.setViewVisibility(R.id.daily_confirm, menu && !row.timed && row.blocked.isEmpty() ? View.VISIBLE : View.GONE);
         view.setViewVisibility(R.id.daily_ignore, menu && !row.timed ? View.VISIBLE : View.GONE);
         view.setTextViewText(R.id.daily_check, row.checked ? "☑" : "□");
         view.setContentDescription(R.id.daily_check, row.title + "，标记完成");
