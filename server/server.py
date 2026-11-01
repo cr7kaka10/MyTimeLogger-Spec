@@ -5590,6 +5590,9 @@ async def sync_pull(
     )
     diagnostics = None
     try:
+        _ensure_diet_habits(int(user["id"]))
+        if timed_habit_service.run(user_id=int(user["id"])):
+            sync_hub._notify_clients(["habit_checkins", "reward_ledger", "user_wallets"], int(user["id"]))
         if refresh and scope == "checklist":
             provider_executed = True
             if provider_manual:

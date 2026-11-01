@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+from .diet_habit_migration_service import DietHabitMigrationService
+from .exercise_v4_service import is_exercise_rest_day
 
 class HabitUnavailable(ValueError):
     pass
@@ -47,6 +49,7 @@ class HabitCheckinCommandService:
             with self._transact() as conn:
                 conn.execute("BEGIN IMMEDIATE")
                 self._require_active(conn, user_id, habit_id)
+                self._require_system_day(conn, user_id, habit_id, checkin_date, desired_status)
                 if int(desired_status) == 2:
                     existing = conn.execute(
                         "SELECT id,status FROM server_habit_checkins WHERE user_id=? AND habit_id=? AND COALESCE(checkin_date,date)=?",
@@ -75,6 +78,7 @@ class HabitCheckinCommandService:
     def _can_apply(self, user_id: int, habit_id: str, checkin_date: str, desired_status: int) -> bool:
         with self._transact() as conn:
             self._require_active(conn, user_id, habit_id)
+            self._require_system_day(conn, user_id, habit_id, checkin_date, desired_status)
             self._habits.timed_checkin_guard(conn, user_id, habit_id, checkin_date, desired_status)
             if int(desired_status) == 2:
                 return True
@@ -94,6 +98,16 @@ class HabitCheckinCommandService:
             raise HabitUnavailable("provider_habit_sync_disabled")
         if habit["is_active"] != 0:
             raise HabitUnavailable("habit_archived")
+
+    @staticmethod
+    def _require_system_day(conn, user_id, habit_id, date, desired_status):
+        row = conn.execute("SELECT source FROM server_habits WHERE user_id=? AND id=?", (user_id, habit_id)).fetchone()
+        if row["source"] != "system":
+            return
+        if not str(habit_id).startswith("diet-v5:") or not DietHabitMigrationService.active(conn, user_id, date) or is_exercise_rest_day(conn, user_id, "v5", date):
+            raise HabitUnavailable("diet_habit_unavailable")
+        if int(desired_status) != 2:
+            raise HabitUnavailable("diet_habit_auto_failure_only")
 
     @staticmethod
     def _matches(command: dict, habit_id: str, checkin_date: str, desired_status: int) -> bool:
