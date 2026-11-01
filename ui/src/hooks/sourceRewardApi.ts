@@ -4,8 +4,8 @@ import { protectedPlatformFetch } from '../platform/protectedRequest'
 import type { SourceRewardSummaryData, SourceRewardType } from '../types'
 import { notifyRewardCatalogUpdated } from './rewardCatalogRefresh'
 
-export const SOURCE_COIN_TYPE: Record<SourceRewardType, 'task' | 'habit' | 'learning' | 'learning_objective'> = {
-  checklist_task: 'task', habit: 'habit', learning_task: 'learning', learning_objective: 'learning_objective',
+export const SOURCE_COIN_TYPE: Record<SourceRewardType, 'task' | 'habit' | 'learning' | 'learning_objective' | 'goal'> = {
+  checklist_task: 'task', habit: 'habit', learning_task: 'learning', learning_objective: 'learning_objective', goal: 'goal',
 }
 
 const request = async (path: string, init?: RequestInit) => {

@@ -10,7 +10,7 @@ const EMOJIS = ['🎁', '☕', '🎮', '🍜', '🎬', '📱', '🍰', '🎵', '
 interface TaskOption {
   id: string
   title: string
-  sourceType: 'checklist_task' | 'habit' | 'learning_task' | 'learning_objective'
+  sourceType: SourceRewardType
 }
 interface GoalOption { id: string; title: string }
 

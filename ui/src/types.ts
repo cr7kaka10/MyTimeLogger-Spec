@@ -138,7 +138,7 @@ export interface FragmentProgress {
   earliestExpiresAt?: string | null
 }
 
-export type SourceRewardType = 'checklist_task' | 'habit' | 'learning_task' | 'learning_objective'
+export type SourceRewardType = 'checklist_task' | 'habit' | 'learning_task' | 'learning_objective' | 'goal'
 
 export interface SourceRewardSummaryData {
   sourceType: SourceRewardType
