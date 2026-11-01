@@ -5,6 +5,8 @@ import { HabitEditor } from './HabitEditor'
 import { HabitDetails } from './HabitDetails'
 import { HabitJournalSheet } from './HabitJournalSheet'
 import { useLocalHabitMutation } from '../../hooks/useLocalHabitMutation'
+import type { HabitEdits, HabitWindowEdits } from '@models/HabitEdits'
+import { getCurrentTimerClient, syncNow } from '../../db'
 
 interface Props { habit: Habit; categories?: Array<{ id: number; name: string; is_active?: number }>; onClose: () => void; onEditReward: (habit: Habit) => void }
 
@@ -13,11 +15,26 @@ export function HabitActions({ habit, categories = [], onClose, onEditReward }: 
   const [journal, setJournal] = useState<{ date: string; note: string } | null>(null)
   const [journalRefresh, setJournalRefresh] = useState(0)
   const [journalPrompt, setJournalPrompt] = useState(habit.journal_prompt_enabled !== 0)
+  const [windowError, setWindowError] = useState('')
   const mutation = useLocalHabitMutation()
+  const save = async (fields: HabitEdits, window: HabitWindowEdits) => {
+    setWindowError('')
+    const changed = window.start_minute !== (habit.window_start_minute ?? null) || window.end_minute !== (habit.window_end_minute ?? null)
+    if (changed) {
+      const api = getCurrentTimerClient()
+      if (!api) { setWindowError('尚未连接服务器，时间段未保存'); return false }
+      const response = await api.put(`/api/habits/${encodeURIComponent(String(habit.id))}/window`, window)
+      if (!response.ok || response.data?.status !== 'ok') {
+        setWindowError('时间段未保存，请检查网络或输入后重试'); return false
+      }
+      await syncNow({ reason: 'habit-window-update' }).catch(() => ({ ok: false }))
+    }
+    return mutation.run(db => db.updateHabit(habit.id, fields, habit.updated_at), 'update')
+  }
   if (journal) return <HabitJournalSheet habitId={String(habit.id)} name={habit.name} date={journal.date} initialNote={journal.note}
     onClose={() => setJournal(null)} onSaved={() => setJournalRefresh(value => value + 1)} />
-  if (mode === 'edit') return <HabitEditor habit={habit} categories={categories} {...mutation} onClose={onClose}
-    onSave={fields => mutation.run(db => db.updateHabit(habit.id, fields, habit.updated_at), 'update')} />
+  if (mode === 'edit') return <HabitEditor habit={habit} categories={categories} {...mutation} message={windowError || mutation.message} onClose={onClose}
+    onSave={save} />
   return <BottomSheet open ariaLabel={`管理习惯 ${habit.name}`} onClose={() => { if (!mutation.busy) onClose() }} panelClass="overflow-hidden p-0 sm:mb-6 sm:max-w-xl sm:rounded-3xl">
     <div className="flex max-h-[calc(100dvh-1rem)] flex-col text-gray-900 dark:text-gray-100">
       <header className="flex items-center gap-3 border-b border-gray-200 px-5 py-4 dark:border-gray-700">
