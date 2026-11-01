@@ -70,7 +70,7 @@ final class DailyWidgetRepository {
                 if ("system".equals(text(item.get("source"))) && !windows.containsKey(id)) continue;
                 int status = checkins.getOrDefault(id, 0);
                 int[] window = windows.get(id);
-                String blocked = window == null ? "" : minute < window[0] ? "未到时间" : minute >= window[1] ? "已超时" : "";
+                String blocked = windowBlock(window, minute);
                 if (includeHabit(scheduled, checkins, id) && unhandled(status) && !store.isIgnored(id, today, ignored.get(id))
                         && !store.isDone("habit", id, today))
                     habits.add(new Row("habit", id, text(item.get("name")),
@@ -112,6 +112,9 @@ final class DailyWidgetRepository {
         return scheduled.contains(id);
     }
     static boolean unhandled(int status) { return status != 1 && status != 2; }
+    static String windowBlock(int[] window, int minute) {
+        return window == null ? "" : minute < window[0] ? "未到时间" : minute >= window[1] ? "已超时" : "";
+    }
     static String badge(String original, String pending) {
         return "pending".equals(pending) ? "处理中" : "failed".equals(pending) ? "重试" : original;
     }
