@@ -42,6 +42,13 @@ assert.deepEqual(Object.values(oldView.planScore.cats).map(value => value.m), [5
 assert.equal(oldView.planScore.total, 0, 'old earned points must not enter current bars')
 assert.equal(projectV5ScoreView(rest).planScore.cats['饮食约束'].m, 50, 'rest page still shows V5 plan limits')
 assert.equal(projectV5ScoreView({ ...future, total: 29 }).planScore.total, 29, 'current earned points stay visible')
+const migrated = projectV5ScoreView({
+  plan_version: 'v5', total: 50,
+  cats: { 运动训练: { s: 50, m: 50 }, 饮食约束: { s: 0, m: 0 }, 身体记录: { s: 0, m: 0 } },
+})
+assert.equal(migrated.current, true)
+assert.equal(migrated.planScore.total, 50)
+assert.equal(migrated.planScore.cats['饮食约束'].m, 0)
 const page = readFileSync(new URL('../pages/ExercisePage.tsx', import.meta.url), 'utf8')
 assert.match(page, /历史实际结算：/, 'historical settlement must be separately labeled')
 console.log('exercise V5 authoritative score tests passed')
