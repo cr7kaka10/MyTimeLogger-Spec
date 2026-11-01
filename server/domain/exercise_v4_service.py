@@ -382,6 +382,8 @@ class ExerciseV4Service:
             WHERE user_id=? AND date=? AND plan_version=? AND item_key LIKE 'sc-%'""", (stamp, user_id, date, self.plan_version))
             for row in ignored:
                 self._change(conn, user_id, "server_exercise_item_scores", row["id"])
+        for value in categories.values():
+            value["s"], value["m"] = round(value["s"], 2), round(value["m"], 2)
         total = round(sum(value["s"] for value in categories.values()), 2)
         complete = any(value["m"] > 0 for value in categories.values()) and all(value["m"] == 0 or value["s"] == value["m"] for value in categories.values())
         snapshot = {"total": total, "cats": {"运动训练": categories["training"], "饮食约束": categories["diet"], "身体记录": categories["body"]}, "plan_version": self.plan_version}

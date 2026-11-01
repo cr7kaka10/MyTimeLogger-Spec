@@ -54,6 +54,33 @@ def test_optional_body_policy_date_boundary_and_200_reward(tmp_db_path):
         assert amounts == [100, 200, 200]
 
 
+def test_v5_cutover_settles_training_fifty_without_legacy_diet(tmp_db_path):
+    store, _ = _setup(tmp_db_path)
+    date = "2026-11-03"
+    now = datetime(2026, 11, 3, 20, tzinfo=BJ)
+    service = ExerciseV4Service(store.reward_wallet_service, lambda *args: None, "v5")
+    with store._transact() as conn:
+        conn.execute("INSERT INTO server_diet_habit_migrations VALUES(1,?,?)", (date, date))
+        conn.execute("INSERT OR REPLACE INTO server_exercise_policy_metadata VALUES(?,?,?)",
+                     (OPTIONAL_BODY_POLICY_KEY, date, date))
+        conn.execute("INSERT OR REPLACE INTO server_exercise_policy_metadata VALUES('v5_meal_timing',?,?)", (date, date))
+        conn.execute("INSERT INTO server_exercise_daily_logs(id,user_id,date,plan_version,exercise_type,created_at,updated_at) "
+                     "VALUES ('cutover-log',1,?,'v5','daily',?,?)", (date, date, date))
+        for item in conn.execute("SELECT sort_order FROM server_exercise_plan_items WHERE user_id=1 AND plan_version='v5' AND day_key='周二' AND variant='gym' AND is_active=1"):
+            key = f"ex-{date}-g-{item['sort_order']}"
+            conn.execute("INSERT INTO server_exercise_checkins(id,user_id,log_id,plan_version,item_key,status,date,created_at,updated_at) "
+                         "VALUES (?,?,?,'v5',?,1,?,?,?)", (f"check-{key}", 1, "cutover-log", key, date, date, date))
+        first = service.settle(conn, 1, date, now)
+        second = service.settle(conn, 1, date, now)
+        assert first["cats"]["饮食约束"] == {"s": 0.0, "m": 0.0}
+        assert first["cats"]["运动训练"] == {"s": 50.0, "m": 50.0}
+        assert first == second
+        assert conn.execute("SELECT COUNT(*) FROM server_exercise_diet_checkins WHERE user_id=1 AND date=?", (date,)).fetchone()[0] == 0
+        assert conn.execute("SELECT SUM(amount) FROM server_reward_ledger WHERE source_type='exercise_completion_reward' AND target_date=?", (date,)).fetchone()[0] == 200
+        with pytest.raises(ValueError, match="diet_habit_upgrade_required"):
+            service.set_diet(conn, 1, date, "breakfast_on_time", True, f"{date} 08:00:00", now)
+
+
 def test_body_penalty_rebuild_keeps_old_date_and_skips_new_date(tmp_db_path):
     store, _ = _setup(tmp_db_path)
     with store._transact() as conn:
