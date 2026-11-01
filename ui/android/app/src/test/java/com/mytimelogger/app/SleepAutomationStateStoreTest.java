@@ -39,4 +39,13 @@ public class SleepAutomationStateStoreTest {
         assertEquals("UPLOADED",store.load("2026-10-24").stage);
         assertEquals(1,store.history().size());
     }
+    @Test public void oneClickPhaseSurvivesRestart() {
+        SleepAutomationStateStore first=new SleepAutomationStateStore();
+        SleepAutomationSnapshot pending=new SleepAutomationSnapshot("POLLING","2026-10-26","content://image","ocr-job",1,"ocr_pending",1,"ocr");
+        first.save(pending);
+        SleepAutomationStateStore restarted=new SleepAutomationStateStore();
+        restarted.raw("2026-10-26",new com.google.gson.Gson().toJson(pending));
+        assertEquals("ocr",restarted.load("2026-10-26").mode);
+        assertEquals("ocr-job",restarted.load("2026-10-26").requestId);
+    }
 }
