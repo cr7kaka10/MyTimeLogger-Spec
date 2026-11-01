@@ -45,6 +45,10 @@ export const HabitSection = memo(({
   const [managedHabit, setManagedHabit] = useState<any>(null)
   const [rewardError, setRewardError] = useState('')
   const [clockNow, setClockNow] = useState(() => new Date())
+  const dietPoints: Record<string, number> = { no_sugary_drinks: 6, no_refined_staples: 6, no_snacks: 5, breakfast_on_time: 11, lunch_on_time: 11, dinner_on_time: 11 }
+  const dietHabits = habits.filter(habit => habit.source === 'system' && String(habit.id).startsWith('diet-v5:'))
+  const dietMaximum = dietHabits.reduce((sum, habit) => sum + (dietPoints[String(habit.id).split(':')[1]] || 0), 0)
+  const dietEarned = dietHabits.reduce((sum, habit) => sum + (Number(todayCheckins.find(row => String(row.habit_id) === String(habit.id))?.status) === 2 ? dietPoints[String(habit.id).split(':')[1]] || 0 : 0), 0)
   useEffect(() => {
     const timer = window.setInterval(() => setClockNow(new Date()), 30_000)
     return () => window.clearInterval(timer)
@@ -194,6 +198,7 @@ export const HabitSection = memo(({
     <div className="space-y-2" role="region" aria-label={mode === 'completed' ? '已完成习惯' : getDateLabel()}>
       {rewardError && <p role="alert" className="text-sm text-red-600">{rewardError}</p>}
       {mode !== 'completed' && <><h3 className="text-sm font-bold text-gray-700 px-1">{getDateLabel()}</h3>{habitCreator}</>}
+      {mode !== 'completed' && dietMaximum > 0 && <p className="px-1 text-xs text-amber-700">饮食约束 {dietEarned}/{dietMaximum} 分 · 六项各结算一次</p>}
       {ignoredControls}
       {sortedHabits.map((habit) => {
         // 查询选中日期的打卡记录（不再只看今天）
@@ -244,17 +249,17 @@ export const HabitSection = memo(({
 
             {/* 习惯信息 */}
             <span className="min-w-0">
-              <button type="button" onClick={() => setManagedHabit(habit)} className="block max-w-full truncate text-left text-sm font-semibold leading-5 text-gray-900 dark:text-gray-100" aria-label={`查看习惯「${habit.name}」月打卡记录`}>{habit.name}</button>
+              <button type="button" onClick={() => { if (habit.source !== 'system') setManagedHabit(habit) }} className="block max-w-full truncate text-left text-sm font-semibold leading-5 text-gray-900 dark:text-gray-100" aria-label={`查看习惯「${habit.name}」月打卡记录`}>{habit.name}</button>
               <span className="mt-0.5 flex flex-wrap items-center gap-2 text-xs text-gray-400">
                 <span>连续 {streak} 天</span>
-                <span>{habit.source === 'local' || String(habit.id).startsWith('local_') ? 'MyTimeLogger' : '滴答镜像'}</span>
+                <span>{habit.source === 'system' ? '运动饮食规则' : habit.source === 'local' || String(habit.id).startsWith('local_') ? 'MyTimeLogger' : '滴答镜像'}</span>
                 {timed && <span className="text-amber-700">{clockLabel(habit.window_start_minute)}–{clockLabel(habit.window_end_minute)} · {blocked || '时间内可打卡，结果不可更改'}</span>}
-                <SourceRewardSummary
+                {habit.source !== 'system' && <SourceRewardSummary
                   sourceType="habit"
                   sourceId={String(habit.id)}
                   compact
                   onEdit={() => { void openReward(habit) }}
-                />
+                />}
               </span>
 
               {/* 打卡历史标记（已由卡片状态颜色及右侧按钮状态呈现，为保持高度一致移除了纯文本标签） */}
@@ -262,7 +267,7 @@ export const HabitSection = memo(({
 
             {/* 操作按钮：习惯仅支持打卡，不在清单页启动专注。 */}
             <span className="flex gap-1.5">
-              <button type="button" title="习惯详情与管理" aria-label={`管理习惯「${habit.name}」`} onClick={() => setManagedHabit(habit)} className="px-2 text-gray-500">⋯</button>
+              {habit.source !== 'system' && <button type="button" title="习惯详情与管理" aria-label={`管理习惯「${habit.name}」`} onClick={() => setManagedHabit(habit)} className="px-2 text-gray-500">⋯</button>}
               {mode !== 'completed' && !timed && selectedDateStr === dateToShanghaiDateString(new Date()) && <button type="button" title="忽略今天" aria-label={`忽略今天的习惯「${habit.name}」`}
                 onClick={() => void changeIgnore(habit.id, true)} className="rounded px-2 text-xs text-gray-500 hover:bg-gray-100">忽略今天</button>}
               <button
@@ -280,7 +285,7 @@ export const HabitSection = memo(({
               >
                 ✓
               </button>
-              <button
+              {habit.source !== 'system' && <button
                 type="button"
                 disabled={Boolean(blocked)}
                 onClick={(e) => {
@@ -294,7 +299,7 @@ export const HabitSection = memo(({
                 aria-pressed={todayStatus === 1}
               >
                 ✕
-              </button>
+              </button>}
             </span>
           </div>
         )
