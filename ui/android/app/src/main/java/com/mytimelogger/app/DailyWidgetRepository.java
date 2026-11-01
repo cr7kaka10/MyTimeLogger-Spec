@@ -11,19 +11,28 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.Calendar;
+import java.util.TimeZone;
 
 final class DailyWidgetRepository {
     static final class Row {
         final String kind, id, title, badge, day, parentId, progress;
         final boolean checked, header, expanded;
+        final boolean timed;
+        final String blocked;
         Row(String kind, String id, String title, String badge, String day, boolean checked, boolean header) {
             this(kind, id, title, badge, day, checked, header, id, "", false);
         }
         Row(String kind, String id, String title, String badge, String day, boolean checked,
                 boolean header, String parentId, String progress, boolean expanded) {
+            this(kind, id, title, badge, day, checked, header, parentId, progress, expanded, false, "");
+        }
+        Row(String kind, String id, String title, String badge, String day, boolean checked,
+                boolean header, String parentId, String progress, boolean expanded, boolean timed, String blocked) {
             this.kind = kind; this.id = id; this.title = title; this.badge = badge;
             this.day = day; this.checked = checked; this.header = header;
             this.parentId = parentId; this.progress = progress; this.expanded = expanded;
+            this.timed = timed; this.blocked = blocked;
         }
     }
     static Row header(String title, String badge) { return new Row("header", "", title, badge, "", false, true); }
@@ -46,15 +55,26 @@ final class DailyWidgetRepository {
             Map<String, Boolean> ignored = new HashMap<>();
             for (Map<String, Object> item : db.query("SELECT habit_id,is_ignored FROM habit_day_ignores WHERE date=?", Collections.singletonList(today)))
                 ignored.put(text(item.get("habit_id")), ((Number) item.get("is_ignored")).intValue() == 1);
+            Map<String, int[]> windows = new HashMap<>();
+            for (Map<String, Object> item : db.query("SELECT habit_id,start_minute,end_minute FROM habit_windows WHERE effective_from<=? ORDER BY effective_from DESC", Collections.singletonList(today))) {
+                String id = text(item.get("habit_id"));
+                if (!windows.containsKey(id)) windows.put(id, item.get("start_minute") == null || item.get("end_minute") == null
+                        ? null : new int[]{((Number) item.get("start_minute")).intValue(), ((Number) item.get("end_minute")).intValue()});
+            }
+            Calendar clock = Calendar.getInstance(TimeZone.getTimeZone("Asia/Shanghai"));
+            int minute = clock.get(Calendar.HOUR_OF_DAY) * 60 + clock.get(Calendar.MINUTE);
             List<Row> result = new ArrayList<>();
             List<Row> habits = new ArrayList<>();
             for (Map<String, Object> item : db.query("SELECT id,name FROM habits WHERE is_active=0 AND source='local' ORDER BY sort_order,id", Collections.emptyList())) {
                 String id = text(item.get("id"));
                 int status = checkins.getOrDefault(id, 0);
+                int[] window = windows.get(id);
+                String blocked = window == null ? "" : minute < window[0] ? "未到时间" : minute >= window[1] ? "已超时" : "";
                 if (includeHabit(scheduled, checkins, id) && unhandled(status) && !store.isIgnored(id, today, ignored.get(id))
                         && !store.isDone("habit", id, today))
                     habits.add(new Row("habit", id, text(item.get("name")),
-                            badge("今天", store.pendingState("habit", id, today)), today, false, false));
+                            badge(blocked.isEmpty() ? "今天" : blocked, store.pendingState("habit", id, today)), today, false, false,
+                            id, "", false, window != null, blocked));
             }
             List<Row> dueToday = new ArrayList<>(), overdue = new ArrayList<>();
             for (Map<String, Object> item : db.query("SELECT id,title,due_date,raw_json FROM tasks WHERE status=0 AND deleted_at IS NULL "
