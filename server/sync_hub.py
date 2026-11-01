@@ -1746,6 +1746,14 @@ class SyncHub:
                         "reason": "retry_limit_reached",
                         **({"canonical_record": {key: value for key, value in authority.items() if key != "user_id"}} if authority else {})})
                     continue
+                if table == "exercise_diet_checkins" and record.get("plan_version") == "v5":
+                    with self._conn() as lookup_conn:
+                        cutover = lookup_conn.execute("SELECT switch_date FROM server_diet_habit_migrations WHERE user_id=?",
+                            (user_id,)).fetchone()
+                    if cutover and str(record.get("date") or "")[:10] >= cutover[0]:
+                        rejected.append({"table": table, "record_id": str(pk_val), "reason": "diet_habit_upgrade_required"})
+                        operation_results.append({"change_id": change_id, "status": "rejected", "reason": "diet_habit_upgrade_required"})
+                        continue
                 if (table == "exercise_diet_checkins" and record.get("plan_version") == "v5"
                         and record.get("status") == "pending" and str(record.get("date") or "")[:10] < _cst_today()):
                     operation_results.append({"change_id": change_id, "status": "skipped", "record_id": str(pk_val),

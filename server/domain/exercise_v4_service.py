@@ -108,7 +108,13 @@ class ExerciseV4Service:
     def _is_rest_day(self, conn, user_id: int, date: str) -> bool:
         return is_exercise_rest_day(conn, user_id, self.plan_version, date)
 
+    def _diet_migrated(self, conn, user_id: int, date: str) -> bool:
+        row = conn.execute("SELECT switch_date FROM server_diet_habit_migrations WHERE user_id=?", (user_id,)).fetchone()
+        return self.plan_version == "v5" and bool(row and date >= row["switch_date"])
+
     def _diet_rules_for_date(self, conn, user_id: int, date: str) -> tuple[str, ...]:
+        if self._diet_migrated(conn, user_id, date):
+            return ()
         if self._is_rest_day(conn, user_id, date):
             return ()
         quality = V5_RESTORED_QUALITY_RULES if self._restored_v5_quality(conn, date) else self.diet_rules
@@ -147,6 +153,8 @@ class ExerciseV4Service:
             self._change(conn, user_id, "server_exercise_diet_checkins", row["id"], "delete")
 
     def ensure_diet_rows(self, conn, user_id: int, date: str, now: datetime) -> None:
+        if self._diet_migrated(conn, user_id, date):
+            return
         self._discard_invalid_diet_facts(conn, user_id, date, now)
         stamp = _now_text(now)
         for rule_key in self._diet_rules_for_date(conn, user_id, date):
@@ -161,6 +169,8 @@ class ExerciseV4Service:
 
     def set_diet(self, conn, user_id: int, date: str, rule_key: str, status: str | bool,
                  occurred_at: str | None, now: datetime, recorded_at: str | None = None) -> dict:
+        if self._diet_migrated(conn, user_id, date):
+            raise ValueError("diet_habit_upgrade_required")
         if rule_key not in self._diet_rules_for_date(conn, user_id, date):
             raise ValueError("unknown_diet_rule")
         if isinstance(status, bool):
@@ -199,6 +209,8 @@ class ExerciseV4Service:
         return self.settle(conn, user_id, date, now)
 
     def close_diet(self, conn, user_id: int, date: str, now: datetime) -> int:
+        if self._diet_migrated(conn, user_id, date):
+            return 0
         self.ensure_diet_rows(conn, user_id, date, now)
         changed, stamp, new_policy = 0, _now_text(now), self._new_v5_policy(conn, date)
         transition = self._quality_transition_day(conn, date)
