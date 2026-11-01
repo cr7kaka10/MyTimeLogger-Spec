@@ -20,6 +20,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
+import org.junit.Assume;
 import org.junit.runner.RunWith;
 
 @RunWith(AndroidJUnit4.class)
@@ -163,6 +164,28 @@ public class DailyWidgetReceiverTest {
                 .get(0).get("value")).intValue());
         assertEquals(0, ((Number) db.query("SELECT COUNT(*) AS value FROM reward_ledger", Collections.emptyList()).get(0).get("value")).intValue());
         assertEquals(0, new DailyWidgetStore(context).pending().size());
+    }
+    @Test public void isolatedServerReceivesWidgetIgnoreOnce() throws Exception {
+        android.os.Bundle args=InstrumentationRegistry.getArguments();
+        String token=args.getString("token"),habitId=args.getString("habitId"),userId=args.getString("userId");
+        Assume.assumeTrue(token!=null&&habitId!=null&&userId!=null);
+        db.open();db.execute("INSERT INTO habits VALUES(?,'隔离测试',0,'local',2,'FREQ=DAILY')",Collections.singletonList(habitId));db.close();
+        JsonObject config=new JsonObject();config.addProperty("serverUrl","http://10.0.2.2:18777");
+        config.addProperty("authToken",token);config.addProperty("deviceId","device-widget-test");
+        config.addProperty("verifiedUserId",userId);config.addProperty("generation",778);
+        assertTrue(new WidgetTimerRuntimeStore(context).configure(config.toString()));
+        JsonObject snapshot=new JsonObject(),days=new JsonObject();JsonArray ids=new JsonArray();ids.add(habitId);
+        days.add(DailyWidgetStore.today(),ids);snapshot.addProperty("version",1);snapshot.add("days",days);
+        assertTrue(new DailyWidgetStore(context).publish(snapshot.toString()));
+        assertTrue(new DailyWidgetRepository(context).load().stream().anyMatch(row -> habitId.equals(row.id)));
+        tap("habit",habitId,"menu_open");
+        for(int i=0;i<60&&!new DailyWidgetStore(context).isMenuOpen(habitId,DailyWidgetStore.today());i++)Thread.sleep(100);
+        assertTrue(new DailyWidgetStore(context).isMenuOpen(habitId,DailyWidgetStore.today()));
+        tap("habit",habitId,"menu_ignore");
+        for(int i=0;i<60&&!new DailyWidgetStore(context).isIgnored(habitId,DailyWidgetStore.today());i++)Thread.sleep(100);
+        assertTrue(new DailyWidgetStore(context).isIgnored(habitId,DailyWidgetStore.today()));
+        for(int i=0;i<100&&new DailyWidgetStore(context).pendingIgnore()!=null;i++)Thread.sleep(100);
+        assertNull(new DailyWidgetStore(context).pendingIgnore());
     }
     @Test public void todayHabitShowsDateAndNeutralMenu() {
         assertEquals("今天 · " + DailyWidgetStore.today(),
