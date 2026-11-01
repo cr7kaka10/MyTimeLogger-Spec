@@ -64,7 +64,7 @@ public class MainActivity extends BridgeActivity {
     private void dispatchWidgetRoute(Intent intent) {
         if (bridge == null || intent == null) return;
         String route = intent.getStringExtra("route");
-        if (!("timer".equals(route) || "checklist".equals(route) || "exercise".equals(route))) return;
+        if (!("timer".equals(route) || "checklist".equals(route) || "exercise".equals(route) || "sleep".equals(route))) return;
         boolean focusAi = intent.getBooleanExtra("focus_ai_prompt", false);
         bridge.getWebView().post(() -> bridge.getWebView().evaluateJavascript(
                 "window.__mtlPendingNavigation={route:'" + route + "',focusAi:" + focusAi + "};" +

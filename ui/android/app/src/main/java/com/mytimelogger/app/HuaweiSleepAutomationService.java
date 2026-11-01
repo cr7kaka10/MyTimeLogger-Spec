@@ -34,6 +34,12 @@ public final class HuaweiSleepAutomationService extends AccessibilityService {
         service.failure=null; service.setStep(next); return "ok";
     }
     static void cancel(){HuaweiSleepAutomationService service=active;if(service!=null){service.step=null;service.failure="cancelled";service.windowActivity=null;}}
+    static boolean openSleepPage(){
+        HuaweiSleepAutomationService service=active;if(service==null)return false;
+        Intent intent=new Intent(service,MainActivity.class).putExtra("route","sleep")
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK|Intent.FLAG_ACTIVITY_CLEAR_TOP|Intent.FLAG_ACTIVITY_SINGLE_TOP);
+        try{service.startActivity(intent);return true;}catch(Exception error){Log.w(TAG,"return_to_sleep_failed",error);return false;}
+    }
     static String transition(String step,String activity,int targets,boolean anchor,boolean today){
         if("OPEN_SLEEP".equals(step)){if(activity.contains("Login"))return "login_required";if(!HuaweiSleepSelectors.RULES.get(step).activity.equals(activity)||targets==0)return "wait";return targets==1&&anchor?"VERIFY_DAY":"selector_not_unique";}
         if("VERIFY_DAY".equals(step)){if(!HuaweiSleepSelectors.RULES.get("OPEN_MORE").activity.equals(activity)||targets==0)return "wait";return targets==1?(today?"OPEN_MORE":"date_mismatch"):"selector_not_unique";}

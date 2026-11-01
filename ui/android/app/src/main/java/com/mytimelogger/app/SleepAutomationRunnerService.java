@@ -148,7 +148,8 @@ public final class SleepAutomationRunnerService extends Service {
             if("ok".equals(result.code)){
                 probes.finish(run,"SAVED","",result.candidate.uri,System.currentTimeMillis(),result.image.width,result.image.height);
                 startForeground(840,notification("MEDIA"));
-                if(oneClick)generateReportFromProbe();else SleepAutomationNotificationFactory.showCaptureResult(this,true,"");
+                if(oneClick){HuaweiSleepAutomationService.openSleepPage();generateReportFromProbe();}
+                else SleepAutomationNotificationFactory.showCaptureResult(this,true,"");
             }else{
                 probes.finish(run,"FAILED",result.code,"",0,0,0);keepNotification=true;startForeground(840,notification("FAILED:"+result.code));SleepAutomationNotificationFactory.showCaptureResult(this,false,result.code);
             }
