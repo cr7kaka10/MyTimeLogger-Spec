@@ -1422,8 +1422,10 @@ class ServerSleepStore:
                 yield current, end
                 current = next_month
 
-    def _remove_goal_claim_in_txn(self, conn, user_id, claim_id):
+    def _remove_goal_claim_in_txn(self, conn, user_id, claim_id, goal_id=None):
         """撤销同一目标周期的奖励、入包及其使用流水，供历史会话更正后重建。"""
+        if goal_id is not None:
+            self.reward_settlement_service.revoke_fragments_for_event_in_txn(conn, user_id, "goal", goal_id, claim_id)
         purchases = [row["id"] for row in conn.execute(
             "SELECT id FROM server_reward_ledger WHERE user_id=? AND source_type='reward_buy' AND source_id LIKE ?",
             (user_id, f"%:goal:{claim_id}"),
@@ -1491,6 +1493,7 @@ class ServerSleepStore:
                         return
 
                     bound_rewards = []
+                    has_item_binding = False
                     if is_met:
                         bound_rewards = conn.execute(
                             """SELECT id FROM server_rewards
@@ -1499,8 +1502,11 @@ class ServerSleepStore:
                                ORDER BY id""",
                             (user_id, g_id),
                         ).fetchall()
+                        has_item_binding = bool(conn.execute(
+                            "SELECT 1 FROM server_reward_source_bindings b JOIN server_rewards r ON r.id=b.reward_id AND r.user_id=b.user_id AND r.is_active=1 WHERE b.user_id=? AND b.source_type='goal' AND b.source_id=? LIMIT 1",
+                            (user_id, g_id)).fetchone())
 
-                    if amount != 0 or bound_rewards:
+                    if amount != 0 or bound_rewards or has_item_binding:
                         r_id = uuid.uuid4().hex
                         conn.execute(
                             """
@@ -1518,6 +1524,9 @@ class ServerSleepStore:
                                 f"目标自动解锁兑换: {title}", date_str, ledger_id,
                             )
                             settled_details.append({"claim_id": claim_id, "ledger_id": ledger_id, "description": compat_desc, "amount": 0.0})
+                        if has_item_binding:
+                            self.reward_settlement_service.grant_task_unlocks_in_txn(
+                                conn, user_id, "goal", g_id, claim_id, title, date_str)
                     if amount != 0:
                         source_type = "goal_reward" if amount >= 0 else "goal_penalty"
                         ledger_id = self.reward_settlement_service.settle_in_txn(
@@ -1596,7 +1605,7 @@ class ServerSleepStore:
                             else f"goal_{g_id}_{start.strftime('%Y%m%d')}_{end.strftime('%Y%m%d')}"
                         )
                         if rebuild_dates and any(start_str <= value <= end_str for value in rebuild_dates):
-                            self._remove_goal_claim_in_txn(conn, user_id, claim_id)
+                            self._remove_goal_claim_in_txn(conn, user_id, claim_id, g_id)
                         _issue_goal(claim_id, is_met, val, target, operator, period_end_date, fail_if_not_met=True)
 
             return settled_details
