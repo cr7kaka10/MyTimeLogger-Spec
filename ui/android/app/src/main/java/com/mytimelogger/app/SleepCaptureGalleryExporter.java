@@ -43,7 +43,8 @@ final class SleepCaptureGalleryExporter {
             resolver.update(target, ready, null, null);
             return "saved";
         } catch (Exception error) {
-            if (target != null) resolver.delete(target, null, null);
+            if (target == null) return "media_unreadable";
+            try { resolver.delete(target, null, null); } catch (Exception ignored) { }
             return "gallery_write_failed";
         }
     }
