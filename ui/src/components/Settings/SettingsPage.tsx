@@ -239,6 +239,11 @@ export const SettingsPage = memo(({
     }, 180)
   }, [onSleepReportReady, pollSleepStatus])
   const previewSleepCapture = useCallback(() => { sleepAutomation.previewCapture(); setSleepStatus(sleepAutomation.status()) }, [])
+  const exportSleepCapture = useCallback(() => {
+    const result = sleepAutomation.exportCapture()
+    setSleepActionFeedback(result === 'saved' || result === 'already_saved' ? '图片已保存到系统相册 Pictures/MyTimeLogger' : `保存到相册失败：${result}`)
+    refreshSleepStatus()
+  }, [refreshSleepStatus])
   const authorizeSleepAutomation = useCallback((permission: keyof SleepPermissions) => { sleepAutomation.authorize(permission) }, [])
   const updateSleepConsent = useCallback(async (value: boolean) => {
     if (!value) {
@@ -684,7 +689,7 @@ export const SettingsPage = memo(({
 
       {sleepStatus.available ? <SleepAutomationSettings status={sleepStatus} consented={settings.sleep_automation_consent === true} permissions={sleepPermissions}
         onConsent={value => { void updateSleepConsent(value) }} onToggle={toggleSleepAutomation} onAuthorize={authorizeSleepAutomation}
-        onTest={testSleepAutomation} onPreview={previewSleepCapture} onGenerate={generateSleepReport} onOneClick={runOneClickSleepAutomation} feedback={sleepActionFeedback} />
+        onTest={testSleepAutomation} onPreview={previewSleepCapture} onExport={exportSleepCapture} onGenerate={generateSleepReport} onOneClick={runOneClickSleepAutomation} feedback={sleepActionFeedback} />
         : <section className={sectionClass}><div className="px-4 py-3 font-medium">睡眠图片自动分析</div><div className="border-t border-gray-50 px-4 py-3 text-sm text-gray-400">仅 Android 手机端可用；PC/Web 不会访问华为运动健康或本地图片。</div></section>}
 
       {/* 声音设置 */}

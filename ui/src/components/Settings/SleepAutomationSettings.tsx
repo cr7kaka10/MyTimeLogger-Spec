@@ -7,10 +7,10 @@ export const canEnableSleepAutomation = (consented: boolean, permissions: SleepP
 export const canGenerateSleepReport = (status: SleepAutomationStatus, today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(new Date())) => status.captureTest?.stage === 'SAVED' && status.captureTest.date === today
 const safeText = (value: unknown) => typeof value === 'string' && !/(https?:|content:|file:|bearer|token|@|[{}])/i.test(value) ? value.slice(0, 80) : '已隐藏'
 
-export function SleepAutomationSettings({ status, consented, permissions, onConsent, onToggle, onAuthorize, onTest, onPreview, onGenerate, onOneClick, feedback }: {
+export function SleepAutomationSettings({ status, consented, permissions, onConsent, onToggle, onAuthorize, onTest, onPreview, onExport, onGenerate, onOneClick, feedback }: {
   status: SleepAutomationStatus; consented: boolean; permissions: SleepPermissions
   onConsent(value: boolean): void; onToggle(value: boolean): void; onAuthorize(key: SleepPermission): void
-  onTest(): void; onPreview(): void; onGenerate(): void; onOneClick(): void; feedback?: string
+  onTest(): void; onPreview(): void; onExport?(): void; onGenerate(): void; onOneClick(): void; feedback?: string
 }) {
   const ready = canEnableSleepAutomation(consented, permissions)
   const missing = (Object.keys(labels) as SleepPermission[]).filter(key => !permissions[key]).map(key => labels[key])
@@ -30,6 +30,7 @@ export function SleepAutomationSettings({ status, consented, permissions, onCons
     {status.captureTest && <div className="px-4 py-2 text-xs text-gray-600">图片采集测试：{status.captureTest.stage === 'SAVED' ? '图片已保存' : safeText(status.captureTest.stage)} · {safeText(status.captureTest.reason)}
       {status.captureTest.stage === 'SAVED' && <> · {safeText(status.captureTest.savedAt)} · {status.captureTest.width}×{status.captureTest.height}<button type="button" className="ml-2 text-blue-600" onClick={onPreview}>查看本次图片</button></>}
       {status.captureTest.stage === 'SAVED' && <span> · 相册位置：{safeText(status.captureTest.album || '未知')}{safeText(status.captureTest.fileName || '')}</span>}
+      {status.captureTest.stage === 'SAVED' && onExport && <button type="button" className="ml-2 text-blue-600" onClick={onExport}>保存到系统相册</button>}
     </div>}
     <div className="flex gap-2 px-4 py-2"><button type="button" disabled={!consented || workflowBusy} onClick={onTest}>图片采集</button><button type="button" disabled={workflowBusy} onClick={onGenerate}>今日睡眠报告</button><button type="button" disabled={!consented || workflowBusy} onClick={onOneClick}>一键自动化</button></div>
     {feedback && <p role="status" className="px-4 py-1 text-xs text-blue-700">{safeText(feedback)}</p>}
