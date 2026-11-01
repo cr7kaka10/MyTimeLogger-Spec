@@ -90,7 +90,7 @@ class HabitCheckinCommandService:
         habit = conn.execute("SELECT is_active,source FROM server_habits WHERE user_id=? AND id=?", (user_id, habit_id)).fetchone()
         if not habit:
             raise HabitUnavailable("habit_not_found")
-        if habit["source"] != "local":
+        if habit["source"] not in {"local", "system"}:
             raise HabitUnavailable("provider_habit_sync_disabled")
         if habit["is_active"] != 0:
             raise HabitUnavailable("habit_archived")

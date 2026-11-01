@@ -101,7 +101,7 @@ class HabitDomainService:
         if duplicate:
             return duplicate
         habit = conn.execute(
-            "SELECT name, difficulty, icon FROM server_habits WHERE id=? AND user_id=?",
+            "SELECT name, difficulty, icon, source FROM server_habits WHERE id=? AND user_id=?",
             (habit_id, user_id),
         ).fetchone()
         if not habit:
@@ -128,14 +128,15 @@ class HabitDomainService:
                    VALUES (?,?,?,?,?,?,2,?,?)""",
                 (checkin_id, user_id, habit_id, date_str, date_str, checkin_time, now_ts, now_ts),
             )
-        reward = self._reward_rules.calculate_habit_success(
-            user_id, habit_id, habit["name"], habit["difficulty"] or "easy", date_str, now_ts
-        )
-        self._reward_settlement.reconcile_habit_success_in_txn(
-            conn, user_id, habit_id, reward.title, reward.amount, date_str, now_ts
-        )
-        event_key = self._reward_settlement.completion_event_key("habit", habit_id, date_str)
-        self._reward_settlement.grant_task_unlocks_in_txn(conn, user_id, "habit", habit_id, event_key, habit["name"], date_str)
+        if habit["source"] != "system":
+            reward = self._reward_rules.calculate_habit_success(
+                user_id, habit_id, habit["name"], habit["difficulty"] or "easy", date_str, now_ts
+            )
+            self._reward_settlement.reconcile_habit_success_in_txn(
+                conn, user_id, habit_id, reward.title, reward.amount, date_str, now_ts
+            )
+            event_key = self._reward_settlement.completion_event_key("habit", habit_id, date_str)
+            self._reward_settlement.grant_task_unlocks_in_txn(conn, user_id, "habit", habit_id, event_key, habit["name"], date_str)
         self._record_change(conn, user_id, checkin_id, "upsert")
         return checkin_id
 
@@ -159,7 +160,7 @@ class HabitDomainService:
         if not self.can_mark_failed_in_txn(conn, user_id, habit_id, date_str):
             return None
         habit = conn.execute(
-            "SELECT name,difficulty FROM server_habits WHERE user_id=? AND id=?", (user_id, habit_id)
+            "SELECT name,difficulty,source FROM server_habits WHERE user_id=? AND id=?", (user_id, habit_id)
         ).fetchone()
         if not habit:
             return None
@@ -185,7 +186,7 @@ class HabitDomainService:
             )
         configured = conn.execute("SELECT penalty FROM server_reward_config WHERE user_id=? AND item_type='habit' AND item_id=?",
                                   (user_id, habit_id)).fetchone() if automatic else None
-        if not automatic or (configured and configured["penalty"] is not None and float(configured["penalty"]) > 0):
+        if habit["source"] != "system" and (not automatic or (configured and configured["penalty"] is not None and float(configured["penalty"]) > 0)):
             reward = self._reward_rules.calculate_habit_fail(user_id, habit_id, habit["name"], habit["difficulty"] or "easy")
             self._reward_settlement.settle_habit_fail_in_txn(conn, user_id, habit_id, reward.title, reward.amount, date_str)
         self._record_change(conn, user_id, checkin_id, "upsert")

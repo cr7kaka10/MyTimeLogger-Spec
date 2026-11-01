@@ -24,7 +24,7 @@ class TimedHabitService:
                 JOIN server_habit_windows w ON w.user_id=h.user_id AND w.habit_id=h.id
                     AND w.effective_from=(SELECT MAX(v.effective_from) FROM server_habit_windows v
                         WHERE v.user_id=h.user_id AND v.habit_id=h.id AND v.effective_from<=?)
-                WHERE (? IS NULL OR h.user_id=?) AND h.source='local' AND h.is_active=0
+                WHERE (? IS NULL OR h.user_id=?) AND h.source IN ('local','system') AND h.is_active=0
                     AND substr(h.created_at,1,10)<=? AND w.start_minute IS NOT NULL AND w.end_minute<=?
                     AND NOT EXISTS (SELECT 1 FROM server_habit_checkins c WHERE c.user_id=h.user_id
                         AND c.habit_id=h.id AND COALESCE(c.checkin_date,c.date)=? AND c.status IN (1,2))""",
