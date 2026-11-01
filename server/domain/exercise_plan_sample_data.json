@@ -1834,5 +1834,77 @@
       {"when":"两周校准","text":"看7日均值：连续2周低于0.5kg/周且执行率≥85%，每日减150 kcal；连续2周超过1kg/周、力量下降或恢复恶化，每日增加150–200 kcal。"}
     ],
     "weekdayScore":[],"saturdayScore":[],"sundayScore":[],"categoryOrder":["运动训练","饮食约束","身体记录"]
+  },
+  "v6": {
+    "version":"v6","title":"运动计划 V6 · 纯运动百分制","sourceName":"8周器械减脂与核心计划","exercisePoints":100,
+    "weekdaySchedule":[],"restSchedule":[],"sundayExtra":{},"diet":[],
+    "weekdayScore":[],"saturdayScore":[],"sundayScore":[],"categoryOrder":["运动训练"],
+    "exercisePlan":{
+      "周一":{"label":"休息 · 不计分","color":"#8a8f98","gym":[],"rain":[]},
+      "周二":{"label":"上肢 A + 核心 + 椭圆","color":"#4f9ed8","gym":[
+        {"name":"跑步机平地快走热身","sets":"8–10分钟","intensity":"坡度0%，RPE 2–3；自然步幅，不扶着把手吊走","s":"热身","scoreScope":"training","scorePoints":5,"durationMinutes":10},
+        {"name":"坐姿推胸机","sets":"第1–2周2×8–12；第3周起3×8–12","intensity":"背贴椅、手柄约胸中部；推至肘将直未锁死，慢放；最后留2–3次余力，组间休90–120秒","s":"力量","scoreScope":"training","scorePoints":15},
+        {"name":"低拉划船机","sets":"第1–2周2×8–12；第3周起3×8–12","intensity":"胸垫贴稳，把手拉向下胸；不后仰摆动，慢放；最后留2–3次余力，组间休90–120秒","s":"力量","scoreScope":"training","scorePoints":15},
+        {"name":"辅助引体机","sets":"2×6–10","intensity":"调辅助重量到最后留2–3次余力；胸口向上、下降受控，不甩腿伸脖，组间休60–90秒","s":"力量","scoreScope":"training","scorePoints":10},
+        {"name":"蝴蝶机","sets":"2×10–15","intensity":"肘微屈，夹到胸前再慢放；肩舒适、最后留2–3次余力，组间休60–90秒","s":"力量","scoreScope":"training","scorePoints":10},
+        {"name":"力量塔靠垫屈膝举腿","sets":"2×8–12","intensity":"前臂与背垫支撑，抬膝慢放不摆腿；颈肩不适即停，不追求脊柱响声，组间休60–90秒","s":"核心","scoreScope":"training","scorePoints":5},
+        {"name":"椭圆机稳态","sets":"第1–2周35分钟；第3周起40分钟","intensity":"RPE 5–6，能交谈不能唱歌；脚掌贴稳、膝跟脚尖同向；不足当期时长不勾满分","s":"有氧","scoreScope":"training","scorePoints":35,"durationMinutes":35,"phaseMinutes":[35,40,40]},
+        {"name":"低速走或低阻椭圆冷身","sets":"5分钟","intensity":"RPE≤2，呼吸逐步恢复；无疼痛拉伸","s":"放松","scoreScope":"training","scorePoints":5,"durationMinutes":5}
+      ],"rain":[]},
+      "周三":{"label":"下肢 A + 核心 + 快走","color":"#d89155","gym":[
+        {"name":"跑步机平地快走热身","sets":"8–10分钟","intensity":"坡度0%，RPE 2–3；自然步幅，不扶着把手吊走","s":"热身","scoreScope":"training","scorePoints":5,"durationMinutes":10},
+        {"name":"坐姿腿举机","sets":"第1–2周2×10–12；第3周起3×10–12","intensity":"全脚掌踩板，膝随脚尖；臀贴椅，最低膝约90°，推出不锁膝；留2–3次余力，休90–120秒","s":"力量","scoreScope":"training","scorePoints":15},
+        {"name":"坐姿腿弯举机","sets":"第1–2周2×10–15；第3周起3×10–15","intensity":"膝关节对齐转轴，脚跟后拉、回程约2秒；留2–3次余力，休90–120秒","s":"力量","scoreScope":"training","scorePoints":15},
+        {"name":"腿屈伸机","sets":"2×10–15","intensity":"膝关节对齐转轴，伸至接近直而不锁死，慢放；留2–3次余力，休60–90秒","s":"力量","scoreScope":"training","scorePoints":10},
+        {"name":"髋外展机","sets":"2×12–20","intensity":"背臀贴座，打开到臀侧发力且骨盆不晃，不弹震；留2–3次余力，休60–90秒","s":"力量","scoreScope":"training","scorePoints":10},
+        {"name":"坐姿卷腹机","sets":"2×12–15","intensity":"呼气小幅卷腹，颈自然、不用手臂猛拉；动作变形即停，休60–90秒","s":"核心","scoreScope":"training","scorePoints":5},
+        {"name":"跑步机平地快走","sets":"第1–2周25分钟；第3周30分钟；第4–8周35分钟","intensity":"坡度0%，RPE 5–6，能交谈不能唱歌；膝踝足底痛即停，未达当期时长不勾满分","s":"有氧","scoreScope":"training","scorePoints":35,"durationMinutes":25,"phaseMinutes":[25,30,35]},
+        {"name":"低速走或低阻椭圆冷身","sets":"5分钟","intensity":"RPE≤2，呼吸逐步恢复；无疼痛拉伸","s":"放松","scoreScope":"training","scorePoints":5,"durationMinutes":5}
+      ],"rain":[]},
+      "周四":{"label":"有氧 + 卷腹机核心","color":"#3ab85a","gym":[
+        {"name":"跑步机平地快走热身","sets":"8–10分钟","intensity":"坡度0%，RPE 2–3；自然步幅，不扶着把手吊走","s":"热身","scoreScope":"training","scorePoints":5,"durationMinutes":10},
+        {"name":"坐姿卷腹机","sets":"轻阻力2×12–15","intensity":"周三已练核心，今天只用轻阻力、留约4次余力；呼气小幅卷腹，颈自然，不练到力竭","s":"核心","scoreScope":"training","scorePoints":5},
+        {"name":"椭圆机稳态","sets":"35分钟","intensity":"RPE 5–6，能交谈不能唱歌；脚掌贴稳、膝随脚尖，不达35分钟不勾满分","s":"有氧","scoreScope":"training","scorePoints":40,"durationMinutes":35,"phaseMinutes":[35,35,35]},
+        {"name":"跑步机平地快走","sets":"15分钟","intensity":"坡度0%，RPE 5–6；步幅自然，不吊扶手；膝踝足底痛即停","s":"有氧","scoreScope":"training","scorePoints":25,"durationMinutes":15,"phaseMinutes":[15,15,15]},
+        {"name":"爬楼机","sets":"第1–2周10分钟；第3周15分钟；第4–8周20分钟","intensity":"RPE 4–5，单级全脚掌踩实、身体直立不趴扶手；膝踝足底痛即停并改椭圆同等时长","s":"有氧","scoreScope":"training","scorePoints":20,"durationMinutes":10,"phaseMinutes":[10,15,20]},
+        {"name":"低速走或低阻椭圆冷身","sets":"5分钟","intensity":"RPE≤2，呼吸逐步恢复；无疼痛拉伸","s":"放松","scoreScope":"training","scorePoints":5,"durationMinutes":5}
+      ],"rain":[]},
+      "周五":{"label":"上肢 B + 核心 + 椭圆","color":"#4f9ed8","gym":[
+        {"name":"跑步机平地快走热身","sets":"8–10分钟","intensity":"坡度0%，RPE 2–3；自然步幅，不扶着把手吊走","s":"热身","scoreScope":"training","scorePoints":5,"durationMinutes":10},
+        {"name":"宽距上斜推胸机","sets":"第1–2周2×8–12；第3周起3×8–12","intensity":"背贴椅、手柄约上胸；推至肘将直不锁死，慢放；留2–3次余力，休90–120秒","s":"力量","scoreScope":"training","scorePoints":15},
+        {"name":"低拉划船机","sets":"第1–2周2×8–12；第3周起3×8–12","intensity":"胸垫贴稳，把手拉向下胸；不后仰摆动，慢放；留2–3次余力，休90–120秒","s":"力量","scoreScope":"training","scorePoints":12},
+        {"name":"辅助引体机","sets":"2×6–10","intensity":"调辅助重量到最后留2–3次余力；胸口向上、下降受控，不甩腿伸脖，休60–90秒","s":"力量","scoreScope":"training","scorePoints":10},
+        {"name":"辅助双杠臂屈伸机（肩不适改蝴蝶机）","sets":"辅助臂屈伸2×8–12；或蝴蝶机2×10–15","intensity":"臂屈伸肩下沉、肘约90°即回；肩前侧不适改蝴蝶机，二选一只计一次分，留2–3次余力","s":"力量","scoreScope":"training","scorePoints":8},
+        {"name":"坐姿推胸机","sets":"2×10–12","intensity":"背贴椅，肩胛稳定，手腕中立、肘不锁死；留2–3次余力，休60–90秒","s":"力量","scoreScope":"training","scorePoints":5},
+        {"name":"力量塔靠垫屈膝举腿","sets":"2×8–12","intensity":"前臂与背垫支撑，抬膝慢放不摆腿；颈肩不适即停，不追求脊柱响声，休60–90秒","s":"核心","scoreScope":"training","scorePoints":5},
+        {"name":"椭圆机稳态","sets":"第1–2周35分钟；第3周起40分钟","intensity":"RPE 5–6，能交谈不能唱歌；脚掌贴稳、膝跟脚尖同向；不足当期时长不勾满分","s":"有氧","scoreScope":"training","scorePoints":35,"durationMinutes":35,"phaseMinutes":[35,40,40]},
+        {"name":"低速走或低阻椭圆冷身","sets":"5分钟","intensity":"RPE≤2，呼吸逐步恢复；无疼痛拉伸","s":"放松","scoreScope":"training","scorePoints":5,"durationMinutes":5}
+      ],"rain":[]},
+      "六":{"label":"下肢 B + 核心 + 快走","color":"#d89155","gym":[
+        {"name":"跑步机平地快走热身","sets":"8–10分钟","intensity":"坡度0%，RPE 2–3；自然步幅，不扶着把手吊走","s":"热身","scoreScope":"training","scorePoints":5,"durationMinutes":10},
+        {"name":"坐姿腿举机","sets":"第1–2周2×10–15；第3周起3×10–15","intensity":"全脚掌踩板，膝随脚尖；臀贴椅，最低膝约90°，推出不锁膝；留2–3次余力，休90–120秒","s":"力量","scoreScope":"training","scorePoints":15},
+        {"name":"坐姿腿弯举机","sets":"第1–2周2×10–15；第3周起3×10–15","intensity":"膝关节对齐转轴，脚跟后拉、回程约2秒；留2–3次余力，休90–120秒","s":"力量","scoreScope":"training","scorePoints":15},
+        {"name":"腿屈伸机","sets":"2×10–15","intensity":"膝关节对齐转轴，伸至接近直而不锁死，慢放；留2–3次余力，休60–90秒","s":"力量","scoreScope":"training","scorePoints":10},
+        {"name":"髋内收机","sets":"2×12–20","intensity":"背臀贴座，合拢到大腿内侧发力且骨盆不晃，不弹震；留2–3次余力，休60–90秒","s":"力量","scoreScope":"training","scorePoints":10},
+        {"name":"坐姿卷腹机","sets":"2×12–15","intensity":"呼气小幅卷腹，颈自然、不用手臂猛拉；动作变形即停，休60–90秒","s":"核心","scoreScope":"training","scorePoints":5},
+        {"name":"跑步机平地快走","sets":"第1–2周25分钟；第3周30分钟；第4–8周35分钟","intensity":"坡度0%，RPE 5–6，能交谈不能唱歌；膝踝足底痛即停，未达当期时长不勾满分","s":"有氧","scoreScope":"training","scorePoints":35,"durationMinutes":25,"phaseMinutes":[25,30,35]},
+        {"name":"低速走或低阻椭圆冷身","sets":"5分钟","intensity":"RPE≤2，呼吸逐步恢复；无疼痛拉伸","s":"放松","scoreScope":"training","scorePoints":5,"durationMinutes":5}
+      ],"rain":[]},
+      "日":{"label":"耐力 + 力量塔核心","color":"#3ab85a","gym":[
+        {"name":"跑步机平地快走热身","sets":"8–10分钟","intensity":"坡度0%，RPE 2–3；自然步幅，不扶着把手吊走","s":"热身","scoreScope":"training","scorePoints":5,"durationMinutes":10},
+        {"name":"力量塔靠垫屈膝举腿","sets":"轻强度2×8–12","intensity":"前臂与背垫支撑，慢抬慢放、不摆腿；留约4次余力，颈肩不适即停，不追求脊柱响声","s":"核心","scoreScope":"training","scorePoints":5},
+        {"name":"椭圆机耐力","sets":"第1–2周40分钟；第3周45分钟；第4–8周50分钟","intensity":"RPE 5–6，能交谈不能唱歌；脚掌贴稳、膝随脚尖；未达当期时长不勾满分","s":"有氧","scoreScope":"training","scorePoints":40,"durationMinutes":40,"phaseMinutes":[40,45,50]},
+        {"name":"跑步机平地快走","sets":"20分钟","intensity":"坡度0%，RPE 5–6；步幅自然，不吊扶手；膝踝足底痛即停","s":"有氧","scoreScope":"training","scorePoints":25,"durationMinutes":20,"phaseMinutes":[20,20,20]},
+        {"name":"爬楼机","sets":"10分钟","intensity":"RPE 4–5，单级全脚掌踩实、身体直立不趴扶手；膝踝足底痛即停并改椭圆同等时长","s":"有氧","scoreScope":"training","scorePoints":20,"durationMinutes":10,"phaseMinutes":[10,10,10]},
+        {"name":"低速走或低阻椭圆冷身","sets":"5分钟","intensity":"RPE≤2，呼吸逐步恢复；无疼痛拉伸","s":"放松","scoreScope":"training","scorePoints":5,"durationMinutes":5}
+      ],"rain":[]}
+    },
+    "progress":[
+      {"when":"第1–2周·适应","text":"主项2组，辅助与核心2组；正式有氧合计250分钟/周。主项做完仍留2–3次余力。"},
+      {"when":"第3周·建立","text":"主项升至3组；正式有氧合计280分钟/周。爬楼无痛才延长，练后不补课。"},
+      {"when":"第4–8周·推进","text":"恢复允许时正式有氧合计300分钟/周；同重量连续两次达到次数上限且动作稳定才加最小一档。"},
+      {"when":"共同执行规则","text":"先跑步机平地走8–10分钟热身，结束低速走或低阻力椭圆5分钟冷身；主项组间休90–120秒，其余休60–90秒。"},
+      {"when":"强度与安全","text":"椭圆和快走RPE 5–6、能交谈不能唱歌；爬楼RPE 4–5。膝踝或足底痛即停并改椭圆，力量塔不追求脊颈响声。"}
+    ]
   }
 }
