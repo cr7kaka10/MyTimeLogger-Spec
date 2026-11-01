@@ -148,6 +148,16 @@ def _cst_today() -> str:
     return datetime.now(CST).strftime("%Y-%m-%d")
 
 
+def _exercise_write_version_error(conn: sqlite3.Connection, user_id: int, date: str, version: str) -> str | None:
+    row = conn.execute("SELECT value FROM server_system_config WHERE user_id=? AND key='exercise_v6_effective_date'", (user_id,)).fetchone()
+    cutoff = str(row[0]) if row else None
+    if cutoff and _cst_today() >= cutoff and date < cutoff:
+        return "exercise_history_read_only_after_v6_cutover"
+    if (not cutoff and version == "v6") or (cutoff and version != ("v6" if date >= cutoff else "v5")):
+        return "exercise_plan_version_not_active_for_date"
+    return None
+
+
 def _ticktick_local_habit_id(user_id: int, provider_habit_id: str) -> str:
     raw = str(provider_habit_id or "")
     return raw if raw.startswith("local_") else f"ticktick:{user_id}:{raw}"
@@ -911,6 +921,10 @@ class SyncHub:
             server_table = server_table_for(table)
             client_recorded_at = data.get("updated_at") if table == "exercise_diet_checkins" else None
             data_copy, rejected = self._filter_sync_record(conn, table, data, user_id)
+            if table in {"exercise_checkins", "exercise_daily_logs", "exercise_diet_checkins"}:
+                reason = _exercise_write_version_error(conn, user_id, str(data_copy.get("date") or _cst_today())[:10], str(data_copy.get("plan_version") or "v0"))
+                if reason:
+                    raise ValueError(reason)
             body_metric_locked = False
             if table == "exercise_daily_logs" and (
                 data_copy.get("weight") is not None or data_copy.get("body_fat_rate") is not None
@@ -1128,12 +1142,12 @@ class SyncHub:
     def _settle_synced_behavior_in_txn(self, conn: sqlite3.Connection, table: str, record: dict, user_id: int,
                                        client_recorded_at: str | None = None):
         if table == "exercise_daily_logs":
-            if str(record.get("plan_version") or "") == "v4" and str(record.get("date") or _cst_today())[:10] == _cst_today():
+            if str(record.get("plan_version") or "") in {"v4", "v6"} and str(record.get("date") or _cst_today())[:10] == _cst_today():
                 try:
-                    from .server import _beijing_now, _exercise_v4
+                    from .server import _beijing_now, _exercise_authoritative
                 except (ImportError, ValueError):
-                    from server import _beijing_now, _exercise_v4
-                _exercise_v4().settle(conn, user_id, str(record.get("date") or _cst_today())[:10], _beijing_now())
+                    from server import _beijing_now, _exercise_authoritative
+                _exercise_authoritative(str(record.get("plan_version"))).settle(conn, user_id, str(record.get("date") or _cst_today())[:10], _beijing_now())
             return
 
         if table == "exercise_diet_checkins":
@@ -1154,7 +1168,7 @@ class SyncHub:
                 from server import _exercise_day_key, _exercise_plan_definition, _exercise_score, _persist_exercise_item_scores
             target_date = str(record.get("date") or _cst_today())[:10]
             plan_version = str(record.get("plan_version") or "v0")
-            if plan_version in {"v4", "v5"}:
+            if plan_version in {"v4", "v5", "v6"}:
                 try:
                     from .server import _beijing_now, _exercise_authoritative
                 except (ImportError, ValueError):
@@ -1746,6 +1760,13 @@ class SyncHub:
                         "reason": "retry_limit_reached",
                         **({"canonical_record": {key: value for key, value in authority.items() if key != "user_id"}} if authority else {})})
                     continue
+                if table in {"exercise_checkins", "exercise_daily_logs", "exercise_diet_checkins"}:
+                    with self._conn() as lookup_conn:
+                        reason = _exercise_write_version_error(lookup_conn, user_id, str(record.get("date") or _cst_today())[:10], str(record.get("plan_version") or "v0"))
+                    if reason:
+                        rejected.append({"table": table, "record_id": str(pk_val), "reason": reason})
+                        operation_results.append({"change_id": change_id, "status": "rejected", "reason": reason})
+                        continue
                 if table == "exercise_diet_checkins" and record.get("plan_version") == "v5":
                     with self._conn() as lookup_conn:
                         cutover = lookup_conn.execute("SELECT switch_date FROM server_diet_habit_migrations WHERE user_id=?",

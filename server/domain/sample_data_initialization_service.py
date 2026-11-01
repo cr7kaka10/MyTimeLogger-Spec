@@ -289,6 +289,8 @@ class SampleDataInitializationService:
             v2.update(version="v2", sourceName="每日打卡表v2", weekdayScore=[[0,5,"检验"],[1,10,"工作"],[1,1.25,"守时","10:30"],[2,5,"拉伸"],[3,10,"工作"],[3,1.25,"守时","12:20"],[4,10,"工作"],[4,1.25,"守时","15:10"],[5,5,"拉伸"],[6,10,"工作"],[6,1.25,"守时","17:00"]], categoryOrder=["运动","工作","拉伸","检验","守时","活动"], exercisePoints=40)
             definitions["v2"] = v2
         for version, definition in definitions.items():
+            if version == "v6":
+                continue
             self._insert_exercise_plan_definition(conn, user_id, version, definition, now)
         self._repair_v5_cardio_revision(conn, user_id, definitions.get("v5") or {}, now, "v2")
         self._repair_v5_cardio_revision(conn, user_id, definitions.get("v5") or {}, now, "v3")
@@ -349,10 +351,6 @@ class SampleDataInitializationService:
             conn.commit()
 
     def _ensure_v6(self, conn: sqlite3.Connection, user_id: int, definition: dict, now: str) -> None:
-        if not self._has_marker(conn, user_id, "exercise_plan_v6_seed"):
-            self._insert_exercise_plan_definition(conn, user_id, "v6", definition, now)
-            self._publish_complete_exercise(conn, user_id, "v6")
-            self._mark(conn, user_id, "exercise_plan_v6_seed", now)
         migration = conn.execute("SELECT switch_date FROM server_diet_habit_migrations WHERE user_id=?", (user_id,)).fetchone()
         beijing_now = datetime.now(timezone(timedelta(hours=8)))
         if not migration or str(migration["switch_date"]) > beijing_now.date().isoformat():
@@ -364,6 +362,10 @@ class SampleDataInitializationService:
         )]
         if counts != [6, 6, 6]:
             return
+        if not self._has_marker(conn, user_id, "exercise_plan_v6_seed"):
+            self._insert_exercise_plan_definition(conn, user_id, "v6", definition, now)
+            self._publish_complete_exercise(conn, user_id, "v6")
+            self._mark(conn, user_id, "exercise_plan_v6_seed", now)
         days_ahead = (7 - beijing_now.weekday()) % 7 or 7
         effective_date = (beijing_now.date() + timedelta(days=days_ahead)).isoformat()
         inserted = conn.execute("""INSERT OR IGNORE INTO server_system_config
@@ -464,6 +466,8 @@ class SampleDataInitializationService:
         """幂等升级已存在账户的地点项和工作日评分规则。"""
         removed = ("到达图书馆", "离开图书馆", "到达体育公园", "达到体育公园", "离开体育公园", "结束户外锻炼")
         for version, definition in definitions.items():
+            if version == "v6":
+                continue
             conn.execute("UPDATE server_exercise_plan_versions SET exercise_points=?,updated_at=? WHERE user_id=? AND version=?", (int(definition.get("exercisePoints") or 0), now, user_id, version))
             self._write_seed_change(conn, user_id, "server_exercise_plan_versions", "exercise_plan_version", version, namespace="exercise-v2")
             old_items = [row for row in conn.execute(

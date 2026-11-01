@@ -3747,8 +3747,8 @@ def _exercise_active_plan(conn: sqlite3.Connection, user_id: int, business_date:
         "SELECT value FROM server_system_config WHERE user_id=? AND key='exercise_v6_effective_date'",
         (user_id,),
     ).fetchone()
-    if v6 and business_date >= str(v6["value"]):
-        return "v6"
+    if v6:
+        return "v6" if business_date >= str(v6["value"]) else "v5"
     row = conn.execute(
         "SELECT value FROM server_system_config WHERE user_id=? AND key='active_exercise_plan_version'",
         (user_id,),
@@ -3759,7 +3759,7 @@ def _exercise_active_plan(conn: sqlite3.Connection, user_id: int, business_date:
 def _exercise_require_writable_version(conn: sqlite3.Connection, user_id: int, date: str, version: str) -> None:
     row = conn.execute("SELECT value FROM server_system_config WHERE user_id=? AND key='exercise_v6_effective_date'", (user_id,)).fetchone()
     cutoff = str(row["value"]) if row else None
-    if (version == "v6" and (not cutoff or date < cutoff)) or (cutoff and date >= cutoff and version != "v6"):
+    if (not cutoff and version == "v6") or (cutoff and version != ("v6" if date >= cutoff else "v5")):
         raise HTTPException(status_code=409, detail="该日期的运动计划版本已切换，请刷新后按当日计划打卡")
 
 
