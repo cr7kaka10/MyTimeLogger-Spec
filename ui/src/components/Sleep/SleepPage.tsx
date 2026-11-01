@@ -725,7 +725,8 @@ export const SleepPage = memo(({ sleepData, selectedDate, setSelectedDate, saveD
       const status = sleepAutomation.status()
       if (!status.phase || status.sleepDate !== selectedDate) { setAutomationProgress(''); return }
       const labels: Record<string, string> = { ocr: '图片已上传，正在等待 OCR 识别', ocr_ready: 'OCR 识别成功，正在启动睡眠分析', report: '正在生成睡眠分析报告' }
-      setAutomationProgress(status.stage === 'FAILED' ? `自动化失败：${status.reason || '未知错误'}` : status.stage === 'SUCCESS' ? '睡眠分析完成，正在刷新报告' : labels[status.phase] || '正在处理睡眠图片')
+      const failures: Record<string, string> = { login_required: '请登录后重试', date_mismatch: '截图日期与今天不符', ocr_failed: '图片识别失败', vision_model_unconfigured: '尚未配置视觉模型', network_error: '网络连接失败' }
+      setAutomationProgress(status.stage === 'FAILED' ? `自动化失败：${failures[status.reason || ''] || status.reason || '未知错误'}` : status.stage === 'SUCCESS' ? '睡眠分析完成，正在刷新报告' : labels[status.phase] || '正在处理睡眠图片')
       if (status.stage === 'SUCCESS' && handledAutomationRef.current !== `${status.sleepDate}:${status.updatedAt}`) {
         handledAutomationRef.current = `${status.sleepDate}:${status.updatedAt}`
         onAutomationDone?.(status.sleepDate)

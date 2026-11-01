@@ -59,6 +59,7 @@ public class SleepAutomationApiClientTest {
         assertEquals("protocol_error",SleepAutomationApiClient.statusJob(new SleepAutomationApiClient.Result("ok","{\"request_id\":\"abc\",\"status\":\"mystery\"}"),"2026-10-01").state);
         assertEquals("vision_model_unconfigured",SleepAutomationApiClient.statusJob(new SleepAutomationApiClient.Result("ok","{\"request_id\":\"abc\",\"status\":\"error\",\"error\":\"当前用户未配置视觉大模型\"}"),"2026-10-01").state);
         assertEquals("ocr_failed",SleepAutomationApiClient.statusJob(new SleepAutomationApiClient.Result("ok","{\"request_id\":\"abc\",\"status\":\"error\",\"error\":\"OCR failed\"}"),"2026-10-01").state);
+        assertEquals("date_mismatch",SleepAutomationApiClient.statusJob(new SleepAutomationApiClient.Result("ok","{\"request_id\":\"abc\",\"status\":\"error\",\"error\":\"日期不匹配\"}"),"2026-10-01").state);
         assertEquals("report_failed",SleepAutomationApiClient.statusJob(new SleepAutomationApiClient.Result("ok","{\"request_id\":\"abc\",\"status\":\"error\",\"error\":\"secret-value\"}"),"2026-10-01").state);
     }
 }
