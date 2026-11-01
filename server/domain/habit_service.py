@@ -33,6 +33,13 @@ class HabitDomainService:
             )
 
     def timed_checkin_guard(self, conn, user_id, habit_id, date_str, desired_status, automatic=False):
+        if habit_id.startswith("diet-v5:"):
+            from .diet_habit_migration_service import DietHabitMigrationService
+            from .exercise_v4_service import is_exercise_rest_day
+            if not DietHabitMigrationService.active(conn, user_id, date_str) or is_exercise_rest_day(conn, user_id, "v5", date_str):
+                raise ValueError("timed_habit_inactive_day")
+            if desired_status == 1 and not automatic:
+                raise ValueError("timed_habit_system_manual_failure")
         window = conn.execute("""SELECT start_minute,end_minute FROM server_habit_windows
             WHERE user_id=? AND habit_id=? AND effective_from<=? ORDER BY effective_from DESC LIMIT 1""",
             (user_id, habit_id, date_str)).fetchone()

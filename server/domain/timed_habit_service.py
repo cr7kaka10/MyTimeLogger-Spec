@@ -3,7 +3,8 @@
 from datetime import datetime, timedelta, timezone
 
 from .habit_schedule import scheduled_for_date
-from .exercise_v4_service import DIET_RULE_NAMES, V5_MEAL_RULES
+from .exercise_v4_service import DIET_RULE_NAMES, V5_MEAL_RULES, is_exercise_rest_day
+from .diet_habit_migration_service import DietHabitMigrationService
 
 BEIJING = timezone(timedelta(hours=8))
 
@@ -49,6 +50,9 @@ class TimedHabitService:
                             AND c.habit_id=h.id AND COALESCE(c.checkin_date,c.date)=? AND c.status IN (1,2))""",
                     (day, user_id, user_id, day, cutoff, day)).fetchall()
                 for row in rows:
+                    if row["source"] == "system" and (not DietHabitMigrationService.active(conn, row["user_id"], day)
+                            or is_exercise_rest_day(conn, row["user_id"], "v5", day)):
+                        continue
                     if scheduled_for_date(row["repeat_rule"], day):
                         if self._habits.mark_failed_habit_in_txn(conn, row["user_id"], row["id"], day, automatic=True):
                             changed.add(int(row["user_id"]))
