@@ -27,7 +27,7 @@ public class DailyWidgetReceiverTest {
     private final Context context = InstrumentationRegistry.getInstrumentation().getTargetContext();
     private final String database = "daily-widget-receiver-test.db";
     private SharedPreferences capacitor, runtime, widget;
-    private String oldDatabase, oldRuntime, oldSnapshot, oldPending, oldDone, oldMenu, oldIgnored;
+    private String oldDatabase, oldRuntime, oldSnapshot, oldPending, oldPendingIgnore, oldDone, oldMenu, oldIgnored;
     private SqliteConnection db;
     @Before public void setup() {
         capacitor = context.getSharedPreferences("CapacitorStorage", Context.MODE_PRIVATE);
@@ -36,14 +36,17 @@ public class DailyWidgetReceiverTest {
         oldDatabase = capacitor.getString(WidgetTimerPreferences.ACTIVE_DB_KEY, null);
         oldRuntime = runtime.getString("runtime", null);
         oldSnapshot = widget.getString("snapshot", null); oldPending = widget.getString("pending", null);
+        oldPendingIgnore = widget.getString("pending_ignore", null);
         oldDone = widget.getString("done", null); oldMenu = widget.getString("menu", null);
         oldIgnored = widget.getString("ignored", null);
-        widget.edit().remove("snapshot").remove("pending").remove("done").remove("menu").remove("ignored").commit();
+        widget.edit().remove("snapshot").remove("pending").remove("pending_ignore").remove("done").remove("menu").remove("ignored").commit();
         context.deleteDatabase(database);
         db = new SqliteConnection(context, database); db.open();
         db.execute("CREATE TABLE tasks(id TEXT PRIMARY KEY,status INTEGER,deleted_at TEXT,title TEXT,due_date TEXT,priority INTEGER,updated_at TEXT,pushed_at TEXT,raw_json TEXT)", Collections.emptyList());
         db.execute("CREATE TABLE habits(id TEXT,name TEXT,is_active INTEGER,source TEXT,sort_order INTEGER,repeat_rule TEXT)", Collections.emptyList());
         db.execute("CREATE TABLE habit_checkins(habit_id TEXT,status INTEGER,checkin_date TEXT)", Collections.emptyList());
+        db.execute("CREATE TABLE habit_day_ignores(habit_id TEXT,date TEXT,is_ignored INTEGER)", Collections.emptyList());
+        db.execute("CREATE TABLE habit_windows(habit_id TEXT,effective_from TEXT,start_minute INTEGER,end_minute INTEGER)", Collections.emptyList());
         db.execute("CREATE TABLE rewards(id TEXT,title TEXT,unlock_task_id TEXT,is_active INTEGER)", Collections.emptyList());
         db.execute("CREATE TABLE reward_ledger(id TEXT,amount REAL,source_type TEXT,source_id TEXT,description TEXT,created_at TEXT,updated_at TEXT)", Collections.emptyList());
         db.execute("CREATE TABLE system_config(key TEXT,value TEXT)", Collections.emptyList());
@@ -73,6 +76,7 @@ public class DailyWidgetReceiverTest {
         restore(capacitor, WidgetTimerPreferences.ACTIVE_DB_KEY, oldDatabase);
         restore(runtime, "runtime", oldRuntime);
         restore(widget, "snapshot", oldSnapshot); restore(widget, "pending", oldPending); restore(widget, "done", oldDone);
+        restore(widget, "pending_ignore", oldPendingIgnore);
         restore(widget, "menu", oldMenu);
         restore(widget, "ignored", oldIgnored);
     }
@@ -148,6 +152,7 @@ public class DailyWidgetReceiverTest {
         for (int i = 0; i < 60 && !new DailyWidgetStore(context).isIgnored("habit-1", DailyWidgetStore.today()); i++)
             Thread.sleep(100);
         assertTrue(new DailyWidgetStore(context).isIgnored("habit-1", DailyWidgetStore.today()));
+        assertNotNull(new DailyWidgetStore(context).pendingIgnore());
         assertFalse(new DailyWidgetRepository(context).load().stream().anyMatch(row -> "habit-1".equals(row.id)));
         assertFalse(new DailyWidgetStore(context).isIgnored("habit-1",
                 DailyWidgetStore.dayAt(System.currentTimeMillis() + 86_400_000L)));
