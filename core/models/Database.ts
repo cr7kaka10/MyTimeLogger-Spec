@@ -1271,7 +1271,7 @@ export class Database {
 
   getHabits(): Habit[] {
     // is_active = 0 表示正常（与 TickTick 一致），is_active = 1 表示归档
-    return this._all("SELECT * FROM habits WHERE is_active=0 AND source='local' ORDER BY sort_order") as Habit[]
+    return this._all("SELECT * FROM habits WHERE is_active=0 AND source IN ('local','system') ORDER BY sort_order") as Habit[]
   }
 
   getHabitWindowsForDate(date: string): Map<string, { start_minute: number | null; end_minute: number | null }> {

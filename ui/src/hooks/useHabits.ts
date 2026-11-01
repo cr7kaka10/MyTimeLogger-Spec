@@ -72,6 +72,7 @@ export const useHabits = (): UseHabitsReturn => {
       // 过滤习惯：只显示今天有排期的，或者今天已经有打卡记录的（兜底展示）
       const filteredHabits = all.filter(h => {
         if (Number(h.is_active || 0) !== 0) return false
+        if (h.source === 'system' && !windows.has(String(h.id))) return false
         if (ignoredIds.has(String(h.id))) return false
         const rrule = h.repeat_rule || h.repeatRule
         const isScheduled = isHabitScheduledForDate(rrule, selectedDate)
