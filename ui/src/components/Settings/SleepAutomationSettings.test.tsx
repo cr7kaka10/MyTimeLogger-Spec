@@ -3,7 +3,7 @@ import { canEnableSleepAutomation, canGenerateSleepReport, isSleepWorkflowBusy, 
 
 const assert = (value: unknown, message: string) => { if (!value) throw new Error(message) }
 const granted: SleepPermissions = { accessibility: true, notifications: true, media: true, battery: true }
-const render = (consented: boolean, permissions = granted, status: any = { available: true, enabled: true, nextRunAt: '2026-10-02 08:40' }) => renderToStaticMarkup(<SleepAutomationSettings status={status} consented={consented} permissions={permissions} onConsent={() => {}} onToggle={() => {}} onAuthorize={() => {}} onTest={() => {}} onPreview={() => {}} onGenerate={() => {}} onOneClick={() => {}} />)
+const render = (consented: boolean, permissions = granted, status: any = { available: true, enabled: true, nextRunAt: '2026-10-02 08:40' }, feedback = '') => renderToStaticMarkup(<SleepAutomationSettings status={status} consented={consented} permissions={permissions} onConsent={() => {}} onToggle={() => {}} onAuthorize={() => {}} onTest={() => {}} onPreview={() => {}} onGenerate={() => {}} onOneClick={() => {}} feedback={feedback} />)
 const blocked = render(false, granted, { available: true, enabled: false })
 assert(!canEnableSleepAutomation(false, granted) && /aria-label="睡眠自动化"[^>]*disabled/.test(blocked), 'consent must gate enablement')
 assert(!/aria-label="睡眠自动化"[^>]*checked/.test(blocked), 'blocked automation must not remain checked')
@@ -40,4 +40,7 @@ const now = Date.parse('2026-10-31T10:00:00+08:00')
 assert(isSleepWorkflowBusy({ available: true, enabled: true, stage: 'POLLING', sleepDate: today, updatedAt: now - 1_000 }, now, today), 'fresh same-day report is busy')
 assert(!isSleepWorkflowBusy({ available: true, enabled: true, stage: 'POLLING', sleepDate: '2026-10-30', updatedAt: now - 1_000 }, now, today), 'prior-day report cannot block controls')
 assert(!isSleepWorkflowBusy({ available: true, enabled: true, stage: 'POLLING', sleepDate: today, updatedAt: now - 16 * 60_000 }, now, today), 'stale report cannot block retry')
+const unreadable = render(true, granted, { available: true, enabled: true, captureTest: { ...sameDayCapture, stage: 'FAILED', reason: 'media_unreadable' } })
+assert(unreadable.includes('media_unreadable') && !unreadable.includes('查看本次图片'), 'unreadable URI must not look saved')
+assert(render(true, granted, { available: true, enabled: true }, '等待超时，请查看最近运行记录或重试').includes('role="status"'), 'timeout feedback must be visible')
 console.log('sleep automation settings tests passed')
