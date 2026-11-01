@@ -203,6 +203,7 @@ export type SleepAutoScoreState = 'no_report' | 'scoring' | 'unavailable' | 'sco
 
 export interface ExerciseScoreSettlement {
   business_date: string; plan_version: string; score_total: number; coin_amount: number
+  completed_items?: number; total_items?: number
   score_snapshot?: string | Record<string, unknown> | null; category_scores?: string | null
   is_all_complete?: boolean | number; completion_reward_amount?: number; completion_reason?: string | null
 }

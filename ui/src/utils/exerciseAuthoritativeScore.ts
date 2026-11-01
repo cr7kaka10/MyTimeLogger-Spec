@@ -1,4 +1,4 @@
-export type AuthoritativePlanVersion = 'v4' | 'v5'
+export type AuthoritativePlanVersion = 'v4' | 'v5' | 'v6'
 export type AuthoritativeScore = { total: number; cats: Record<string, { s: number; m: number }>; plan_version: AuthoritativePlanVersion }
 
 const legacyLimits = { 运动训练: 75, 饮食约束: 15, 身体记录: 10 }
@@ -6,18 +6,24 @@ const v5MealLimits = { 运动训练: 50, 饮食约束: 50, 身体记录: 0 }
 const v5ExerciseLimits = { 运动训练: 50, 饮食约束: 0, 身体记录: 0 }
 const v5RestLimits = { 运动训练: 0, 饮食约束: 0, 身体记录: 0 }
 const samePoints = (left: number, right: number) => Math.abs(left - right) < 1e-6
-export const isAuthoritativeExercisePlan = (version: string): version is AuthoritativePlanVersion => version === 'v4' || version === 'v5'
+export const isAuthoritativeExercisePlan = (version: string): version is AuthoritativePlanVersion => version === 'v4' || version === 'v5' || version === 'v6'
 export const currentV5PlanScore = (): AuthoritativeScore => zero('v5', true)
 export const currentV5ExerciseScore = (): AuthoritativeScore => zero('v5', false, false, true)
 export const isCurrentV5Score = (score: AuthoritativeScore): boolean =>
   score.plan_version === 'v5' && score.cats['运动训练']?.m === 50 && [0, 50].includes(Number(score.cats['饮食约束']?.m)) && score.cats['身体记录']?.m === 0
 const zero = (planVersion: AuthoritativePlanVersion, currentV5Policy = false, currentV5Rest = false, exerciseOnly = false): AuthoritativeScore => ({
-  total: 0, cats: Object.fromEntries(Object.entries(currentV5Rest ? v5RestLimits : exerciseOnly ? v5ExerciseLimits : currentV5Policy ? v5MealLimits : legacyLimits).map(([name, maximum]) => [name, { s: 0, m: maximum }])), plan_version: planVersion,
+  total: 0, cats: Object.fromEntries(Object.entries(planVersion === 'v6' ? { 运动训练: 100 } : currentV5Rest ? v5RestLimits : exerciseOnly ? v5ExerciseLimits : currentV5Policy ? v5MealLimits : legacyLimits).map(([name, maximum]) => [name, { s: 0, m: maximum }])), plan_version: planVersion,
 })
 
 export function projectAuthoritativeScore(raw: unknown, planVersion: AuthoritativePlanVersion): AuthoritativeScore {
   let value: any = raw
   if (typeof raw === 'string') try { value = JSON.parse(raw) } catch { return zero(planVersion) }
+  if (planVersion === 'v6') {
+    const cats = value?.cats, score = cats?.['运动训练'], earned = Number(score?.s), maximum = Number(score?.m)
+    if (value?.plan_version !== 'v6' || !cats || Object.keys(cats).length !== 1 || ![0, 100].includes(maximum) ||
+        !Number.isFinite(earned) || earned < 0 || earned > maximum || !samePoints(Number(value.total), earned)) return zero('v6')
+    return { total: earned, cats: { 运动训练: { s: earned, m: maximum } }, plan_version: 'v6' }
+  }
   const currentV5Policy = planVersion === 'v5' && Number(value?.cats?.['饮食约束']?.m) === 50
   const currentV5Rest = planVersion === 'v5' && Object.keys(v5RestLimits).every(name => Number(value?.cats?.[name]?.m) === 0)
   const exerciseOnly = planVersion === 'v5' && Number(value?.cats?.['运动训练']?.m) === 50 && Number(value?.cats?.['饮食约束']?.m) === 0 && Number(value?.cats?.['身体记录']?.m) === 0

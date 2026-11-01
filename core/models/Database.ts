@@ -2981,7 +2981,8 @@ export class Database {
   getExerciseDailyLogs(limit = 8, planVersion = this.getActiveExercisePlanVersion()): any[] {
     return this._all(`SELECT logs.*, settlement.score_total AS settlement_score_total,
       settlement.coin_amount AS settlement_coin_amount, settlement.settlement_status,
-      settlement.reason_code AS settlement_reason_code
+      settlement.reason_code AS settlement_reason_code,
+      settlement.completed_items AS settlement_completed_items, settlement.total_items AS settlement_total_items
       FROM exercise_daily_logs logs
       LEFT JOIN exercise_settlements settlement
         ON settlement.business_date=logs.date AND settlement.plan_version=logs.plan_version
