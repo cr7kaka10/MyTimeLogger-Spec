@@ -336,7 +336,43 @@ class SampleDataInitializationService:
                 ON CONFLICT(user_id,key) DO UPDATE SET value='v5',updated_at=excluded.updated_at""", (user_id, now))
             self._write_seed_change(conn, user_id, "server_system_config", "system_config", "active_exercise_plan_version", namespace="exercise-v5-complete-v1")
             self._mark(conn, user_id, "exercise_plan_v5", now)
+        if definitions.get("v6"):
+            self._ensure_v6(conn, user_id, definitions["v6"], now)
         self._mark(conn, user_id, module, now)
+
+    def ensure_v6_for_user(self, user_id: int) -> None:
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            with EXERCISE_PLAN_SAMPLE_DATA_PATH.open("r", encoding="utf-8") as fh:
+                definition = json.load(fh)["v6"]
+            self._ensure_v6(conn, user_id, definition, datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m-%d %H:%M:%S"))
+            conn.commit()
+
+    def _ensure_v6(self, conn: sqlite3.Connection, user_id: int, definition: dict, now: str) -> None:
+        if not self._has_marker(conn, user_id, "exercise_plan_v6_seed"):
+            self._insert_exercise_plan_definition(conn, user_id, "v6", definition, now)
+            self._publish_complete_exercise(conn, user_id, "v6")
+            self._mark(conn, user_id, "exercise_plan_v6_seed", now)
+        migration = conn.execute("SELECT switch_date FROM server_diet_habit_migrations WHERE user_id=?", (user_id,)).fetchone()
+        beijing_now = datetime.now(timezone(timedelta(hours=8)))
+        if not migration or str(migration["switch_date"]) > beijing_now.date().isoformat():
+            return
+        counts = [conn.execute(query, (user_id,)).fetchone()[0] for query in (
+            "SELECT COUNT(*) FROM server_diet_habit_rules WHERE user_id=? AND habit_id LIKE 'diet-v5:%'",
+            "SELECT COUNT(*) FROM server_habits WHERE user_id=? AND id LIKE 'diet-v5:%' AND source='system'",
+            "SELECT COUNT(*) FROM server_habit_windows WHERE user_id=? AND habit_id LIKE 'diet-v5:%'",
+        )]
+        if counts != [6, 6, 6]:
+            return
+        days_ahead = (7 - beijing_now.weekday()) % 7 or 7
+        effective_date = (beijing_now.date() + timedelta(days=days_ahead)).isoformat()
+        inserted = conn.execute("""INSERT OR IGNORE INTO server_system_config
+            (user_id,key,value,value_type,description,updated_at)
+            VALUES (?,'exercise_v6_effective_date',?,'string','V6北京时间生效日',?)""",
+            (user_id, effective_date, beijing_now.strftime("%Y-%m-%d %H:%M:%S")))
+        if inserted.rowcount:
+            self._write_seed_change(conn, user_id, "server_system_config", "system_config", "exercise_v6_effective_date", namespace="exercise-v6-cutover-v1")
+            self._mark(conn, user_id, "exercise_plan_v6", now)
 
     def _repair_v5_cardio_revision(self, conn: sqlite3.Connection, user_id: int, definition: dict, now: str,
                                    revision: str) -> int:
@@ -433,7 +469,7 @@ class SampleDataInitializationService:
             old_items = [row for row in conn.execute(
                 "SELECT id,item FROM server_exercise_plan_schedule_items WHERE user_id=? AND plan_version=?",
                 (user_id, version),
-            ).fetchall() if str(row["item"] or "").strip().split(None, 1)[-1] in removed]
+            ).fetchall() if str(row["item"] or "").strip() and str(row["item"]).strip().split(None, 1)[-1] in removed]
             for row in old_items:
                 conn.execute("DELETE FROM server_exercise_plan_schedule_items WHERE user_id=? AND plan_version=? AND id=?", (user_id, version, row["id"]))
             for row in old_items:
@@ -561,7 +597,7 @@ class SampleDataInitializationService:
         for schedule_type, items in (
             ("weekday", definition.get("weekdaySchedule") or []),
             ("rest", definition.get("restSchedule") or []),
-            ("sunday_extra", [definition.get("sundayExtra") or {}]),
+            ("sunday_extra", [definition.get("sundayExtra") or {}] if version != "v6" else []),
         ):
             for index, item in enumerate(items):
                 conn.execute(

@@ -509,7 +509,7 @@ def _backfill_exercise_score_snapshots_in_txn(conn: sqlite3.Connection, today: s
         # V4 snapshots are assembled from the three server-authoritative scopes
         # by ExerciseV4Service.  The legacy check-in backfill only understands
         # the old schedule/training model and must never overwrite that result.
-        if plan_version in {"v4", "v5"}:
+        if plan_version in {"v4", "v5", "v6"}:
             continue
         current = conn.execute(
             """SELECT * FROM server_exercise_daily_logs
@@ -583,10 +583,11 @@ def _settle_zero_exercise_checkin_penalty_in_txn(conn, user_id: int, target_date
     day = datetime.strptime(target_date, "%Y-%m-%d").date()
     if day.weekday() == 0:
         return False
+    active_plan = _exercise_active_plan(conn, user_id, target_date)
     completed = conn.execute(
         """SELECT 1 FROM server_exercise_checkins WHERE user_id=? AND date=?
-           AND status=1 AND item_key GLOB ? LIMIT 1""",
-        (user_id, target_date, f"ex-{target_date}-[gr]-*"),
+           AND status=1 AND item_key GLOB ? AND (?!='v6' OR plan_version='v6') LIMIT 1""",
+        (user_id, target_date, f"ex-{target_date}-[gr]-*", active_plan),
     ).fetchone()
     ledger_id = f"exercise-zero-checkin:{user_id}:{target_date}"
     if completed or conn.execute(
@@ -617,15 +618,21 @@ def _settle_completed_exercise_days() -> int:
         for user_row in conn.execute("SELECT id FROM users").fetchall():
             user_id = int(user_row["id"])
             start = datetime.strptime(get_user_statistics_start_date(conn, user_id).date, "%Y-%m-%d").date()
+            active_plan = _exercise_active_plan(conn, user_id, today)
+            cutover_row = conn.execute("SELECT value FROM server_system_config WHERE user_id=? AND key='exercise_v6_effective_date'", (user_id,)).fetchone()
+            cutover = datetime.strptime(str(cutover_row["value"]), "%Y-%m-%d").date() if cutover_row and active_plan == "v6" else None
             penalty_cursor = max(start, datetime.strptime(policy_start, "%Y-%m-%d").date())
+            if cutover:
+                penalty_cursor = max(penalty_cursor, cutover)
             while penalty_cursor <= yesterday:
                 if _settle_zero_exercise_checkin_penalty_in_txn(conn, user_id, penalty_cursor.isoformat()):
                     changed_users.add(user_id)
                 penalty_cursor += timedelta(days=1)
-            active_plan = _exercise_active_plan(conn, user_id)
-            if active_plan in {"v4", "v5"}:
+            if active_plan in {"v4", "v5", "v6"}:
                 service = _exercise_authoritative(active_plan)
                 v4_cursor = max(start, datetime.strptime(PLAN_POLICIES[active_plan]["effective_from"], "%Y-%m-%d").date())
+                if cutover:
+                    v4_cursor = max(v4_cursor, cutover)
                 while v4_cursor <= yesterday:
                     overdue_date = v4_cursor.isoformat()
                     diet_changed = service.close_diet(conn, user_id, overdue_date, _beijing_now())
@@ -678,7 +685,7 @@ def _settle_completed_exercise_days() -> int:
                 cursor += timedelta(days=1)
         rows = conn.execute(
             """SELECT * FROM server_exercise_daily_logs
-               WHERE date<? AND score_snapshot IS NOT NULL AND plan_version NOT IN ('v4','v5')""",
+               WHERE date<? AND score_snapshot IS NOT NULL AND plan_version NOT IN ('v4','v5','v6')""",
             (today,),
         ).fetchall()
         grouped: dict[tuple[int, str], list[dict]] = {}
@@ -3734,12 +3741,26 @@ def _exercise_row_dict(row: sqlite3.Row | None) -> dict | None:
     return dict(row) if row else None
 
 
-def _exercise_active_plan(conn: sqlite3.Connection, user_id: int) -> str:
+def _exercise_active_plan(conn: sqlite3.Connection, user_id: int, business_date: str | None = None) -> str:
+    business_date = business_date or _beijing_today()
+    v6 = conn.execute(
+        "SELECT value FROM server_system_config WHERE user_id=? AND key='exercise_v6_effective_date'",
+        (user_id,),
+    ).fetchone()
+    if v6 and business_date >= str(v6["value"]):
+        return "v6"
     row = conn.execute(
         "SELECT value FROM server_system_config WHERE user_id=? AND key='active_exercise_plan_version'",
         (user_id,),
     ).fetchone()
     return (row["value"] if row and row["value"] else "v1")
+
+
+def _exercise_require_writable_version(conn: sqlite3.Connection, user_id: int, date: str, version: str) -> None:
+    row = conn.execute("SELECT value FROM server_system_config WHERE user_id=? AND key='exercise_v6_effective_date'", (user_id,)).fetchone()
+    cutoff = str(row["value"]) if row else None
+    if (version == "v6" and (not cutoff or date < cutoff)) or (cutoff and date >= cutoff and version != "v6"):
+        raise HTTPException(status_code=409, detail="该日期的运动计划版本已切换，请刷新后按当日计划打卡")
 
 
 def _exercise_item_weight(item: dict) -> int:
@@ -4032,6 +4053,13 @@ def _ensure_diet_habits(user_id: int | None = None) -> set[int]:
     return changed
 
 
+def _ensure_exercise_v6_for_user(user_id: int) -> None:
+    db_path = _exercise_db_path()
+    if db_path == store.db_path:
+        _ensure_diet_habits(user_id)
+    SampleDataInitializationService(db_path).ensure_v6_for_user(user_id)
+
+
 def _exercise_v4() -> ExerciseV4Service:
     return ExerciseV4Service(store.reward_wallet_service, _exercise_v4_record_change)
 
@@ -4146,14 +4174,17 @@ def get_exercise_state(
     user: dict = Depends(get_current_user_optional),
 ):
     date = date or _beijing_today()
+    _ensure_exercise_v6_for_user(user["id"])
     if date == _beijing_today() and _beijing_now().hour >= 9:
         _lock_overdue_body_metrics()
     day_key = _exercise_day_key(date)
     locked = date < _beijing_today()
     v4_score = None
     with _exercise_conn() as conn:
-        active_plan = plan_version or _exercise_active_plan(conn, user["id"])
-        if active_plan in {"v4", "v5"}:
+        authoritative_plan = _exercise_active_plan(conn, user["id"], date)
+        active_plan = plan_version or authoritative_plan
+        locked = locked or active_plan != authoritative_plan
+        if (active_plan in {"v4", "v5"} and authoritative_plan != "v6") or active_plan == authoritative_plan == "v6":
             service, now = _exercise_authoritative(active_plan), _beijing_now()
             service.ensure_diet_rows(conn, user["id"], date, now)
             service.close_diet(conn, user["id"], date, now)
@@ -4264,6 +4295,7 @@ def get_exercise_state(
 @app.post("/api/exercise/checkin")
 async def post_exercise_checkin(request: Request, user: dict = Depends(get_current_user_optional)):
     body = await request.json()
+    _ensure_exercise_v6_for_user(user["id"])
     date = body.get("date") or _beijing_today()
     if date == _beijing_today() and _beijing_now().hour >= 9:
         _lock_overdue_body_metrics()
@@ -4282,6 +4314,7 @@ async def post_exercise_checkin(request: Request, user: dict = Depends(get_curre
     if status_value == 1 and not completed_time:
         completed_time = now
     with _exercise_conn() as conn:
+        _exercise_require_writable_version(conn, user["id"], date, plan_version)
         locked_row = _body_metric_lock_in_txn(conn, user["id"], date)
         target = _body_metric_target_in_txn(conn, user["id"], date, plan_version)
         if locked_row and target and str(item_key) == target[0]:
@@ -4333,7 +4366,7 @@ async def post_exercise_checkin(request: Request, user: dict = Depends(get_curre
         ).fetchall()]
         definition = _exercise_plan_definition(conn, user["id"], plan_version)
         score = _exercise_score(items, [dict(item) for item in conn.execute("SELECT * FROM server_exercise_checkins WHERE user_id=? AND date=? AND plan_version=?", (user["id"], date, plan_version)).fetchall()], definition, _exercise_day_key(date), date)
-        if plan_version in {"v4", "v5"}:
+        if plan_version in {"v4", "v5", "v6"}:
             score = _exercise_authoritative(plan_version).settle(conn, user["id"], date, _beijing_now())
         else:
             _persist_exercise_item_scores(conn, user["id"], date, plan_version, score, now)
@@ -4346,6 +4379,7 @@ async def post_exercise_checkin(request: Request, user: dict = Depends(get_curre
 @app.post("/api/exercise/daily")
 async def post_exercise_daily(request: Request, user: dict = Depends(get_current_user_optional)):
     body = await request.json()
+    _ensure_exercise_v6_for_user(user["id"])
     date = body.get("date") or _beijing_today()
     if date == _beijing_today() and _beijing_now().hour >= 9:
         _lock_overdue_body_metrics()
@@ -4376,6 +4410,7 @@ async def post_exercise_daily(request: Request, user: dict = Depends(get_current
     score_snapshot = body.get("score_snapshot")
     score_json = json.dumps(score_snapshot, ensure_ascii=False, sort_keys=True) if score_snapshot is not None else None
     with _exercise_conn() as conn:
+        _exercise_require_writable_version(conn, user["id"], date, plan_version)
         body_metric_lock = _body_metric_lock_in_txn(conn, user["id"], date, plan_version)
         if body_metric_lock:
             if weight is None and body_fat_rate is None:
@@ -4392,7 +4427,7 @@ async def post_exercise_daily(request: Request, user: dict = Depends(get_current
                 (user["id"], date, plan_version),
             ).fetchone())
             _exercise_write_change(conn, user["id"], "exercise_daily_log", row["id"], row)
-            if plan_version in {"v4", "v5"}:
+            if plan_version in {"v4", "v5", "v6"}:
                 _exercise_authoritative(plan_version).settle(conn, user["id"], date, _beijing_now())
             conn.commit()
             sync_hub._notify_clients(["exercise_daily_logs", "exercise_deadline_facts", "exercise_item_scores", "exercise_settlements", "reward_ledger", "user_wallets"], user["id"])
@@ -4436,9 +4471,9 @@ async def post_exercise_daily(request: Request, user: dict = Depends(get_current
             (user["id"], date, plan_version),
         ).fetchone())
         _exercise_write_change(conn, user["id"], "exercise_daily_log", row["id"], row)
-        score = _exercise_authoritative(plan_version).settle(conn, user["id"], date, _beijing_now()) if plan_version in {"v4", "v5"} else None
+        score = _exercise_authoritative(plan_version).settle(conn, user["id"], date, _beijing_now()) if plan_version in {"v4", "v5", "v6"} else None
         conn.commit()
-    if plan_version in {"v4", "v5"}:
+    if plan_version in {"v4", "v5", "v6"}:
         sync_hub._notify_clients(["exercise_daily_logs", "exercise_deadline_facts", "exercise_item_scores", "exercise_settlements", "reward_ledger", "user_wallets"], user["id"])
     return {"status": "ok", "daily_log": row, "score": score}
 

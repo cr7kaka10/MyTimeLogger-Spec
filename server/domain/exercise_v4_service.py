@@ -27,6 +27,7 @@ PLAN_POLICIES = {
         "protein_at_lunch_and_dinner", "vegetables_at_lunch_and_dinner",
         "controlled_staple_and_no_sugary_drink",
     ), "diet_penalty": 0, "effective_from": "2026-10-18"},
+    "v6": {"rule_version": "exercise-score-v6", "diet_rules": (), "diet_penalty": 0, "effective_from": "0001-01-01"},
 }
 SCOPES = {"training", "diet", "body"}
 OPTIONAL_BODY_POLICY_KEY = "optional_body_exercise_200_v1"
@@ -113,6 +114,8 @@ class ExerciseV4Service:
         return self.plan_version == "v5" and bool(row and date >= row["switch_date"])
 
     def _diet_rules_for_date(self, conn, user_id: int, date: str) -> tuple[str, ...]:
+        if self.plan_version == "v6":
+            return ()
         if self._diet_migrated(conn, user_id, date):
             return ()
         if self._is_rest_day(conn, user_id, date):
@@ -153,6 +156,8 @@ class ExerciseV4Service:
             self._change(conn, user_id, "server_exercise_diet_checkins", row["id"], "delete")
 
     def ensure_diet_rows(self, conn, user_id: int, date: str, now: datetime) -> None:
+        if self.plan_version == "v6":
+            return
         if self._diet_migrated(conn, user_id, date):
             return
         self._discard_invalid_diet_facts(conn, user_id, date, now)
@@ -169,6 +174,8 @@ class ExerciseV4Service:
 
     def set_diet(self, conn, user_id: int, date: str, rule_key: str, status: str | bool,
                  occurred_at: str | None, now: datetime, recorded_at: str | None = None) -> dict:
+        if self.plan_version == "v6":
+            raise ValueError("diet_habit_upgrade_required")
         if self._diet_migrated(conn, user_id, date):
             raise ValueError("diet_habit_upgrade_required")
         if rule_key not in self._diet_rules_for_date(conn, user_id, date):
@@ -209,6 +216,8 @@ class ExerciseV4Service:
         return self.settle(conn, user_id, date, now)
 
     def close_diet(self, conn, user_id: int, date: str, now: datetime) -> int:
+        if self.plan_version == "v6":
+            return 0
         if self._diet_migrated(conn, user_id, date):
             return 0
         self.ensure_diet_rows(conn, user_id, date, now)
@@ -263,6 +272,8 @@ class ExerciseV4Service:
         return changed
 
     def settle_body_deadline(self, conn, user_id: int, date: str, now: datetime) -> dict | None:
+        if self.plan_version == "v6":
+            return None
         if optional_body_policy_active(conn, date):
             return None
         if now.astimezone(TZ) < _deadline(date, 9):
@@ -352,11 +363,13 @@ class ExerciseV4Service:
         weight_points, weight_reason = body_points("body_weight", log["weight"] if log else None)
         fat_points, fat_reason = body_points("body_fat_rate", log["body_fat_rate"] if log else None)
         body_maximum = 0 if new_policy or optional_body else 5
-        facts.extend((("body:weight", "body", weight_points if body_maximum else 0, body_maximum, weight_reason),
-                      ("body:body_fat_rate", "body", fat_points if body_maximum else 0, body_maximum, fat_reason)))
-        stamp, categories = _now_text(now), {scope: {"s": 0.0, "m": 0.0} for scope in SCOPES}
+        if self.plan_version != "v6":
+            facts.extend((("body:weight", "body", weight_points if body_maximum else 0, body_maximum, weight_reason),
+                          ("body:body_fat_rate", "body", fat_points if body_maximum else 0, body_maximum, fat_reason)))
+        scopes = {"training"} if self.plan_version == "v6" else SCOPES
+        stamp, categories = _now_text(now), {scope: {"s": 0.0, "m": 0.0} for scope in scopes}
         for key, scope, earned, maximum, reason in facts:
-            if scope not in SCOPES:
+            if scope not in scopes:
                 continue
             score_id = f"exercise-item-score:{user_id}:{date}:{self.plan_version}:{key}"
             existing = conn.execute("""SELECT earned_points,max_points,score_rule_version,score_reason,score_scope,status
@@ -386,12 +399,17 @@ class ExerciseV4Service:
             value["s"], value["m"] = round(value["s"], 2), round(value["m"], 2)
         total = round(sum(value["s"] for value in categories.values()), 2)
         complete = any(value["m"] > 0 for value in categories.values()) and all(value["m"] == 0 or value["s"] == value["m"] for value in categories.values())
-        snapshot = {"total": total, "cats": {"运动训练": categories["training"], "饮食约束": categories["diet"], "身体记录": categories["body"]}, "plan_version": self.plan_version}
+        cats = {"运动训练": categories["training"]} if self.plan_version == "v6" else {
+            "运动训练": categories["training"], "饮食约束": categories["diet"], "身体记录": categories["body"]}
+        snapshot = {"total": total, "cats": cats, "plan_version": self.plan_version}
         settlement_id = f"exercise-settlement:{user_id}:{self.plan_version}:{date}"
+        reward_amount = 200 if self.plan_version == "v6" or optional_body else 100
+        completion_reason = ("运动训练满分" if self.plan_version == "v6" else
+            "全部应评分项满分" if optional_body else f"三个{self.plan_version.upper()}评分域均满分") if complete else "应评分项尚未满分"
         settlement_values = (json.dumps(snapshot, ensure_ascii=False, sort_keys=True), total,
             json.dumps(snapshot["cats"], ensure_ascii=False, sort_keys=True), sum(1 for _,_,e,m,_ in facts if m > 0 and e == m),
-            sum(1 for _,_,_,m,_ in facts if m > 0), self.rule_version, int(complete), (200 if optional_body else 100) if complete else 0,
-            "全部应评分项满分" if complete and optional_body else f"三个{self.plan_version.upper()}评分域均满分" if complete else "应评分项尚未满分")
+            sum(1 for _,_,_,m,_ in facts if m > 0), self.rule_version, int(complete), reward_amount if complete else 0,
+            completion_reason)
         previous = conn.execute("""SELECT score_snapshot,score_total,category_scores,completed_items,total_items,rule_version,
             is_all_complete,completion_reward_amount,completion_reason FROM server_exercise_settlements
             WHERE user_id=? AND business_date=? AND plan_version=?""", (user_id, date, self.plan_version)).fetchone()
@@ -417,7 +435,7 @@ class ExerciseV4Service:
         ledger_id = f"exercise-completion-reward:{user_id}:{self.plan_version}:{date}"
         existing = conn.execute("SELECT 1 FROM server_reward_ledger WHERE user_id=? AND id=?", (user_id, ledger_id)).fetchone()
         if complete and not existing:
-            self.wallet.append_ledger_in_txn(conn, user_id, 200 if optional_body_policy_active(conn, date) else 100, "exercise_completion_reward",
+            self.wallet.append_ledger_in_txn(conn, user_id, 200 if self.plan_version == "v6" or optional_body_policy_active(conn, date) else 100, "exercise_completion_reward",
                 f"exercise-completion:{self.plan_version}:{date}", f"{self.plan_version.upper()}运动指标全完成奖励", date, ledger_id, stamp)
             self._change(conn, user_id, "server_reward_ledger", ledger_id)
             self.wallet.rebuild_wallet_snapshot_in_txn(conn, user_id, lambda: stamp)
