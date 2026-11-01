@@ -24,7 +24,7 @@ final class SleepAutomationFakeServer implements AutoCloseable {
         byte[] buffer=new byte[4096];while(count>0){int read=in.read(buffer,0,(int)Math.min(buffer.length,count));if(read<0)throw new EOFException();count-=read;}
     }
     private void serve(){
-        try {for(int i=0;i<5;i++)try(Socket client=socket.accept()){
+        try {for(int i=0;i<4;i++)try(Socket client=socket.accept()){
             InputStream in=client.getInputStream();String path=line(in).split(" ")[1],header;int length=0;boolean chunked=false;
             while(!(header=line(in)).isEmpty()){
                 String value=header.toLowerCase(Locale.ROOT);

@@ -198,7 +198,6 @@ public final class SleepAutomationRunnerService extends Service {
         SleepAutomationApiClient api=new SleepAutomationApiClient(getContentResolver());
         if("ocr".equals(s.mode)){
             if(s.requestId.isEmpty()){
-                if("ready".equals(SleepAutomationApiClient.dateReportState(api.statusByDate(s.sleepDate,secret[0],secret[1]),s.sleepDate))){states.save(phase(s,"SUCCESS","","","report"));notifyFinalResult(true,"");stopSelf();return;}
                 SleepAutomationApiClient.Job upload=SleepAutomationApiClient.uploadJob(api.upload(s.mediaUri,s.sleepDate,secret[0],secret[1],false));
                 if(upload.requestId.isEmpty()){if(Arrays.asList("timeout","network_error","server_error").contains(upload.state)){scheduleRetry("ocr_pending");stopSelf();}else failSequential(states,s,upload.state);return;}
                 s=phase(s,"POLLING",upload.requestId,"ocr_pending","ocr");states.save(s);

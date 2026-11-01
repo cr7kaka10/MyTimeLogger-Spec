@@ -31,11 +31,11 @@ public class SleepAutomationSequentialDeviceTest {
             for(int i=0;i<100;i++){Thread.sleep(200);result=store.load(date);if(result!=null&&("SUCCESS".equals(result.stage)||"FAILED".equals(result.stage)))break;}
             assertNotNull(result);assertEquals(result.reason,"SUCCESS",result.stage);
             List<String> requests=server.requests;
-            assertEquals(5,requests.size());
-            assertTrue(requests.get(1).startsWith("/upload?analyze=false"));
-            assertEquals("/status/ocr",requests.get(2));
-            assertEquals("/generate_report",requests.get(3));
-            assertEquals("/status/report",requests.get(4));
+            assertEquals(4,requests.size());
+            assertTrue(requests.get(0).startsWith("/upload?analyze=false"));
+            assertEquals("/status/ocr",requests.get(1));
+            assertEquals("/generate_report",requests.get(2));
+            assertEquals("/status/report",requests.get(3));
         }finally{context.getContentResolver().delete(image,null,null);new SleepAutomationSecretStore(context).clear();}
     }
 }
