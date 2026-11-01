@@ -29,6 +29,7 @@ export function SleepAutomationSettings({ status, consented, permissions, onCons
     <div className="px-4 py-1 text-xs text-gray-500">图片已确认：{status.mediaSelected ? '是' : '否'} · 上传任务已建立：{status.requestIdPresent ? '是' : '否'}</div>
     {status.captureTest && <div className="px-4 py-2 text-xs text-gray-600">图片采集测试：{status.captureTest.stage === 'SAVED' ? '图片已保存' : safeText(status.captureTest.stage)} · {safeText(status.captureTest.reason)}
       {status.captureTest.stage === 'SAVED' && <> · {safeText(status.captureTest.savedAt)} · {status.captureTest.width}×{status.captureTest.height}<button type="button" className="ml-2 text-blue-600" onClick={onPreview}>查看本次图片</button></>}
+      {status.captureTest.stage === 'SAVED' && <span> · 相册位置：{safeText(status.captureTest.album || '未知')}{safeText(status.captureTest.fileName || '')}</span>}
     </div>}
     <div className="flex gap-2 px-4 py-2"><button type="button" disabled={!consented || workflowBusy} onClick={onTest}>图片采集</button><button type="button" disabled={workflowBusy} onClick={onGenerate}>今日睡眠报告</button><button type="button" disabled={!consented || workflowBusy} onClick={onOneClick}>一键自动化</button></div>
     {feedback && <p role="status" className="px-4 py-1 text-xs text-blue-700">{safeText(feedback)}</p>}

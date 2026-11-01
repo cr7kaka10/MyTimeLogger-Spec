@@ -1,5 +1,5 @@
 package com.mytimelogger.app;
-import android.Manifest;import android.app.*;import android.content.*;import android.content.pm.PackageManager;import android.net.Uri;import android.os.*;import android.provider.Settings;import android.webkit.JavascriptInterface;
+import android.Manifest;import android.app.*;import android.content.*;import android.content.pm.PackageManager;import android.database.Cursor;import android.net.Uri;import android.os.*;import android.provider.MediaStore;import android.provider.Settings;import android.webkit.JavascriptInterface;
 import androidx.core.app.*;import androidx.core.content.ContextCompat;import org.json.*;import java.net.URI;import java.text.SimpleDateFormat;import java.util.*;
 
 public final class SleepAutomationBridge {
@@ -41,7 +41,18 @@ public final class SleepAutomationBridge {
         String raw=actions.status();if(context==null)return raw;
         try{JSONObject out=new JSONObject(raw);SleepCaptureProbeStore.Snapshot probe=new SleepCaptureProbeStore(context).load();
             if(probe!=null){SimpleDateFormat f=new SimpleDateFormat("yyyy-MM-dd HH:mm:ss",Locale.CHINA);f.setTimeZone(SleepAutomationScheduler.BEIJING);
-                out.put("captureTest",new JSONObject().put("runId",probe.runId).put("date",probe.date).put("stage",probe.stage).put("reason",probe.reason).put("savedAt",probe.savedAt>0?f.format(new Date(probe.savedAt)):"").put("width",probe.width).put("height",probe.height));}
+                JSONObject capture=new JSONObject().put("runId",probe.runId).put("date",probe.date).put("stage",probe.stage).put("reason",probe.reason).put("savedAt",probe.savedAt>0?f.format(new Date(probe.savedAt)):"").put("width",probe.width).put("height",probe.height);
+                if("SAVED".equals(probe.stage)){
+                    SimpleDateFormat day=new SimpleDateFormat("yyyy-MM-dd",Locale.ROOT);day.setTimeZone(SleepAutomationScheduler.BEIJING);
+                    if(!probe.date.equals(day.format(new Date()))) capture.put("stage","STALE").put("reason","previous_day_capture");
+                    else try(android.content.res.AssetFileDescriptor fd=context.getContentResolver().openAssetFileDescriptor(Uri.parse(probe.uri),"r")){
+                        if(fd==null||fd.getLength()==0) capture.put("stage","FAILED").put("reason","media_unreadable");
+                        else try(Cursor cursor=context.getContentResolver().query(Uri.parse(probe.uri),new String[]{MediaStore.Images.Media.DISPLAY_NAME,MediaStore.Images.Media.RELATIVE_PATH},null,null,null)){
+                            if(cursor!=null&&cursor.moveToFirst()) capture.put("fileName",cursor.getString(0)).put("album",cursor.getString(1));
+                        }
+                    }catch(Exception e){capture.put("stage","FAILED").put("reason","media_unreadable");}
+                }
+                out.put("captureTest",capture);}
             return out.toString();
         }catch(Exception e){return raw;}
     }
