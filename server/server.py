@@ -302,7 +302,10 @@ habit_checkin_command_service = HabitCheckinCommandService(
 )
 habit_day_ignore_service = HabitDayIgnoreService(store._transact, store._record_server_change, lambda: _beijing_now())
 habit_auto_failure_service = HabitAutoFailureService(store._transact, store.habit_domain_service)
-timed_habit_service = TimedHabitService(store._transact, store.habit_domain_service)
+timed_habit_service = TimedHabitService(store._transact, store.habit_domain_service,
+    wallet=store.reward_wallet_service,
+    record_change=lambda conn, user_id, table, record_id: store._record_server_change(
+        conn, user_id, table, record_id, "upsert", {"id": record_id}))
 management_plan_service = ManagementPlanService(store._connect)
 def _behavior_audit_service() -> UserBehaviorAuditService:
     return UserBehaviorAuditService(store._connect)
