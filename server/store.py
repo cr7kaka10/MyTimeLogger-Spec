@@ -1527,6 +1527,7 @@ class ServerSleepStore:
                         if has_item_binding:
                             self.reward_settlement_service.grant_task_unlocks_in_txn(
                                 conn, user_id, "goal", g_id, claim_id, title, date_str)
+                            settled_details.append({"claim_id": claim_id, "item_binding": True, "amount": 0.0})
                     if amount != 0:
                         source_type = "goal_reward" if amount >= 0 else "goal_penalty"
                         ledger_id = self.reward_settlement_service.settle_in_txn(

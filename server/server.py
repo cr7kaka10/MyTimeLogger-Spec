@@ -5156,7 +5156,7 @@ async def update_goal(goal_id: str, request: Request, user: dict = Depends(get_c
 def auto_settle_goals(user: dict = Depends(get_current_user_optional)):
     settled = store.auto_settle_goals(user["id"])
     if settled:
-        sync_hub._notify_clients(["goals", "external_rewards", "reward_ledger", "user_wallets"], user["id"])
+        sync_hub._notify_clients(["goals", "external_rewards", "reward_ledger", "user_wallets", "reward_fragments"], user["id"])
     return {"status": "ok", "settled": settled}
 
 # --- 5. 奖励商品与商店 (Rewards) ---
