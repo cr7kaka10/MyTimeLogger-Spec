@@ -10,6 +10,7 @@ SOURCE_TYPES = {
     "habit": ("habit", "habit"),
     "learning_task": ("learning", "learning_task"),
     "learning_objective": ("learning_objective", "learning_objective"),
+    "goal": ("goal", "goal"),
 }
 
 
@@ -49,6 +50,9 @@ class SourceRewardService:
         if not source_id:
             raise SourceRewardError("奖励来源 ID 不能为空")
         with closing(self._connect()) as conn:
+            if source_type == "goal" and not conn.execute(
+                    "SELECT 1 FROM server_goals WHERE user_id=? AND id=? AND is_active=1", (user_id, source_id)).fetchone():
+                raise SourceRewardError("目标不存在或不属于当前账号", 404)
             config = conn.execute(
                 "SELECT coins,penalty FROM server_reward_config WHERE user_id=? AND item_type=? AND item_id=?",
                 (user_id, coin_type, source_id),
