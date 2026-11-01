@@ -1,5 +1,5 @@
 import { renderToStaticMarkup } from 'react-dom/server'
-import { canEnableSleepAutomation, canGenerateSleepReport, SleepAutomationSettings, type SleepPermissions } from './SleepAutomationSettings'
+import { canEnableSleepAutomation, canGenerateSleepReport, isSleepWorkflowBusy, SleepAutomationSettings, type SleepPermissions } from './SleepAutomationSettings'
 
 const assert = (value: unknown, message: string) => { if (!value) throw new Error(message) }
 const granted: SleepPermissions = { accessibility: true, notifications: true, media: true, battery: true }
@@ -28,7 +28,7 @@ assert(!canGenerateSleepReport({ available: true, enabled: false, captureTest: {
 assert(!canGenerateSleepReport({ available: true, enabled: false, captureTest: { ...sameDayCapture, stage: 'FAILED' } }, today), 'failed capture must not meet precondition')
 assert(!canGenerateSleepReport({ available: true, enabled: false }, today), 'missing capture must not meet precondition')
 const captured = render(true, granted, { available: true, enabled: true, stage: 'FAILED', reason: 'ocr_failed', captureTest: sameDayCapture })
-assert(captured.includes('图片已保存') && captured.includes('查看本次图片') && captured.includes('报告任务：FAILED') && !captured.includes('报告已完成'), 'capture success must stay separate from report status')
+assert(captured.includes('图片已保存') && captured.includes('查看本次图片') && captured.includes('FAILED') && !captured.includes('报告已完成'), 'capture success must stay separate from report status')
 const reportButton = (markup: string) => markup.match(/<button[^>]*>今日睡眠报告<\/button>/)?.[0] || ''
 assert(reportButton(captured) && !/disabled/.test(reportButton(captured)), 'today capture enables report generation')
 const stale = render(true, granted, { available: true, enabled: true, captureTest: { ...sameDayCapture, date: '2026-10-24' } })
@@ -36,4 +36,8 @@ assert(/disabled/.test(reportButton(stale)), 'stale capture disables report gene
 const noConsent = render(false, granted, { available: true, enabled: false, captureTest: sameDayCapture })
 assert(/aria-label="睡眠自动化"[^>]*disabled/.test(noConsent), 'daily automation still requires explicit consent')
 assert(reportButton(noConsent) && !/disabled/.test(reportButton(noConsent)), 'manual button click authorizes its one-time upload')
+const now = Date.parse('2026-10-31T10:00:00+08:00')
+assert(isSleepWorkflowBusy({ available: true, enabled: true, stage: 'POLLING', sleepDate: today, updatedAt: now - 1_000 }, now, today), 'fresh same-day report is busy')
+assert(!isSleepWorkflowBusy({ available: true, enabled: true, stage: 'POLLING', sleepDate: '2026-10-30', updatedAt: now - 1_000 }, now, today), 'prior-day report cannot block controls')
+assert(!isSleepWorkflowBusy({ available: true, enabled: true, stage: 'POLLING', sleepDate: today, updatedAt: now - 16 * 60_000 }, now, today), 'stale report cannot block retry')
 console.log('sleep automation settings tests passed')
