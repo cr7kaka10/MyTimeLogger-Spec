@@ -56,7 +56,7 @@ public final class SleepAutomationRunnerService extends Service {
     }
     static String startSource(String action){if(SleepAutomationAlarmReceiver.ACTION.equals(action))return "main_alarm";if(SleepAutomationAlarmReceiver.RETRY_ACTION.equals(action))return "retry_alarm";if(SleepAutomationNotificationFactory.RETRY.equals(action))return "notification_retry";if(TEST_ACTION.equals(action))return "manual_test";return "system_restart";}
     static int nextRetryAttempt(int completedAttempt){return completedAttempt<MAX_AUTO_ATTEMPTS?Math.max(1,completedAttempt+1):-1;}
-    static int nextRetryAttempt(int completedAttempt,String reason){return Arrays.asList("queued","running","done","reused","sleep_report_pending").contains(reason)?Math.max(1,completedAttempt):nextRetryAttempt(completedAttempt);}
+    static int nextRetryAttempt(int completedAttempt,String reason){return Arrays.asList("queued","running","done","reused","sleep_report_pending","ocr_pending","report_request_pending").contains(reason)?Math.max(1,completedAttempt):nextRetryAttempt(completedAttempt);}
     static long nextRetry(long now,String reason){if(reason==null||reason.isEmpty()||"SUCCESS".equals(reason))return -1;Calendar c=Calendar.getInstance(SleepAutomationScheduler.BEIJING);c.setTimeInMillis(now);Calendar deadline=(Calendar)c.clone();deadline.set(Calendar.HOUR_OF_DAY,23);deadline.set(Calendar.MINUTE,45);deadline.set(Calendar.SECOND,0);deadline.set(Calendar.MILLISECOND,0);long interval=c.get(Calendar.HOUR_OF_DAY)<9?5L:15L;long next=now+interval*60_000L;return next<deadline.getTimeInMillis()?next:-1;}
     static PendingIntent retryPending(Context c){Intent i=new Intent(c,SleepAutomationAlarmReceiver.class).setAction(SleepAutomationAlarmReceiver.RETRY_ACTION);return PendingIntent.getBroadcast(c,841,i,PendingIntent.FLAG_UPDATE_CURRENT|PendingIntent.FLAG_IMMUTABLE);}
     private void scheduleRetry(String reason){
@@ -65,7 +65,7 @@ public final class SleepAutomationRunnerService extends Service {
         int nextAttempt=nextRetryAttempt(s.attempt,reason);long at=nextAttempt<0?-1:nextRetry(now,reason);
         if(at<0){String terminal=nextAttempt<0?reason:"retry_window_elapsed";states.save(new SleepAutomationSnapshot("FAILED",s.sleepDate,s.mediaUri,s.requestId,Math.max(1,s.attempt),terminal,now));states.setNextRetryAt(-1);notifyFinalResult(false,terminal);return;}
         String stage=s.requestId!=null&&!s.requestId.isEmpty()&&"FAILED".equals(s.stage)?"FAILED":"POLLING";
-        states.save(new SleepAutomationSnapshot(stage,s.sleepDate,s.mediaUri,s.requestId,nextAttempt,reason,now));states.setNextRetryAt(at);keepNotification=true;startForeground(840,notification("POLLING:"+reason));
+        states.save(new SleepAutomationSnapshot(stage,s.sleepDate,s.mediaUri,s.requestId,nextAttempt,reason,now,s.mode));states.setNextRetryAt(at);keepNotification=true;startForeground(840,notification("POLLING:"+reason));
         ((AlarmManager)getSystemService(ALARM_SERVICE)).setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP,at,retryPending(this));
     }
     private String reportStateToday(){String[] secret=new SleepAutomationSecretStore(this).read();if(secret==null)return "unknown";SleepAutomationApiClient api=new SleepAutomationApiClient(getContentResolver());return SleepAutomationApiClient.dateReportState(api.statusByDate(today(),secret[0],secret[1]),today());}
@@ -148,7 +148,7 @@ public final class SleepAutomationRunnerService extends Service {
             if("ok".equals(result.code)){
                 probes.finish(run,"SAVED","",result.candidate.uri,System.currentTimeMillis(),result.image.width,result.image.height);
                 startForeground(840,notification("MEDIA"));
-                if(oneClick){HuaweiSleepAutomationService.openSleepPage();generateReportFromProbe();}
+                if(oneClick){HuaweiSleepAutomationService.openSleepPage();generateReportFromProbe(true);}
                 else SleepAutomationNotificationFactory.showCaptureResult(this,true,"");
             }else{
                 probes.finish(run,"FAILED",result.code,"",0,0,0);keepNotification=true;startForeground(840,notification("FAILED:"+result.code));SleepAutomationNotificationFactory.showCaptureResult(this,false,result.code);
@@ -156,20 +156,64 @@ public final class SleepAutomationRunnerService extends Service {
         }finally{captureInProgress.set(false);stopSelf();}
     }
 
-    private void generateReportFromProbe(){
+    private void generateReportFromProbe(){generateReportFromProbe(false);}
+    private void generateReportFromProbe(boolean validateFirst){
         SleepCaptureProbeStore probes=new SleepCaptureProbeStore(this);SleepCaptureProbeStore.Snapshot probe=probes.load();
         if(!isTodaySavedProbe(probe,today())){notifyFailure("capture_required");stopSelf();return;}
         try(AssetFileDescriptor fd=getContentResolver().openAssetFileDescriptor(Uri.parse(probe.uri),"r")){
             if(fd==null||fd.getLength()<=0){probes.finish(probe,"FAILED","media_unreadable","",0,0,0);notifyFailure("media_unreadable");stopSelf();return;}
         }catch(Exception e){probes.finish(probe,"FAILED","media_unreadable","",0,0,0);notifyFailure("media_unreadable");stopSelf();return;}
-        SleepAutomationStateStore states=new SleepAutomationStateStore(this);SleepAutomationSnapshot media=new SleepAutomationSnapshot("MEDIA",probe.date,probe.uri,"",1,"",System.currentTimeMillis());states.save(media);transfer(media,states);
+        SleepAutomationStateStore states=new SleepAutomationStateStore(this);SleepAutomationSnapshot media=new SleepAutomationSnapshot("MEDIA",probe.date,probe.uri,"",1,"",System.currentTimeMillis(),validateFirst?"ocr":"");states.save(media);transfer(media,states);
     }
 
     private void transfer(SleepAutomationSnapshot current,SleepAutomationStateStore states){
+        if(current.mode!=null&&!current.mode.isEmpty()){transferSequential(current,states);return;}
         String[] secret=new SleepAutomationSecretStore(this).read();if(secret==null){states.save(new SleepAutomationSnapshot("FAILED",current.sleepDate,current.mediaUri,current.requestId,current.attempt,"login_required",System.currentTimeMillis()));scheduleRetry("login_required");stopSelf();return;}SleepAutomationApiClient api=new SleepAutomationApiClient(getContentResolver());
         if("retry_report".equals(nextNetworkAction(current))){SleepAutomationApiClient.Job retry=SleepAutomationApiClient.uploadJob(api.retryReport(current.sleepDate,secret[0],secret[1]));if(retry.requestId.isEmpty()){String reason=retryableReportError(retry.state)?retry.state:current.reason;states.save(new SleepAutomationSnapshot("FAILED",current.sleepDate,current.mediaUri,current.requestId,current.attempt,reason,System.currentTimeMillis()));scheduleRetry(retry.state);stopSelf();return;}current=new SleepAutomationSnapshot("UPLOADED",current.sleepDate,current.mediaUri,retry.requestId,current.attempt,retry.state,System.currentTimeMillis());states.save(current);}
         if("upload".equals(nextNetworkAction(current))){SleepAutomationApiClient.Job job=SleepAutomationApiClient.uploadJob(api.upload(current.mediaUri,current.sleepDate,secret[0],secret[1]));if(job.requestId.isEmpty()){String stage="POLLING".equals(outcome(job.state,false))?"POLLING":"FAILED";states.save(new SleepAutomationSnapshot(stage,current.sleepDate,current.mediaUri,"",current.attempt,job.state,System.currentTimeMillis()));scheduleRetry(job.state);stopSelf();return;}current=new SleepAutomationSnapshot("UPLOADED",current.sleepDate,current.mediaUri,job.requestId,current.attempt,job.state,System.currentTimeMillis());states.save(current);}
         SleepAutomationApiClient.Job status=SleepAutomationApiClient.statusJob(api.status(current.requestId,current.sleepDate,secret[0],secret[1]),current.sleepDate);String stage=outcome(status.state,status.reportReady),reason=("done".equals(status.state)||"reused".equals(status.state))&&!status.reportReady?"sleep_report_pending":status.state;states.advance(new SleepAutomationSnapshot(stage,current.sleepDate,current.mediaUri,current.requestId,current.attempt,"SUCCESS".equals(stage)?"":reason,System.currentTimeMillis()));if("SUCCESS".equals(stage))notifyFinalResult(true,"");else scheduleRetry(reason);stopSelf();
+    }
+
+    private SleepAutomationSnapshot phase(SleepAutomationSnapshot s,String stage,String id,String reason,String mode){
+        return new SleepAutomationSnapshot(stage,s.sleepDate,s.mediaUri,id,s.attempt,reason,System.currentTimeMillis(),mode);
+    }
+    private void failSequential(SleepAutomationStateStore states,SleepAutomationSnapshot s,String reason){
+        states.save(phase(s,"FAILED",s.requestId,reason,s.mode));keepNotification=true;
+        startForeground(840,notification("FAILED:"+reason));stopSelf();
+    }
+    private SleepAutomationApiClient.Job awaitStatus(SleepAutomationApiClient api,SleepAutomationSnapshot s,String[] secret){
+        SleepAutomationApiClient.Job result=null;
+        for(int i=0;i<15;i++){
+            result=SleepAutomationApiClient.statusJob(api.status(s.requestId,s.sleepDate,secret[0],secret[1]),s.sleepDate);
+            if(!"queued".equals(result.state)&&!"running".equals(result.state))break;
+            if(i<14)try{Thread.sleep(1500);}catch(InterruptedException e){Thread.currentThread().interrupt();break;}
+        }
+        return result;
+    }
+    private void transferSequential(SleepAutomationSnapshot s,SleepAutomationStateStore states){
+        String[] secret=new SleepAutomationSecretStore(this).read();
+        if(secret==null){failSequential(states,s,"login_required");return;}
+        SleepAutomationApiClient api=new SleepAutomationApiClient(getContentResolver());
+        if("ocr".equals(s.mode)){
+            if(s.requestId.isEmpty()){
+                if("ready".equals(SleepAutomationApiClient.dateReportState(api.statusByDate(s.sleepDate,secret[0],secret[1]),s.sleepDate))){states.save(phase(s,"SUCCESS","","","report"));notifyFinalResult(true,"");stopSelf();return;}
+                SleepAutomationApiClient.Job upload=SleepAutomationApiClient.uploadJob(api.upload(s.mediaUri,s.sleepDate,secret[0],secret[1],false));
+                if(upload.requestId.isEmpty()){if(Arrays.asList("timeout","network_error","server_error").contains(upload.state)){scheduleRetry("ocr_pending");stopSelf();}else failSequential(states,s,upload.state);return;}
+                s=phase(s,"POLLING",upload.requestId,"ocr_pending","ocr");states.save(s);
+            }
+            SleepAutomationApiClient.Job ocr=awaitStatus(api,s,secret);
+            if(!"uploaded".equals(ocr.state)){if(Arrays.asList("queued","running","timeout","network_error","server_error").contains(ocr.state)){scheduleRetry("ocr_pending");stopSelf();}else failSequential(states,s,ocr.state);return;}
+            s=phase(s,"UPLOADED",s.requestId,"","ocr_ready");states.save(s);
+        }
+        if("ocr_ready".equals(s.mode)){
+            SleepAutomationApiClient.Job report=SleepAutomationApiClient.uploadJob(api.quickReport(s.sleepDate,secret[0],secret[1]));
+            if(report.requestId.isEmpty()){if(Arrays.asList("timeout","network_error","server_error").contains(report.state)){scheduleRetry("report_request_pending");stopSelf();}else failSequential(states,s,report.state);return;}
+            s=phase(s,"POLLING",report.requestId,"sleep_report_pending","report");states.save(s);
+        }
+        SleepAutomationApiClient.Job report=awaitStatus(api,s,secret);
+        if(report.reportReady){states.save(phase(s,"SUCCESS",s.requestId,"","report"));notifyFinalResult(true,"");stopSelf();return;}
+        if(Arrays.asList("queued","running","uploaded","done","reused","timeout","network_error","server_error").contains(report.state)){scheduleRetry("sleep_report_pending");stopSelf();return;}
+        failSequential(states,s,report.state);
     }
 
     @Override public android.os.IBinder onBind(Intent intent) { return null; }
