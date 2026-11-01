@@ -26,9 +26,9 @@ const rules = [
 const labels = { no_sugary_drinks: '不喝含糖饮料', no_refined_staples: '不吃精米白面', no_snacks: '不吃零食' }
 const definition = gym => ({ dietRulesValid: true, diet: rules.map(ruleKey => ({ ruleKey, content: labels[ruleKey] || ruleKey, time: '12:00' })),
   exercisePlan: { 周二: { label: '训练', color: '#000', gym, rain: gym }, 周三: { label: '训练', color: '#000', gym, rain: gym }, 日: { label: '休息', color: '#000', gym: [], rain: [] } }, progress: [] })
-const render = (date, day, checkins, gym = [{}], locked = false) => renderToStaticMarkup(React.createElement(ExercisePanel, {
+const render = (date, day, checkins, gym = [{}], locked = false, dietMigrated = false) => renderToStaticMarkup(React.createElement(ExercisePanel, {
   date, day, rain: false, setRain: () => {}, states: {}, setState: () => {}, dietCheckins: checkins,
-  setDietState: () => {}, planVersion: 'v5', planDefinition: definition(gym), locked,
+  setDietState: () => {}, planVersion: 'v5', planDefinition: definition(gym), locked, dietMigrated,
 }))
 const historical = render('2026-10-27', '周二', Object.fromEntries(['protein_at_lunch_and_dinner', 'vegetables_at_lunch_and_dinner', 'controlled_staple_and_no_sugary_drink'].map(key => [key, { status: 'pending' }])), [{}], true)
 assert.match(historical, /饮食约束 · 50分/)
@@ -41,6 +41,8 @@ assert.ok(current.indexOf('不喝含糖饮料') < current.indexOf('不吃精米�
 assert.doesNotMatch(current, /disabled=""/)
 assert.match(render('2026-10-28', '周三', {}), /该日新规则未生效或记录待同步，暂不可打卡/)
 assert.equal((render('2026-10-25', '日', {}).match(/class="diet-check-row/g) || []).length, 0)
+const migrated = render('2026-11-02', '周一', {}, [{}], false, true)
+assert.doesNotMatch(migrated, /饮食约束|diet-check-row/, 'migrated training day must show exercise only')
 const hook = readFileSync(new URL('../../hooks/useExercise.ts', import.meta.url), 'utf8')
 const helperSource = hook.match(/const V5_RULE_KEYS=.+\nconst hasLatestV5Plan=.+/g)?.[0]
 assert.ok(helperSource, 'V5 completeness check exists')

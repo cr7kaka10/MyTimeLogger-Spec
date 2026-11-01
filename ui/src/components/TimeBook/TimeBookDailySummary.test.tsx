@@ -38,6 +38,12 @@ const v5Plan = { diet: v5Rules.map(([ruleKey, content]) => ({ ruleKey, content, 
 const v5Base = { ...base, date: '2026-10-27', planVersion: 'v5', planDefinition: v5Plan, planReady: true, diary: null, ledger: [],
   dietCheckins: Object.fromEntries(v5Rules.map(([key], index) => [key, { status: index === 0 ? 'completed' : index === 1 ? 'failed' : 'pending' }])) }
 const v5Items = buildDailySummary(v5Base).filter(item => item.key.startsWith('diet-'))
+const migrationKeys = ['no_sugary_drinks', 'no_refined_staples', 'no_snacks', 'breakfast_on_time', 'lunch_on_time', 'dinner_on_time']
+const migratedHabits = migrationKeys.map((key, index) => ({ id: `diet-v5:${key}`, name: key, source: 'system', repeatRule: 'daily', status: index < 3 ? 2 : 0 }))
+const migratedItems = buildDailySummary({ ...v5Base, date: '2026-11-02', dailyHabits: migratedHabits })
+assert(migratedItems.filter(item => item.key.startsWith('habit-diet-v5:')).length === 6, 'new diet day must list six system habits')
+assert(!migratedItems.some(item => item.key.startsWith('diet-')), 'new diet day must not repeat old exercise rules')
+assert(migratedItems.filter(item => item.key.startsWith('habit-diet-v5:')).reduce((sum, item) => sum + Number(item.subLabel?.split('/')[1]?.replace('分', '') || 0), 0) === 50, 'migrated diet points must total 50')
 assert(v5Items.length === 6 && v5Rules.every(([key]) => v5Items.some(item => item.key === `diet-${key}`)), 'V5 summary must include all six current plan rules')
 assert(v5Items.find(item => item.key === 'diet-breakfast_on_time')?.label === '08:30 前 按时吃早餐', 'V5 summary must use the exercise plan label')
 assert(v5Rules.every(([key], index) => v5Items.find(item => item.key === `diet-${key}`)?.status === (index === 0 ? 'completed' : index === 1 ? 'failed' : 'pending')), 'V5 summary must use the selected-date facts')
