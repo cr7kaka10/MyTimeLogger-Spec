@@ -6,7 +6,9 @@ import {
 import { useExercise } from '../hooks/useExercise'
 import { beijingDateHour, dateForTab, todayTab, weekOfYear } from '../utils/exerciseDate'
 import { calcScore, formatScore } from '../utils/exerciseScore'
-import { isAuthoritativeExercisePlan, projectAuthoritativeScore, projectV5ScoreView } from '../utils/exerciseAuthoritativeScore'
+import { currentV5ExerciseScore, isAuthoritativeExercisePlan, projectAuthoritativeScore, projectV5ScoreView } from '../utils/exerciseAuthoritativeScore'
+import { useSyncRefresh } from '../hooks/useEventRefresh'
+import { getDatabase } from '../db'
 import { sortExercisePlanVersions } from '../utils/exercisePlanVersionOrder'
 import { ExercisePanel } from '../components/Exercise/ExercisePanel'
 import { ExerciseHistory } from '../components/Exercise/ExerciseHistory'
@@ -53,6 +55,13 @@ export const ExercisePage = memo(({ theme, onToggleTheme, onStartFocus }: Props)
   const [showVersions, setShowVersions] = useState(false)
   const [beijingNow, setBeijingNow] = useState(() => beijingDateHour())
   const date = dateForTab(day)
+  const syncRefresh = useSyncRefresh()
+  const [dietMigrated, setDietMigrated] = useState(false)
+  useEffect(() => {
+    let active = true
+    void getDatabase().then(db => { if (active) setDietMigrated(db.getHabitWindowsForDate(date).has('diet-v5:no_snacks')) })
+    return () => { active = false }
+  }, [date, syncRefresh])
   const x = useExercise(date)
   const def = x.planDefinition || EMPTY_PLAN_DEFINITION
   const score = useMemo(() => calcScore(day, date, rain, x.checkins, def), [day, date, rain, x.checkins, def])
@@ -91,15 +100,16 @@ export const ExercisePage = memo(({ theme, onToggleTheme, onStartFocus }: Props)
   }, [authoritative, x.settlement?.score_snapshot])
   const actualScore = authoritative ? projectAuthoritativeScore(authoritativeScore, x.planVersion as 'v4' | 'v5') : null
   const v5ScoreView = projectV5ScoreView(authoritativeScore)
-  const hasCurrentV5Score = x.planVersion === 'v5' && v5ScoreView.current
+  const hasCurrentV5Score = x.planVersion === 'v5' && v5ScoreView.current && (!dietMigrated || v5ScoreView.planScore.cats['饮食约束'].m === 0)
   const historicalV5Score = x.planVersion === 'v5' ? v5ScoreView.historicalScore : null
-  const displayScore = x.planVersion === 'v5' ? v5ScoreView.planScore : authoritative ? actualScore! : (isPastDate && savedScore ? savedScore : score)
+  const displayScore = x.planVersion === 'v5' ? dietMigrated && !hasCurrentV5Score ? currentV5ExerciseScore() : v5ScoreView.planScore : authoritative ? actualScore! : (isPastDate && savedScore ? savedScore : score)
+  const scoreMaximum = dietMigrated && x.planVersion === 'v5' ? 50 : 100
   const bodyPoints = displayScore.cats['身体记录']?.m === 0 ? 0 : (def as any).bodyPoints
   const displayScoreCategories = useMemo(() => {
     const cats = displayScore.cats || {}
     const ordered = (def.categoryOrder || []).filter(c => cats[c])
-    return [...ordered, ...Object.keys(cats).filter(c => !ordered.includes(c))]
-  }, [def.categoryOrder, displayScore])
+    return [...ordered, ...Object.keys(cats).filter(c => !ordered.includes(c))].filter(c => !dietMigrated || cats[c]?.m > 0)
+  }, [def.categoryOrder, displayScore, dietMigrated])
 
   useEffect(() => {
     setWeight(log?.weight == null ? '' : String(log.weight))
@@ -221,8 +231,8 @@ export const ExercisePage = memo(({ theme, onToggleTheme, onStartFocus }: Props)
           {x.planVersion === 'v5' && !hasCurrentV5Score && <p>{isRestPlanDay ? '休息日不计分；下方为第五版计划满分。' : '该日未按新版结算；下方为当前计划满分，实得分不计入新版进度条。'}</p>}
           {historicalV5Score && <p>历史实际结算：{formatScore(historicalV5Score.total)}分（训练 {formatScore(historicalV5Score.cats['运动训练'].s)}/{formatScore(historicalV5Score.cats['运动训练'].m)}，饮食 {formatScore(historicalV5Score.cats['饮食约束'].s)}/{formatScore(historicalV5Score.cats['饮食约束'].m)}，身体 {formatScore(historicalV5Score.cats['身体记录'].s)}/{formatScore(historicalV5Score.cats['身体记录'].m)}）。</p>}
           <div className="score-body">
-            <div className="score-ring" style={{ background: `conic-gradient(${displayScore.total >= 85 ? '#3ab85a' : displayScore.total >= 65 ? '#e8a63a' : displayScore.total >= 45 ? '#e8523a' : '#a3a1b0'} ${displayScore.total * 3.6}deg,var(--border) 0)` }}>
-              <span><b>{x.planVersion === 'v5' && !hasCurrentV5Score ? '—' : formatScore(displayScore.total)}</b><small>/ 100分</small></span>
+            <div className="score-ring" style={{ background: `conic-gradient(${displayScore.total / scoreMaximum >= .85 ? '#3ab85a' : displayScore.total / scoreMaximum >= .65 ? '#e8a63a' : displayScore.total / scoreMaximum >= .45 ? '#e8523a' : '#a3a1b0'} ${displayScore.total / scoreMaximum * 360}deg,var(--border) 0)` }}>
+              <span><b>{x.planVersion === 'v5' && !hasCurrentV5Score ? '—' : formatScore(displayScore.total)}</b><small>/ {scoreMaximum}分</small></span>
             </div>
             <div className="score-cats">
               {displayScoreCategories.map(c => {
@@ -232,7 +242,7 @@ export const ExercisePage = memo(({ theme, onToggleTheme, onStartFocus }: Props)
             </div>
           </div>
         </section>
-        <ExercisePanel day={day} date={date} rain={rain} setRain={next => { setRain(next); void x.setVariant(next ? 'rain' : 'gym') }} states={x.checkins} setState={x.setState} dietCheckins={x.dietCheckins} setDietState={x.setDietState} planVersion={x.planVersion} planDefinition={def} locked={x.locked} />
+        <ExercisePanel day={day} date={date} rain={rain} setRain={next => { setRain(next); void x.setVariant(next ? 'rain' : 'gym') }} states={x.checkins} setState={x.setState} dietCheckins={x.dietCheckins} setDietState={x.setDietState} planVersion={x.planVersion} planDefinition={def} locked={x.locked} dietMigrated={dietMigrated} />
         <ExerciseHistory rows={x.history} />
       </main>}
     </div>

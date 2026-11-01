@@ -9,7 +9,7 @@ import { isAuthoritativeExercisePlan } from '../../utils/exerciseAuthoritativeSc
 type DbItem = Item & { id: string; sort_order: number }
 const REST_DAY_DIET_EXEMPTION_FROM = '2026-10-26'
 
-export function ExercisePanel({ day, date, rain, setRain, states, setState, dietCheckins, setDietState, planVersion, planDefinition, locked }: {
+export function ExercisePanel({ day, date, rain, setRain, states, setState, dietCheckins, setDietState, planVersion, planDefinition, locked, dietMigrated }: {
   day: PlanDay; date: string; rain: boolean; setRain: (x: boolean) => void
   states: Record<string, ExerciseState>
   setState: (key: string, status: number, id?: string, name?: string) => void
@@ -18,6 +18,7 @@ export function ExercisePanel({ day, date, rain, setRain, states, setState, diet
   planVersion: string
   planDefinition: ExercisePlanDefinition
   locked?: boolean
+  dietMigrated?: boolean
 }) {
   const [dbItems, setDbItems] = useState<DbItem[]>([])
   const plan = planDefinition.exercisePlan[day]
@@ -46,7 +47,7 @@ export function ExercisePanel({ day, date, rain, setRain, states, setState, diet
   const points = authoritativePlan
     ? dbItems.map(item => Number((item as any).scorePoints || 0))
     : exerciseItemPoints(dbItems, planDefinition.exercisePoints)
-  return <>{authoritativePlan && !isRestDay && <><div className="ex-section">饮食约束 · {dietMaximum}分</div><div className="ex-card">{dietRules.map(rule => {
+  return <>{authoritativePlan && !isRestDay && !dietMigrated && <><div className="ex-section">饮食约束 · {dietMaximum}分</div><div className="ex-card">{dietRules.map(rule => {
     const key = rule.ruleKey?.trim() || '', fact = dietCheckins[key], invalid = !planDefinition.dietRulesValid || !key || (latestV5 && !fact), status = fact?.status || 'pending', completed = status === 'completed', failed = status === 'failed'
     const maximum = pointsForDietRule(key), overdue=failed&&['not_completed_before_midnight','meal_window_passed'].includes(fact?.failure_reason)
     return <button type="button" key={key || rule.content} aria-pressed={completed} disabled={locked || invalid} className={`diet-check-row ${completed ? 'done' : failed ? 'failed' : ''}`} onClick={() => { if (!invalid) void setDietState(key,completed||failed?'pending':'completed') }} onContextMenu={event => { if (locked||invalid) return;event.preventDefault();void setDietState(key,'failed') }}>

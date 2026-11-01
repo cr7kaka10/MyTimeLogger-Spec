@@ -8,6 +8,7 @@ const v5RestLimits = { 运动训练: 0, 饮食约束: 0, 身体记录: 0 }
 const samePoints = (left: number, right: number) => Math.abs(left - right) < 1e-6
 export const isAuthoritativeExercisePlan = (version: string): version is AuthoritativePlanVersion => version === 'v4' || version === 'v5'
 export const currentV5PlanScore = (): AuthoritativeScore => zero('v5', true)
+export const currentV5ExerciseScore = (): AuthoritativeScore => zero('v5', false, false, true)
 export const isCurrentV5Score = (score: AuthoritativeScore): boolean =>
   score.plan_version === 'v5' && score.cats['运动训练']?.m === 50 && [0, 50].includes(Number(score.cats['饮食约束']?.m)) && score.cats['身体记录']?.m === 0
 const zero = (planVersion: AuthoritativePlanVersion, currentV5Policy = false, currentV5Rest = false, exerciseOnly = false): AuthoritativeScore => ({
