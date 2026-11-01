@@ -68,6 +68,11 @@ public final class DailyWidgetCommandReceiver extends BroadcastReceiver {
         if (command == null) return;
         DailyWidgetProvider.refresh(context);
         DailyWidgetBridge bridge = DailyWidgetBridge.current();
+        if ("habit".equals(kind) && "complete".equals(action)) {
+            openChecklist(context);
+            if (bridge != null && bridge.isReady()) bridge.dispatch(command);
+            return;
+        }
         if (bridge != null && bridge.isReady()) { bridge.dispatch(command); return; }
         String commandId = command.get("commandId").getAsString();
         if (!IN_FLIGHT.add(commandId)) return;

@@ -11,12 +11,14 @@ import type { UseHabitsReturn } from '../../hooks/useHabits'
 import type { UseTimeBookReturn } from '../../hooks/useTimeBook'
 import { dateToShanghaiDateString } from '../../utils/shanghaiDate'
 import { syncAfterDateSwitch } from '../../db'
+import { dismissDailyWidgetHabitJournal, pendingDailyWidgetHabitJournals } from '../../platform/dailyWidget'
 
 interface UnifiedChecklistPageProps {
   habits: UseHabitsReturn
   timeBook: UseTimeBookReturn
   timer: any
   onNavigate: (tab: any) => void
+  verifiedUserId?: string | number | null
 }
 
 export const UnifiedChecklistPage = memo(({
@@ -24,6 +26,7 @@ export const UnifiedChecklistPage = memo(({
   timeBook,
   timer,
   onNavigate,
+  verifiedUserId,
 }: UnifiedChecklistPageProps) => {
   // 状态管理：月历展开状态（false=周历，true=月历）
   const [isCalendarExpanded, setIsCalendarExpanded] = useState(false)
@@ -64,6 +67,27 @@ export const UnifiedChecklistPage = memo(({
     selectDateWithSync(new Date(year, month - 1, day))
     setIsCalendarExpanded(false)
   }, [selectDateWithSync])
+  useEffect(() => {
+    if (verifiedUserId == null || journal) return
+    const consume = () => {
+      for (const intent of pendingDailyWidgetHabitJournals()) {
+        if (intent.userId !== String(verifiedUserId) || intent.date !== dateToShanghaiDateString(new Date())) {
+          dismissDailyWidgetHabitJournal(intent.commandId); continue
+        }
+        if (habits.selectedDate !== intent.date) { returnToToday(); return }
+        const habit = habits.habits.find(item => String(item.id) === intent.habitId)
+        const checkin = habits.todayCheckins.find(item => String(item.habit_id) === intent.habitId)
+        if (!habit || !checkin) return
+        dismissDailyWidgetHabitJournal(intent.commandId)
+        if (Number(checkin.status) === 2 && habit.journal_prompt_enabled !== 0)
+          setJournal({ habitId: intent.habitId, name: habit.name || '习惯', date: intent.date })
+        return
+      }
+    }
+    window.addEventListener('mtl:daily-widget-habit-journal', consume)
+    consume()
+    return () => window.removeEventListener('mtl:daily-widget-habit-journal', consume)
+  }, [verifiedUserId, journal, habits, returnToToday])
   const syncTone = checklist.syncStatus?.includes('失败')
     ? 'border-red-100 bg-red-50 text-red-600'
     : checklist.syncStatus?.includes('同步中')

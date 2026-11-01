@@ -398,6 +398,7 @@ const AppSession = ({ initialAuthenticated, onAccountActivated }: { initialAuthe
     if (activeTab === 'checklist') return (
       <UnifiedChecklistPage
         habits={habits}
+        verifiedUserId={settings.selectedEnvironmentProfile.verifiedUserId}
         timeBook={timeBook}
         timer={timer}
         onNavigate={handleNavigate}
@@ -408,6 +409,7 @@ const AppSession = ({ initialAuthenticated, onAccountActivated }: { initialAuthe
     return (
       <UnifiedChecklistPage
         habits={habits}
+        verifiedUserId={settings.selectedEnvironmentProfile.verifiedUserId}
         timeBook={timeBook}
         timer={timer}
         onNavigate={handleNavigate}

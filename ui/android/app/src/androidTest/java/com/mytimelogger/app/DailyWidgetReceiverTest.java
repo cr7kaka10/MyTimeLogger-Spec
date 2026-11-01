@@ -234,12 +234,12 @@ public class DailyWidgetReceiverTest {
         tap("habit", "habit-1", "menu_open"); awaitMenu(true);
         context.sendBroadcast(DailyWidgetProvider.refreshIntent(context)); awaitMenu(false);
     }
-    @Test public void habitCheckboxDispatchesCompleteWithoutOpeningActivity() throws Exception {
+    @Test public void habitCheckboxOpensChecklistAndDispatchesComplete() throws Exception {
         AtomicReference<String> script = new AtomicReference<>();
         DailyWidgetBridge bridge = new DailyWidgetBridge(context, script::set);
         DailyWidgetBridge.attach(bridge); bridge.setForeground(true); bridge.ready();
         Instrumentation instrumentation = InstrumentationRegistry.getInstrumentation();
-        Instrumentation.ActivityMonitor monitor = instrumentation.addMonitor(MainActivity.class.getName(), null, false);
+        Instrumentation.ActivityMonitor monitor = instrumentation.addMonitor(MainActivity.class.getName(), null, true);
         try {
             tap("habit", "habit-1", "complete");
             for (int i = 0; i < 60 && script.get() == null; i++) Thread.sleep(100);
@@ -249,8 +249,26 @@ public class DailyWidgetReceiverTest {
                     .getAsJsonObject("habit:habit-1:" + DailyWidgetStore.today());
             new DailyWidgetStore(context).ack(command.get("commandId").getAsString(), "applied");
             assertFalse(new DailyWidgetRepository(context).load().stream().anyMatch(row -> "habit-1".equals(row.id)));
-            assertEquals(0, monitor.getHits());
+            for (int i = 0; i < 60 && monitor.getHits() < 1; i++) Thread.sleep(100);
+            assertEquals(1, monitor.getHits());
         } finally { bridge.close(); instrumentation.removeMonitor(monitor); }
+    }
+    @Test public void coldHabitTapKeepsOnePendingCommandUntilAppIsReady() throws Exception {
+        Instrumentation instrumentation = InstrumentationRegistry.getInstrumentation();
+        Instrumentation.ActivityMonitor monitor = instrumentation.addMonitor(MainActivity.class.getName(), null, true);
+        try {
+            tap("habit", "habit-1", "complete");
+            String key = "habit:habit-1:" + DailyWidgetStore.today();
+            for (int i = 0; i < 60 && !new DailyWidgetStore(context).pending().has(key); i++) Thread.sleep(100);
+            JsonObject first = new DailyWidgetStore(context).pending().getAsJsonObject(key);
+            assertNotNull(first);
+            tap("habit", "habit-1", "complete");
+            for (int i = 0; i < 60 && monitor.getHits() < 2; i++) Thread.sleep(100);
+            assertEquals(first.get("commandId").getAsString(), new DailyWidgetStore(context).pending()
+                    .getAsJsonObject(key).get("commandId").getAsString());
+            assertEquals(1, new DailyWidgetStore(context).pending().size());
+            assertEquals(2, monitor.getHits());
+        } finally { instrumentation.removeMonitor(monitor); }
     }
     @Test public void backgroundTaskCompletesWithoutOpeningActivity() throws Exception {
         Instrumentation instrumentation = InstrumentationRegistry.getInstrumentation();
