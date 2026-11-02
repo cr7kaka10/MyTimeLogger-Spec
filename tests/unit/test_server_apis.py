@@ -969,6 +969,8 @@ def test_sleep_serves_mobile_sleep_page_and_root_is_not_sleep_entry(client_with_
 
 def test_exercise_page_and_server_checkin_flow(client_with_db, monkeypatch):
     client, store = client_with_db
+    monkeypatch.setattr(server_module.SampleDataInitializationService, "_ensure_v6", lambda *args: None)
+    monkeypatch.setattr(server_module, "_ensure_exercise_v6_for_user", lambda _user: None)
     fixed_now = datetime(2026, 7, 10, 8, 0, 0, tzinfo=server_module.timezone(server_module.timedelta(hours=8)))
     monkeypatch.setattr(server_module, "_beijing_now", lambda: fixed_now)
     headers = _login_headers(client, "exercise_page_user")
@@ -1450,8 +1452,10 @@ def test_isolated_phone_to_pc_body_metric_http_sync(client_with_db, monkeypatch)
     assert conflict.json()["operation_results"][0]["canonical_record"]["weight"] == 99
 
 
-def test_exercise_checkin_persists_completed_time(client_with_db):
+def test_exercise_checkin_persists_completed_time(client_with_db, monkeypatch):
     client, store = client_with_db
+    monkeypatch.setattr(server_module.SampleDataInitializationService, "_ensure_v6", lambda *args: None)
+    monkeypatch.setattr(server_module, "_ensure_exercise_v6_for_user", lambda _user: None)
     headers = _login_headers(client, "exercise_checkin_time_user")
     today = server_module._beijing_today()
     resp = client.post(
@@ -1480,6 +1484,21 @@ def test_exercise_checkin_persists_completed_time(client_with_db):
             "SELECT COUNT(*) FROM server_reward_ledger WHERE user_id=? AND source_type='exercise_checkin'", (1,)
         ).fetchone()[0]
     assert reward_count == 0
+
+
+def test_login_exposes_v6_and_six_diet_habits_without_opening_exercise(client_with_db):
+    client, store = client_with_db
+    headers = _login_headers(client, "exercise_v6_visible_user")
+    with store._connect() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM server_habits WHERE user_id=1 AND source='system' AND id LIKE 'diet-v5:%'").fetchone()[0] == 6
+        assert conn.execute("SELECT COUNT(*) FROM server_habit_windows WHERE user_id=1 AND habit_id LIKE 'diet-v5:%'").fetchone()[0] == 6
+        assert conn.execute("SELECT COUNT(*) FROM server_exercise_plan_versions WHERE user_id=1 AND version='v6'").fetchone()[0] == 1
+    today = server_module._beijing_today()
+    state = client.get(f"/api/exercise/state?date={today}", headers=headers)
+    assert state.status_code == 200
+    assert state.json()["plan_version"] == "v6"
+    assert state.json()["plan_definition"]["diet"] == []
+    assert len([row for row in client.get("/api/habits", headers=headers).json()["habits"] if str(row["id"]).startswith("diet-v5:")]) == 6
 
 
 def test_server_sample_data_initialization_is_idempotent_after_login(client_with_db):

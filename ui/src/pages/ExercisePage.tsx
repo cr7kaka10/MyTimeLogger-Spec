@@ -209,6 +209,7 @@ export const ExercisePage = memo(({ theme, onToggleTheme, onStartFocus }: Props)
         </main>
       ) : <main>
         {x.planVersion === 'v5' && x.authorityStatus === 'error' && <p className="sync-warning">所选日期记录同步失败，当前展示已缓存的第五版计划。<button type="button" onClick={x.retryAuthority}>重试同步</button></p>}
+        {x.planVersion === 'v6' && x.v6EffectiveDate && date < x.v6EffectiveDate && <p className="sync-warning" role="status">已显示第六版完整训练计划。该账号从 {x.v6EffectiveDate} 起按 V6 打卡；当前日期已有第五版记录，V6 仅供查看。</p>}
         <section className="record-card">
           <label>{x.planVersion === 'v6' ? '运动打卡记录' : x.locked ? '历史评分已固定' : '今日数据记录'}</label>
           {x.planVersion !== 'v6' && <div id="exercise-body-metrics" className="body-metrics">
