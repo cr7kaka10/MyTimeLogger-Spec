@@ -2290,6 +2290,7 @@ async def register(request: Request):
         user_id = store.verify_user(username, password)
         if user_id:
             _ensure_sample_data_for_user(user_id)
+            _ensure_diet_habits(user_id)
             _bootstrap_private_config_for_user(user_id)
         logger.info(f"🆕 New user registered: {username}")
         return {"status": "ok", "msg": "Registration successful"}
@@ -2306,6 +2307,7 @@ async def login(request: Request):
     user_id = store.verify_user(username, password)
     if user_id:
         _ensure_sample_data_for_user(user_id)
+        _ensure_diet_habits(user_id)
         _bootstrap_private_config_for_user(user_id)
         token = store.create_session(user_id)
         store.cleanup_expired_sessions()
@@ -4041,12 +4043,12 @@ diet_habit_migration_service = DietHabitMigrationService(_exercise_v4_record_cha
 
 def _ensure_diet_habits(user_id: int | None = None) -> set[int]:
     changed = set()
-    today, now = _beijing_today(), _beijing_now()
+    now = _beijing_now()
     with store._transact() as conn:
         users = [user_id] if user_id is not None else [int(row[0]) for row in conn.execute("SELECT id FROM users")]
         for owner in users:
             diet_habit_migration_service.switch_date(conn, owner, now)
-            if diet_habit_migration_service.ensure_day(conn, owner, today, now):
+            if diet_habit_migration_service.ensure_definitions(conn, owner, now):
                 changed.add(owner)
     for owner in changed:
         sync_hub._notify_clients(["habits", "habit_windows"], owner)

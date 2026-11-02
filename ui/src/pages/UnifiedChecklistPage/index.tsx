@@ -271,6 +271,7 @@ export const UnifiedChecklistPage = memo(({
       {/* 习惯分组（未完成） */}
       <HabitSection
         habits={habits.habits}
+        dietCatalogHabits={habits.dietCatalogHabits}
         ignoredHabits={habits.ignoredHabits}
         onSetIgnored={habits.setHabitIgnored}
         todayCheckins={habits.todayCheckins}

@@ -9,6 +9,7 @@ import { dateToShanghaiDateString } from '../utils/shanghaiDate'
 
 export interface UseHabitsReturn {
   habits: Habit[]
+  dietCatalogHabits: Habit[]
   todayCheckins: HabitCheckin[]
   ignoredHabits: Habit[]
   setHabitIgnored: (habitId: number | string, ignore: boolean) => Promise<boolean>
@@ -40,6 +41,7 @@ export function timedHabitBlock(habit: Habit, date: string, status: number, now 
 
 export const useHabits = (): UseHabitsReturn => {
   const [habits, setHabits] = useState<Habit[]>([])
+  const [dietCatalogHabits, setDietCatalogHabits] = useState<Habit[]>([])
   const [todayCheckins, setTodayCheckins] = useState<HabitCheckin[]>([])
   const [ignoredHabits, setIgnoredHabits] = useState<Habit[]>([])
   const [streakMap, setStreakMap] = useState<Record<number | string, number>>({})
@@ -58,6 +60,12 @@ export const useHabits = (): UseHabitsReturn => {
       // 获取所有习惯（不按日期过滤，习惯每天都显示）
       const all = db.getHabits() as any[]
       const windows = db.getHabitWindowsForDate(selectedDate)
+      const definitions = db.getHabitWindowDefinitions()
+      setDietCatalogHabits(all.filter(h => h.source === 'system' && String(h.id).startsWith('diet-v5:')).map(h => ({
+        ...h, window_effective_from: definitions.get(String(h.id))?.effective_from,
+        window_start_minute: definitions.get(String(h.id))?.start_minute ?? null,
+        window_end_minute: definitions.get(String(h.id))?.end_minute ?? null,
+      })))
       for (const habit of all) {
         const window = windows.get(String(habit.id))
         habit.window_start_minute = window?.start_minute ?? null
@@ -206,9 +214,9 @@ export const useHabits = (): UseHabitsReturn => {
 
   return useMemo(
     () => ({
-      habits, todayCheckins, ignoredHabits, setHabitIgnored, selectedDate, setSelectedDate, streakMap, weeklyMap,
+      habits, dietCatalogHabits, todayCheckins, ignoredHabits, setHabitIgnored, selectedDate, setSelectedDate, streakMap, weeklyMap,
       toggleCheckin, habitCommandStatus, retryHabitCheckin, addHabit, deleteHabit,
     }),
-    [habits, todayCheckins, ignoredHabits, setHabitIgnored, selectedDate, setSelectedDate, streakMap, weeklyMap, toggleCheckin, habitCommandStatus, retryHabitCheckin, addHabit, deleteHabit],
+    [habits, dietCatalogHabits, todayCheckins, ignoredHabits, setHabitIgnored, selectedDate, setSelectedDate, streakMap, weeklyMap, toggleCheckin, habitCommandStatus, retryHabitCheckin, addHabit, deleteHabit],
   )
 }

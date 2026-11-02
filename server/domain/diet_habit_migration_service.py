@@ -37,13 +37,17 @@ class DietHabitMigrationService:
     def ensure_day(self, conn, user_id, date, now=None):
         if not self.active(conn, user_id, date) or is_exercise_rest_day(conn, user_id, "v5", date):
             return False
+        return self.ensure_definitions(conn, user_id, now)
+
+    def ensure_definitions(self, conn, user_id, now=None):
+        """创建习惯目录与时间窗；休息日仅跳过每日事实，不跳过定义。"""
         stamp = (now or datetime.now(BEIJING)).astimezone(BEIJING).strftime("%Y-%m-%d %H:%M:%S")
         switch = conn.execute("SELECT switch_date FROM server_diet_habit_migrations WHERE user_id=?", (user_id,)).fetchone()[0]
         day_codes = {"周一": "MO", "周二": "TU", "周三": "WE", "周四": "TH", "周五": "FR", "六": "SA", "日": "SU"}
         days = [day_codes[row[0]] for row in conn.execute("""SELECT DISTINCT day_key FROM server_exercise_plan_items
             WHERE user_id=? AND plan_version='v5' AND variant IN ('gym','rain') AND is_active=1""", (user_id,)) if row[0] in day_codes]
         if not days:
-            return False
+            days = ["TU", "WE", "TH", "FR", "SA", "SU"]
         repeat = "RRULE:FREQ=WEEKLY;BYDAY=" + ",".join(sorted(days))
         changed = False
         for rule, name, (start, end) in zip(RULES, NAMES, WINDOWS):

@@ -1284,6 +1284,15 @@ export class Database {
     return windows
   }
 
+  getHabitWindowDefinitions(): Map<string, { effective_from: string; start_minute: number | null; end_minute: number | null }> {
+    const windows = new Map<string, { effective_from: string; start_minute: number | null; end_minute: number | null }>()
+    for (const row of this._all('SELECT habit_id,effective_from,start_minute,end_minute FROM habit_windows ORDER BY effective_from DESC')) {
+      const id = String(row.habit_id)
+      if (!windows.has(id)) windows.set(id, { effective_from: String(row.effective_from), start_minute: row.start_minute == null ? null : Number(row.start_minute), end_minute: row.end_minute == null ? null : Number(row.end_minute) })
+    }
+    return windows
+  }
+
   getIgnoredHabitIds(date: string): Set<string> {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return new Set()
     return new Set(this._all('SELECT habit_id FROM habit_day_ignores WHERE date=? AND is_ignored=1', [date])

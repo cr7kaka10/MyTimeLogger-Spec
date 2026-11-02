@@ -10,6 +10,22 @@ from server.store import ServerSleepStore
 TZ = timezone(timedelta(hours=8))
 
 
+def test_diet_definitions_exist_on_rest_day_before_daily_activation(tmp_path):
+    store = ServerSleepStore(str(tmp_path / "rest.db"))
+    store.create_user("rest@example.test", "password")
+    migration = DietHabitMigrationService(lambda conn, user, table, key: None)
+    monday = datetime(2026, 11, 2, 10, tzinfo=TZ)
+    with store._transact() as conn:
+        assert migration.switch_date(conn, 1, monday) == "2026-11-03"
+        assert migration.ensure_definitions(conn, 1, monday)
+        assert not migration.ensure_definitions(conn, 1, monday)
+        assert not migration.ensure_day(conn, 1, "2026-11-02", monday)
+        assert conn.execute("SELECT COUNT(*) FROM server_habits WHERE user_id=1 AND source='system'").fetchone()[0] == 6
+        assert conn.execute("SELECT COUNT(*) FROM server_habit_windows WHERE user_id=1").fetchone()[0] == 6
+        assert conn.execute("SELECT COUNT(*) FROM server_habit_checkins WHERE user_id=1").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM server_reward_ledger WHERE user_id=1").fetchone()[0] == 0
+
+
 def test_diet_cutover_rest_day_and_single_timeout_penalty(tmp_path):
     store = ServerSleepStore(str(tmp_path / "diet.db"))
     store.create_user("diet@example.test", "password")

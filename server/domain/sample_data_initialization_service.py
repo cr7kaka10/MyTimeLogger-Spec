@@ -351,23 +351,20 @@ class SampleDataInitializationService:
             conn.commit()
 
     def _ensure_v6(self, conn: sqlite3.Connection, user_id: int, definition: dict, now: str) -> None:
-        migration = conn.execute("SELECT switch_date FROM server_diet_habit_migrations WHERE user_id=?", (user_id,)).fetchone()
         beijing_now = datetime.now(timezone(timedelta(hours=8)))
-        if not migration or str(migration["switch_date"]) > beijing_now.date().isoformat():
-            return
-        counts = [conn.execute(query, (user_id,)).fetchone()[0] for query in (
-            "SELECT COUNT(*) FROM server_diet_habit_rules WHERE user_id=? AND habit_id LIKE 'diet-v5:%'",
-            "SELECT COUNT(*) FROM server_habits WHERE user_id=? AND id LIKE 'diet-v5:%' AND source='system'",
-            "SELECT COUNT(*) FROM server_habit_windows WHERE user_id=? AND habit_id LIKE 'diet-v5:%'",
-        )]
-        if counts != [6, 6, 6]:
-            return
         if not self._has_marker(conn, user_id, "exercise_plan_v6_seed"):
             self._insert_exercise_plan_definition(conn, user_id, "v6", definition, now)
             self._publish_complete_exercise(conn, user_id, "v6")
             self._mark(conn, user_id, "exercise_plan_v6_seed", now)
-        days_ahead = (7 - beijing_now.weekday()) % 7 or 7
-        effective_date = (beijing_now.date() + timedelta(days=days_ahead)).isoformat()
+        day = beijing_now.date().isoformat()
+        has_v5_facts = any(conn.execute(query, (user_id, day)).fetchone() for query in (
+            "SELECT 1 FROM server_exercise_checkins WHERE user_id=? AND date=? AND plan_version='v5' LIMIT 1",
+            "SELECT 1 FROM server_exercise_daily_logs WHERE user_id=? AND date=? AND plan_version='v5' LIMIT 1",
+            "SELECT 1 FROM server_exercise_settlements WHERE user_id=? AND business_date=? AND plan_version='v5' LIMIT 1",
+            "SELECT 1 FROM server_exercise_diet_checkins WHERE user_id=? AND date=? AND plan_version='v5' LIMIT 1",
+            "SELECT 1 FROM server_reward_ledger WHERE user_id=? AND target_date=? AND source_type='exercise_completion_reward' AND source_id LIKE 'exercise-completion:v5:%' LIMIT 1",
+        ))
+        effective_date = (beijing_now.date() + timedelta(days=1 if has_v5_facts else 0)).isoformat()
         inserted = conn.execute("""INSERT OR IGNORE INTO server_system_config
             (user_id,key,value,value_type,description,updated_at)
             VALUES (?,'exercise_v6_effective_date',?,'string','V6北京时间生效日',?)""",

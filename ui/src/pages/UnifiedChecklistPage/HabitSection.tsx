@@ -13,6 +13,7 @@ import { timedHabitBlock } from '../../hooks/useHabits'
 
 interface HabitSectionProps {
   habits: any[]
+  dietCatalogHabits?: any[]
   ignoredHabits: any[]
   onSetIgnored: (habitId: string | number, ignore: boolean) => Promise<boolean>
   todayCheckins: any[]
@@ -28,6 +29,7 @@ interface HabitSectionProps {
 
 export const HabitSection = memo(({
   habits,
+  dietCatalogHabits = [],
   ignoredHabits,
   onSetIgnored,
   todayCheckins,
@@ -168,6 +170,8 @@ export const HabitSection = memo(({
     console.log(`模式 [${mode}] 排序后习惯:`, sorted)
     return sorted
   }, [habits, todayCheckins, mode])
+  const catalogOnly = mode === 'completed' ? [] : dietCatalogHabits.filter(habit =>
+    !habits.some(scheduled => String(scheduled.id) === String(habit.id)))
 
   const ignoredControls = mode === 'incomplete' && ignoredHabits.length > 0 && (
     <div className="text-xs text-gray-500">今日已忽略：{ignoredHabits.map(habit => (
@@ -177,7 +181,7 @@ export const HabitSection = memo(({
     ))}</div>
   )
 
-  if (sortedHabits.length === 0) {
+  if (sortedHabits.length === 0 && catalogOnly.length === 0) {
     if (mode === 'completed') return null
     return (
       <div className="theme-surface rounded-xl border p-3 shadow-sm">
@@ -200,6 +204,17 @@ export const HabitSection = memo(({
       {mode !== 'completed' && <><h3 className="text-sm font-bold text-gray-700 px-1">{getDateLabel()}</h3>{habitCreator}</>}
       {mode !== 'completed' && dietMaximum > 0 && <p className="px-1 text-xs text-amber-700">饮食约束 {dietEarned}/{dietMaximum} 分 · 六项各结算一次</p>}
       {ignoredControls}
+      {catalogOnly.length > 0 && <section className="theme-surface rounded-xl border p-3" aria-label="饮食习惯目录">
+        <h4 className="text-sm font-semibold text-gray-800 dark:text-gray-100">饮食约束 · {catalogOnly.length} 项</h4>
+        <p className="text-xs text-gray-500 dark:text-gray-400">这些习惯已创建，今日无需打卡。</p>
+        {catalogOnly.map(habit => <div key={habit.id} className="mt-2 rounded-lg border border-gray-200 p-2 text-sm dark:border-gray-700">
+          <div className="font-medium text-gray-900 dark:text-gray-100">{habit.name}</div>
+          <div className="text-xs text-gray-500 dark:text-gray-400">{habit.window_effective_from && selectedDateStr < habit.window_effective_from
+            ? `${habit.window_effective_from} 生效` : '今日休息，不计打卡'}
+            {habit.window_start_minute != null && habit.window_end_minute != null
+              ? ` · ${String(Math.floor(habit.window_start_minute / 60)).padStart(2, '0')}:${String(habit.window_start_minute % 60).padStart(2, '0')}–${String(Math.floor(habit.window_end_minute / 60)).padStart(2, '0')}:${String(habit.window_end_minute % 60).padStart(2, '0')}` : ''}</div>
+        </div>)}
+      </section>}
       {sortedHabits.map((habit) => {
         // 查询选中日期的打卡记录（不再只看今天）
         const checkin = todayCheckins.find(c => c.habit_id === habit.id)
