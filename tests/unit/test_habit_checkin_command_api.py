@@ -31,6 +31,12 @@ def test_habit_command_api_confirms_and_isolated_to_current_user(tmp_path):
         payload = {"habit_id": "local_habit_1", "date": "2026-08-01", "desired_status": 2, "idempotency_key": "habit-command-1"}
         assert client.post("/api/habits/checkin-commands", json=payload).json()["status"] == "confirmed"
         assert client.post("/api/habits/checkin-commands", json=payload).json()["status"] == "confirmed"
+        stale = {**payload, "idempotency_key": "habit-command-stale"}
+        replay = client.post("/api/habits/checkin-commands", json=stale).json()
+        assert replay["status"] == "confirmed" and replay["error_code"] == "already_completed"
+        assert client.post("/api/habits/checkin-commands", json=stale).json()["error_code"] == "already_completed"
+        with store._connect() as conn:
+            assert conn.execute("SELECT COUNT(*) FROM server_habit_checkins WHERE user_id=1").fetchone()[0] == 1
         server_module.app.dependency_overrides[server_module.get_current_user] = lambda: {"id": 2, "username": "other@example.test"}
         assert client.get("/api/habits/checkin-commands/habit-command-1").status_code == 404
     finally:

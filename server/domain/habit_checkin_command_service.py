@@ -50,11 +50,13 @@ class HabitCheckinCommandService:
                 conn.execute("BEGIN IMMEDIATE")
                 self._require_active(conn, user_id, habit_id)
                 self._require_system_day(conn, user_id, habit_id, checkin_date, desired_status)
+                already_completed = False
                 if int(desired_status) == 2:
                     existing = conn.execute(
                         "SELECT id,status FROM server_habit_checkins WHERE user_id=? AND habit_id=? AND COALESCE(checkin_date,date)=?",
                         (user_id, habit_id, checkin_date),
                     ).fetchone()
+                    already_completed = bool(existing and int(existing["status"] or 0) == 2)
                     if (not existing or int(existing["status"] or 0) != 2) and not self._habits.checkin_habit_in_txn(
                             conn, user_id, habit_id, checkin_date, replace_failed=True):
                         self._commands.mark_in_txn(conn, user_id, idempotency_key, "retryable_failed", error_code="habit_not_found")
@@ -66,7 +68,8 @@ class HabitCheckinCommandService:
                 else:
                     self._habits.cancel_checkin_habit_in_txn(conn, user_id, habit_id, checkin_date)
                 if not finalize_error:
-                    self._commands.mark_in_txn(conn, user_id, idempotency_key, "confirmed")
+                    self._commands.mark_in_txn(conn, user_id, idempotency_key, "confirmed",
+                                               error_code="already_completed" if already_completed else None)
         except HabitUnavailable as exc:
             return self._commands.mark(user_id, idempotency_key, "failed", error_code=str(exc))
         except ValueError as exc:
