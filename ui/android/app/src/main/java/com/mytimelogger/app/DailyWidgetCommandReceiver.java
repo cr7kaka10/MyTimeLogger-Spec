@@ -69,8 +69,9 @@ public final class DailyWidgetCommandReceiver extends BroadcastReceiver {
         DailyWidgetProvider.refresh(context);
         DailyWidgetBridge bridge = DailyWidgetBridge.current();
         if ("habit".equals(kind) && "complete".equals(action)) {
-            openChecklist(context);
-            if (bridge != null && bridge.isReady()) bridge.dispatch(command);
+            context.startActivity(new Intent(context, DailyWidgetHabitJournalActivity.class)
+                    .putExtra("commandId", command.get("commandId").getAsString())
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP));
             return;
         }
         if (bridge != null && bridge.isReady()) { bridge.dispatch(command); return; }

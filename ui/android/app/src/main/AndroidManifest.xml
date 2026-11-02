@@ -27,6 +27,8 @@
 
         </activity>
         <activity android:name=".SleepCapturePreviewActivity" android:exported="false" android:label="睡眠图片预览" />
+        <activity android:name=".DailyWidgetHabitJournalActivity" android:exported="false"
+            android:theme="@style/HabitJournalDialogTheme" android:excludeFromRecents="true" />
 
         <receiver android:name=".TimerWidgetProvider" android:exported="true">
             <intent-filter>
