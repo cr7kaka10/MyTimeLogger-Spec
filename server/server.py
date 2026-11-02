@@ -975,6 +975,14 @@ async def lifespan(app: FastAPI):
                      (OPTIONAL_BODY_POLICY_KEY, (today + timedelta(days=1)).isoformat(), _exercise_now_str()))
     _ensure_diet_habits()
     try:
+        with store._connect() as conn:
+            exercise_users = [int(row[0]) for row in conn.execute("SELECT id FROM users")]
+        for exercise_user in exercise_users:
+            SampleDataInitializationService(store.db_path).ensure_v6_for_user(exercise_user)
+        logger.info("V6 exercise plan initialized users=%s", len(exercise_users))
+    except Exception as e:
+        logger.error("V6 exercise plan startup initialization failed: %s", e)
+    try:
         time_logger_db.reload_category_cache()
         logger.info("✅ 已完成服务端 server_categories 缓存预热同步")
     except Exception as e:
