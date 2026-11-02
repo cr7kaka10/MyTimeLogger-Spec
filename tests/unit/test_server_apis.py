@@ -1501,6 +1501,19 @@ def test_login_exposes_v6_and_six_diet_habits_without_opening_exercise(client_wi
     assert len([row for row in client.get("/api/habits", headers=headers).json()["habits"] if str(row["id"]).startswith("diet-v5:")]) == 6
 
 
+def test_widget_journal_prompt_preference_updates_authoritative_habit(client_with_db):
+    client, store = client_with_db
+    headers = _login_headers(client, "widget_prompt_user")
+    habit_id = client.post("/api/habits", headers=headers, json={"name": "写日记", "icon": "📝"}).json()["habit_id"]
+    endpoint = f"/api/habits/{habit_id}/journal-prompt"
+    assert client.put(endpoint, headers=headers, json={"enabled": False}).json()["enabled"] is False
+    assert client.put(endpoint, headers=headers, json={"enabled": False}).status_code == 200
+    with store._connect() as conn:
+        assert conn.execute("SELECT journal_prompt_enabled FROM server_habits WHERE user_id=1 AND id=?", (habit_id,)).fetchone()[0] == 0
+    assert client.put(endpoint, headers=headers, json={"enabled": "false"}).status_code == 422
+    assert client.put("/api/habits/diet-v5:no_snacks/journal-prompt", headers=headers, json={"enabled": True}).status_code == 404
+
+
 def test_server_sample_data_initialization_is_idempotent_after_login(client_with_db):
     client, store = client_with_db
     client.post("/auth/register", json={"username": "sample_user", "password": "password123"})

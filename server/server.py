@@ -4992,6 +4992,26 @@ async def update_habit(habit_id: str, request: Request, user: dict = Depends(get
         raise HTTPException(status_code=404, detail="Habit not found or update conflict")
     return {"status": "ok"}
 
+
+@app.put("/api/habits/{habit_id}/journal-prompt")
+async def update_habit_journal_prompt(habit_id: str, request: Request, user: dict = Depends(get_current_user)):
+    body = await request.json()
+    if type(body.get("enabled")) is not bool:
+        raise HTTPException(status_code=422, detail="invalid_journal_prompt")
+    owner, enabled = int(user["id"]), int(body["enabled"])
+    with store._transact() as conn:
+        row = conn.execute("SELECT * FROM server_habits WHERE user_id=? AND id=? AND source='local' AND is_active=0",
+                           (owner, habit_id)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="active_local_habit_not_found")
+        if int(row["journal_prompt_enabled"]) != enabled:
+            conn.execute("UPDATE server_habits SET journal_prompt_enabled=?,updated_at=? WHERE user_id=? AND id=?",
+                         (enabled, _exercise_now_str(), owner, habit_id))
+            updated = dict(conn.execute("SELECT * FROM server_habits WHERE user_id=? AND id=?", (owner, habit_id)).fetchone())
+            store._record_server_change(conn, owner, "server_habits", habit_id, "upsert", updated)
+    sync_hub._notify_clients(["habits"], owner)
+    return {"status": "ok", "habit_id": habit_id, "enabled": bool(enabled)}
+
 @app.put("/api/habits/{habit_id}/window")
 async def set_habit_window(habit_id: str, request: Request, user: dict = Depends(get_current_user)):
     body = await request.json()
