@@ -33,7 +33,8 @@ final class DailyWidgetHabitClient {
             if (response.code < 200 || response.code >= 300) return "failed";
             JsonObject value = JsonParser.parseString(response.body).getAsJsonObject();
             String status = value.get("status").getAsString();
-            if ("confirmed".equals(status)) return "applied";
+            if ("confirmed".equals(status)) return "already_completed".equals(value.has("error_code") && !value.get("error_code").isJsonNull()
+                    ? value.get("error_code").getAsString() : "") ? "already_complete" : "applied";
             return "failed".equals(status) ? "failed" : "retryable";
         } catch (Exception ignored) { return "retryable"; }
     }

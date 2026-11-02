@@ -39,6 +39,12 @@ public class DailyWidgetHabitClientTest {
         assertEquals("unauthorized", new DailyWidgetHabitClient((url, token, body) ->
                 new DailyWidgetHabitClient.Response(401, "{}")).apply(runtime, fixed));
     }
+    @Test public void alreadyCompletedServerCheckinDoesNotOpenJournal() {
+        DailyWidgetHabitClient client = new DailyWidgetHabitClient((url, token, body) ->
+                new DailyWidgetHabitClient.Response(200,
+                        "{\"status\":\"confirmed\",\"error_code\":\"already_completed\"}"));
+        assertEquals("already_complete", client.apply(runtime, command("complete")));
+    }
     @Test public void ignoreUsesStableCommandAndRequiresConfirmedIgnoredState() {
         JsonObject command = command("ignore");
         DailyWidgetHabitClient client = new DailyWidgetHabitClient((url, token, body) -> {

@@ -38,6 +38,7 @@ final class DailyWidgetHeadlessExecutor {
             if (!eligible) return new Outcome("rejected", "习惯状态已变化，请刷新");
             String result = new DailyWidgetHabitClient().apply(runtime, command);
             if ("applied".equals(result)) return new Outcome("applied", "习惯已记录");
+            if ("already_complete".equals(result)) return new Outcome("rejected", "习惯今天已完成");
             if ("unauthorized".equals(result)) return new Outcome("failed", "登录已失效，请打开 App 重新登录");
             if ("retryable".equals(result)) return new Outcome("failed", "网络未确认，点击可重试");
             return new Outcome("rejected", "习惯操作被拒绝，请刷新后重试");
