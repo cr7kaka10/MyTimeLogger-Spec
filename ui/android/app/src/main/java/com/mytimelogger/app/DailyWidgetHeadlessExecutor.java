@@ -21,6 +21,16 @@ final class DailyWidgetHeadlessExecutor {
         } catch (RuntimeException ignored) { return false; }
     }
 
+    static boolean validJournal(JsonObject snapshot, JsonObject command, String commandId, String day) {
+        if (commandId == null || !commandId.matches("[A-Za-z0-9._:-]{1,128}")) return false;
+        try {
+            return commandId.equals(command.get("commandId").getAsString())
+                    && "habit".equals(command.get("kind").getAsString())
+                    && "complete".equals(command.get("action").getAsString())
+                    && valid(snapshot, command, day);
+        } catch (RuntimeException ignored) { return false; }
+    }
+
     static Outcome run(Context context, JsonObject command) {
         DailyWidgetStore store = new DailyWidgetStore(context);
         JsonObject snapshot = store.snapshot();

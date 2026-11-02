@@ -21,15 +21,12 @@ public final class DailyWidgetHabitJournalActivity extends AppCompatActivity {
     private String mood = "🙂";
 
     static JsonObject pendingCommand(DailyWidgetStore store, String commandId) {
-        if (commandId == null || !commandId.matches("[A-Za-z0-9._:-]{1,128}")) return null;
         JsonObject snapshot = store.snapshot();
         JsonObject pending = store.pending();
         for (String key : pending.keySet()) {
             JsonObject value = pending.getAsJsonObject(key);
-            if (commandId.equals(value.get("commandId").getAsString())
-                    && "habit".equals(value.get("kind").getAsString())
-                    && "complete".equals(value.get("action").getAsString())
-                    && DailyWidgetHeadlessExecutor.valid(snapshot, value, DailyWidgetStore.today())) return value;
+            if (DailyWidgetHeadlessExecutor.validJournal(snapshot, value, commandId,
+                    DailyWidgetStore.today())) return value;
         }
         return null;
     }
