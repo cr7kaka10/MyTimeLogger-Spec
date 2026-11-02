@@ -9,7 +9,7 @@ const database = readFileSync(fileURLToPath(new URL('../../../core/models/Databa
 
 assert(hook.includes("exercise_plan_version_incomplete") && hook.includes('`${version} 计划数据同步中，计划内容尚未完整。`'), 'incomplete versions must name the target version in the synchronization message')
 assert(hook.includes('return false') && hook.includes('await load();return true'), 'version selection must report failure without reloading a fallback version')
-assert(page.includes('sortExercisePlanVersions(x.planVersions).map'), 'version menu must render all enabled plans newest first')
+assert(page.includes('sortExercisePlanVersions(x.planVersions).map'), 'version menu must render visible plans newest first')
 assert(page.includes('if (await x.setActivePlanVersion(version.version)) setShowVersions(false)'), 'version menu must close only after a successful switch')
 assert(page.includes('x.versionError'), 'version menu must render a failed-switch message')
 assert(hook.includes('db.getActiveExercisePlanVersion()'), 'exercise must select its active version from exercise plan storage')
