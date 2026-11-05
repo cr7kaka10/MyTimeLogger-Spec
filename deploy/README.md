@@ -1,5 +1,21 @@
 # MyTimeLogger 测试环境部署指南
 
+## 一键迁移测试服务端
+
+在 Windows PowerShell 运行，脚本会逐次提示输入旧机和新机的 SSH 密码：
+
+```powershell
+.\deploy\migrate-server.ps1 -NewHost 117.72.183.17
+```
+
+默认从 `deploy/config.local.env` 读取旧机地址。若该配置已提前改为新机，显式指定旧机：
+
+```powershell
+.\deploy\migrate-server.ps1 -SourceHost 223.109.142.12 -NewHost 117.72.183.17
+```
+
+脚本迁移旧容器正在使用的镜像、停写后的 SQLite 最终快照、`attachments` 和 `reports`，检查数据库完整性、对象数、SHA256 和新机 `/ping`。通过后才更新本地测试部署目标。旧机容器与数据保留；失败时按脚本输出的 `docker start` 命令恢复旧服务。迁移成功后，在 PC/Android 登录页把服务地址改成 `http://新服务器地址:8000`。不要在仅搬迁时运行菜单 [2]，它会重新构建当前本地源码。
+
 ## 前置要求
 
 | 工具 | 用途 | 安装 |
