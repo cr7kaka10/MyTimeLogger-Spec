@@ -697,6 +697,9 @@ export class SyncWorker {
     const rawTables = { ...(resp.data.tables ?? {}) }
     const ledgerSnapshot = resp.data.ledger_snapshot
     if (ledgerSnapshot) delete rawTables.reward_ledger
+    // 旧服务端允许空投放模式；本地表要求非空，语义等同默认 fixed。
+    if (rawTables.reward_source_bindings) rawTables.reward_source_bindings = rawTables.reward_source_bindings.map((row: any) =>
+      row._sync_operation === 'delete' || row.drop_mode != null ? row : { ...row, drop_mode: 'fixed' })
     const naturalMerge = this._deduplicateNaturalKeyRows(rawTables)
     const tables = naturalMerge.tables
     const serverTime = resp.data.server_time ?? this._now()
@@ -717,20 +720,6 @@ export class SyncWorker {
     const conflicts: string[] = []
     let bulkFailures: SafeBulkFailure[] = []
     const bulk = (this._db as any).androidBulk as AndroidBulkCapability | undefined
-    if (ledgerSnapshot) {
-      try {
-        const replace = (this._db as any).replaceServerLedgerSnapshot
-        if (typeof replace !== 'function') throw new Error('ledger_snapshot_unsupported')
-        const before = this._db.getLedgerSummary?.()
-        const result = replace.call(this._db, ledgerSnapshot, Number(resp.data.to_version ?? lastServerVersion))
-        walletChanged = Number(before?.balance) !== Number(ledgerSnapshot.summary?.balance)
-        diagnostics.ledger_snapshot = { applied: true, removed: result.removed, count: ledgerSnapshot.integrity?.count, epoch: ledgerSnapshot.epoch }
-      } catch (error) {
-        diagnostics.ledger_snapshot = { applied: false, error: error instanceof Error ? error.message : 'ledger_snapshot_failed' }
-        diagnostics.cursor = { previous: lastServerVersion, next: lastServerVersion, advanced: false }
-        return { ok: false, merged: 0, diagnostics, error: 'ledger_snapshot_failed' }
-      }
-    }
     if (bulk && this._lastBulkFailure && context.reason !== 'manual-flush') {
       const gate = this._bulkFailureGate.canAttempt(this._lastBulkFailure.fingerprint, Number(resp.data.to_version ?? -1))
       if (!gate.allowed) return { ok: false, merged: 0, diagnostics: { stage: 'backoff', retry_at: gate.retryAt }, error: 'local_merge_backoff' }
@@ -868,6 +857,24 @@ export class SyncWorker {
       this._lastBulkFailure = { fingerprint, version }; diagnostics.merge.retry_at = retryAt
     } else if (bulk && mergeErrors.length === 0) { this._bulkFailureGate.succeed(); this._lastBulkFailure = null }
     const mergeSucceeded = mergeErrors.length === 0 && conflicts.length === 0
+    if (mergeSucceeded && ledgerSnapshot) {
+      try {
+        const replace = (this._db as any).replaceServerLedgerSnapshot
+        if (typeof replace !== 'function') throw new Error('ledger_snapshot_unsupported')
+        const before = this._db.getLedgerSummary?.()
+        const result = replace.call(this._db, ledgerSnapshot, Number(resp.data.to_version ?? lastServerVersion))
+        walletChanged = Number(before?.balance) !== Number(ledgerSnapshot.summary?.balance)
+        diagnostics.ledger_snapshot = { applied: true, removed: result.removed, count: ledgerSnapshot.integrity?.count, epoch: ledgerSnapshot.epoch }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'ledger_snapshot_failed'
+        diagnostics.ledger_snapshot = { applied: false, error: message, error_category: this._localErrorCategory(error) }
+        diagnostics.cursor = { previous: lastServerVersion, next: lastServerVersion, advanced: false }
+        this._logSync('warn', { event: 'ledger_snapshot_apply_failed', sync_run_id: context.syncRunId,
+          error_category: diagnostics.ledger_snapshot.error_category, error_message: message,
+          previous: lastServerVersion, to: resp.data.to_version, advanced: false })
+        return { ok: false, merged, diagnostics, error: 'ledger_snapshot_failed' }
+      }
+    }
     const expectation = context.ledgerExpectation
     const expectedRows = ledgerSnapshot?.rows ?? tables.reward_ledger ?? []
     const expectedLedgerConfirmed = !expectation || Boolean((expectedRows as any[]).some(row =>

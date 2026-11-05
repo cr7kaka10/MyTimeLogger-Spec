@@ -551,6 +551,34 @@ describe('SyncWorker version cursor', () => {
     expect(version).toBe(8)
   })
 
+  it('merges reward parents before the first ledger fragment snapshot', async () => {
+    const db = new Database(createBetterSqliteAdapter())
+    const stamp = '2026-11-05 16:00:00'
+    const reward = { id: '1:seed:reward:phone', title: '手机', price: 100, created_at: stamp, updated_at: stamp }
+    const ledger = { id: 'earned-1', amount: 1, source_type: 'habit_checkin', target_date: '2026-11-05', created_at: stamp, updated_at: stamp }
+    const fragment = { id: 'fragment-1', reward_id: reward.id, source_type: 'habit', source_id: 'habit-1',
+      completion_event_key: 'habit:habit-1:2026-11-05', rule_version: 1, fragment_measure_mode: 'count',
+      progress_units: 1, consumed_units: 0, issued_at: stamp, expires_at: '2026-12-01 00:00:00',
+      status: 'active', created_at: stamp, updated_at: stamp }
+    const binding = { id: 'binding-1', reward_id: reward.id, source_type: 'habit', source_id: 'habit-1',
+      drop_mode: null, created_at: stamp, updated_at: stamp }
+    const worker = new SyncWorker()
+    worker.bind({ post: vi.fn(), get: vi.fn(async () => ({ ok: true, data: {
+      status: 'ok', from_version: 0, to_version: 42, server_time: stamp, wallet: { balance: 1 },
+      tables: { rewards: [reward], reward_source_bindings: [binding] }, ledger_snapshot: { rows: [ledger], reward_fragments: [fragment],
+        summary: { balance: 1, income: 1, expense: 0 }, integrity: { count: 1, sha256: 'a'.repeat(64) } },
+    } })) } as any, db)
+
+    const result = await worker.pullAndMergeResult(true)
+
+    expect(result.diagnostics?.ledger_snapshot?.error).toBeUndefined()
+    expect(result).toMatchObject({ ok: true })
+    expect(db.getRecordById('rewards', reward.id)).toMatchObject({ title: reward.title })
+    expect(db.getRecordById('reward_source_bindings', binding.id)).toMatchObject({ drop_mode: 'fixed' })
+    expect(db.allRaw('SELECT id FROM reward_fragments')).toMatchObject([{ id: fragment.id }])
+    expect(db.getLastServerVersion()).toBe(42)
+  })
+
   it('repairs an Android core pull when the new ledger row is visible but its total differs from the server wallet', async () => {
     const db = new Database(createBetterSqliteAdapter()) as any
     const stamp = '2026-09-14 14:00:00'
@@ -718,7 +746,9 @@ describe('SyncWorker version cursor', () => {
     }
     worker.bind({ get: async () => ({ ok: true, data: { status: 'ok', from_version: 7, to_version: 8, tables: {}, ledger_snapshot: { summary: {}, integrity: {} } } }), post: vi.fn() } as any, db)
 
-    await expect(worker.flushNow(false)).resolves.toMatchObject({ ok: false, error: 'ledger_snapshot_failed' })
+    const result = await worker.flushNow(false)
+    expect(result).toMatchObject({ ok: false, error: 'ledger_snapshot_failed',
+      diagnostics: { ledger_snapshot: { error: 'invalid_server_ledger_snapshot' }, cursor: { advanced: false } } })
     expect(version).toBe(7)
   })
 
