@@ -52,14 +52,24 @@ function Initialize-MigrationKey {
     }
     if (-not (Test-Path -LiteralPath "$identityPath.pub")) { throw '迁移公钥文件缺失' }
 }
+function Test-KeyAccess([string]$server) {
+    $probe = New-Object System.Diagnostics.ProcessStartInfo
+    $probe.FileName = (Get-Command ssh).Source
+    $probe.Arguments = '-q -i "' + $identityPath + '" -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=8 -p ' + $SshPort + ' ' + $server + ' true'
+    $probe.UseShellExecute = $false
+    $probe.CreateNoWindow = $true
+    $probe.RedirectStandardError = $true
+    $probe.RedirectStandardOutput = $true
+    $process = [System.Diagnostics.Process]::Start($probe)
+    try { $process.WaitForExit(); return ($process.ExitCode -eq 0) }
+    finally { $process.Dispose() }
+}
 function Ensure-KeyAccess([string]$server, [string]$label) {
-    & ssh -i $identityPath -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=8 -p $SshPort $server 'true' 2>$null | Out-Null
-    if ($LASTEXITCODE -eq 0) { return }
+    if (Test-KeyAccess $server) { return }
     Write-Host "请为$label $server 输入一次 SSH 密码；输错会立即停止。" -ForegroundColor Cyan
     Get-Content -LiteralPath "$identityPath.pub" -Raw | & ssh -o PreferredAuthentications=password -o PubkeyAuthentication=no -o NumberOfPasswordPrompts=1 -p $SshPort $server 'umask 077; mkdir -p ~/.ssh; chmod 700 ~/.ssh; cat >> ~/.ssh/authorized_keys; chmod 600 ~/.ssh/authorized_keys'
     if ($LASTEXITCODE -ne 0) { throw "$label $server 密码错误或 SSH 登录失败；请核对后重新选择菜单 [6]" }
-    & ssh -i $identityPath -o IdentitiesOnly=yes -o BatchMode=yes -p $SshPort $server 'true' 2>$null | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw "$label $server 公钥认证失败；请检查远端 authorized_keys 权限" }
+    if (-not (Test-KeyAccess $server)) { throw "$label $server 公钥认证失败；请检查远端 authorized_keys 权限" }
 }
 function Invoke-Remote([string]$server, [string]$command) {
     $result = & ssh -i $identityPath -o IdentitiesOnly=yes -o BatchMode=yes -p $SshPort $server $command
