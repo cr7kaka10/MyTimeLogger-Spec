@@ -15,6 +15,7 @@ const toDateTimeLocalSeconds = (value?: string): string => {
 
 const androidDateTimeText = (value: string): string => value.replace('T', ' ')
 const normalizeAndroidDateTime = (value: string): string | null => /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(value) ? value.replace(' ', 'T') : null
+const normalizeDesktopDateTime = (value: string): string => /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(value) ? `${value}:00` : value
 const isValidDateTime = (value: string): boolean => {
   const match = value.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})$/)
   if (!match) return false
@@ -59,9 +60,9 @@ export const SessionEditSheet = memo(({ session, categories = [], onSave, onDele
   }
 
   const handleSave = useCallback(() => {
-    const normalizedStart = isAndroid ? normalizeAndroidDateTime(androidDateTimeText(startTime)) : startTime
-    const normalizedEnd = isAndroid ? normalizeAndroidDateTime(androidDateTimeText(endTime)) : endTime
-    if (!normalizedStart || !normalizedEnd || !isValidDateTime(normalizedStart) || !isValidDateTime(normalizedEnd) || parseBeijingDateTimeMs(endTime) <= parseBeijingDateTimeMs(startTime)) {
+    const normalizedStart = isAndroid ? normalizeAndroidDateTime(androidDateTimeText(startTime)) : normalizeDesktopDateTime(startTime)
+    const normalizedEnd = isAndroid ? normalizeAndroidDateTime(androidDateTimeText(endTime)) : normalizeDesktopDateTime(endTime)
+    if (!normalizedStart || !normalizedEnd || !isValidDateTime(normalizedStart) || !isValidDateTime(normalizedEnd) || parseBeijingDateTimeMs(normalizedEnd) <= parseBeijingDateTimeMs(normalizedStart)) {
       setTimeError('请输入有效的 24 小时时间（YYYY-MM-DD HH:mm:ss），且结束时间必须晚于开始时间。')
       return
     }
