@@ -145,6 +145,8 @@ goto :finished
 :run_server_migration
 echo.
 echo   --- [Migration] One-click server migration ---
+  echo   Current test server will stop during final data transfer.
+  echo   Change client address only after migration reports success.
 powershell -NoProfile -ExecutionPolicy Bypass -File "%SCRIPT_DIR%migrate-server.ps1"
 if errorlevel 1 goto :failed
 goto :finished
