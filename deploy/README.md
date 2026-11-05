@@ -16,7 +16,7 @@
 .\deploy\migrate-server.ps1 -SourceHost 223.109.142.12 -NewHost 117.72.183.17
 ```
 
-脚本迁移旧容器正在使用的镜像、停写后的 SQLite 最终快照、`attachments` 和 `reports`，检查数据库完整性、对象数、SHA256 和新机 `/ping`。通过后才更新本地测试部署目标。旧机容器与数据保留；失败时按脚本输出的 `docker start` 命令恢复旧服务。迁移成功后，在 PC/Android 登录页把服务地址改成 `http://新服务器地址:8000`。不要在仅搬迁时运行菜单 [2]，它会重新构建当前本地源码。
+脚本迁移旧容器正在使用的镜像、停写后的 SQLite 最终快照、`attachments` 和 `reports`，检查数据库完整性、对象数、SHA256 和新机 `/ping`。新机若已有相同镜像会直接复用；文件通过 SSH 二进制流传输，不依赖新机的 SFTP/SCP 服务，并在上传前检查磁盘空间。运行时会打印脚本路径和“SSH 密钥认证 / 二进制直传”，可据此确认已打开新版脚本。通过后才更新本地测试部署目标。旧机容器与数据保留；失败时按脚本输出的 `docker start` 命令恢复旧服务。迁移成功后，在 PC/Android 登录页把服务地址改成 `http://新服务器地址:8000`。不要在仅搬迁时运行菜单 [2]，它会重新构建当前本地源码。
 
 ## 前置要求
 
@@ -25,6 +25,7 @@
 | **Node.js** 20 LTS | UI 构建 + Electron 打包 | https://nodejs.org/ |
 | **Docker Desktop** | 服务端镜像构建 | https://www.docker.com/products/docker-desktop/ |
 | **OpenSSH** | 连接测试服务器 | Windows 10+ 自带 |
+| **Python 3** | 迁移时校验 SQLite、按原始字节传输文件 | https://www.python.org/ |
 
 ## 快速开始
 
