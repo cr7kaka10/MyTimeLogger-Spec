@@ -15,11 +15,11 @@ class Program {
       if (File.Exists(Environment.GetEnvironmentVariable("MTL_AUTH_MARKER"))) return 0;
       Console.Error.WriteLine("Permission denied (publickey,password)."); return 255;
     }
-    string pub = new StreamReader(Console.OpenStandardInput()).ReadToEnd();
-    if (!pub.Contains("ssh-ed25519") || Environment.GetEnvironmentVariable("MTL_AUTH_FAIL") == "1") {
+    string command = args[args.Length - 1];
+    if (!command.Contains("ssh-ed25519") || !command.Contains("echo >>") || Environment.GetEnvironmentVariable("MTL_AUTH_FAIL") == "1") {
       Console.Error.WriteLine("Permission denied, please try again."); return 255;
     }
-    File.WriteAllText(Environment.GetEnvironmentVariable("MTL_AUTH_MARKER"), pub); return 0;
+    File.WriteAllText(Environment.GetEnvironmentVariable("MTL_AUTH_MARKER"), command); return 0;
   }
 }
 '@
