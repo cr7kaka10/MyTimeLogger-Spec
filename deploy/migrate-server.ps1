@@ -174,6 +174,7 @@ try {
     $updated = [regex]::Replace($configText, '(?m)^MTL_SERVER_HOST=[^\r\n]+$', "MTL_SERVER_HOST=$NewHost")
     [IO.File]::WriteAllText($configPath, $updated, [Text.UTF8Encoding]::new($false))
     Write-Host "迁移成功：HTTP /ping=200，数据库对象=$objectCount；客户端服务地址改为 http://${NewHost}:${AppPort}" -ForegroundColor Green
+    Write-Warning '此脚本只恢复服务端镜像和 SQLite；历史附件、报告及 S3 备份配置需单独迁移。'
 } catch {
     Write-Host $_.Exception.Message -ForegroundColor Red
     Write-Warning '迁移未完成；本机 SQLite 快照未改动。请检查新机容器状态后再重试。'
