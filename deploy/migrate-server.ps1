@@ -29,6 +29,7 @@ if ($SourceHost -eq $NewHost) { throw '源服务器与新服务器相同；请�
 if ($RemoteDir -notmatch '^/[a-zA-Z0-9/_-]+$') { throw '远端目录包含不允许的字符' }
 $source = "${SshUser}@${SourceHost}"
 $target = "${SshUser}@${NewHost}"
+$identityPath = Join-Path $env:USERPROFILE '.ssh\mtl-migration-ed25519'
 $stage = Join-Path $env:USERPROFILE 'Desktop\mtl-migration'
 New-Item -ItemType Directory -Force -Path $stage | Out-Null
 $imageFile = Join-Path $stage 'mtl-migration-image.tar'
@@ -36,13 +37,37 @@ $dbFile = Join-Path $stage 'mtl_server_final.db'
 $filesFile = Join-Path $stage 'mtl-migration-files.tar'
 $sourceStopped = $false
 
+function Initialize-MigrationKey {
+    $keyDir = Split-Path -Parent $identityPath
+    New-Item -ItemType Directory -Force -Path $keyDir | Out-Null
+    if (-not (Test-Path -LiteralPath $identityPath)) {
+        $keygen = New-Object System.Diagnostics.ProcessStartInfo
+        $keygen.FileName = (Get-Command ssh-keygen).Source
+        $keygen.Arguments = '-q -t ed25519 -N "" -f "' + $identityPath + '"'
+        $keygen.UseShellExecute = $false
+        $keygen.CreateNoWindow = $true
+        $process = [System.Diagnostics.Process]::Start($keygen)
+        $process.WaitForExit()
+        if ($process.ExitCode -ne 0) { throw '创建迁移专用 SSH 密钥失败' }
+    }
+    if (-not (Test-Path -LiteralPath "$identityPath.pub")) { throw '迁移公钥文件缺失' }
+}
+function Ensure-KeyAccess([string]$server, [string]$label) {
+    & ssh -i $identityPath -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=8 -p $SshPort $server 'true' 2>$null | Out-Null
+    if ($LASTEXITCODE -eq 0) { return }
+    Write-Host "请为$label $server 输入一次 SSH 密码；输错会立即停止。" -ForegroundColor Cyan
+    Get-Content -LiteralPath "$identityPath.pub" -Raw | & ssh -o PreferredAuthentications=password -o PubkeyAuthentication=no -o NumberOfPasswordPrompts=1 -p $SshPort $server 'umask 077; mkdir -p ~/.ssh; cat >> ~/.ssh/authorized_keys'
+    if ($LASTEXITCODE -ne 0) { throw "$label $server 密码错误或 SSH 登录失败；请核对后重新选择菜单 [6]" }
+    & ssh -i $identityPath -o IdentitiesOnly=yes -o BatchMode=yes -p $SshPort $server 'true' 2>$null | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "$label $server 公钥认证失败；请检查远端 authorized_keys 权限" }
+}
 function Invoke-Remote([string]$server, [string]$command) {
-    $result = & ssh -p $SshPort $server $command
+    $result = & ssh -i $identityPath -o IdentitiesOnly=yes -o BatchMode=yes -p $SshPort $server $command
     if ($LASTEXITCODE -ne 0) { throw "SSH 失败: $server / $command" }
     return ($result -join "`n").Trim()
 }
 function Copy-Ssh([string]$from, [string]$to) {
-    & scp -P $SshPort $from $to
+    & scp -i $identityPath -o IdentitiesOnly=yes -o BatchMode=yes -P $SshPort $from $to
     if ($LASTEXITCODE -ne 0) { throw "SCP 失败: $from -> $to" }
 }
 function Check-Db([string]$path) {
@@ -55,6 +80,9 @@ function Check-Db([string]$path) {
 
 try {
     Write-Host "源机 $SourceHost -> 新机 $NewHost；本机暂存 $stage"
+    Initialize-MigrationKey
+    Ensure-KeyAccess $source '旧服务器'
+    Ensure-KeyAccess $target '新服务器'
     $sourceImage = Invoke-Remote $source "docker inspect --format '{{.Image}}' $container"
     if ($sourceImage -notmatch '^sha256:[0-9a-f]{64}$') { throw '无法确认源容器镜像 ID' }
     $targetContainer = Invoke-Remote $target "docker ps -aq --filter name=^/${container}`$"

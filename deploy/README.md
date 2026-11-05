@@ -4,7 +4,7 @@
 
 双击 `deploy-test.bat` 后选 **[6] 一键迁移服务器**，按提示输入新服务器地址。若当前配置已提前指向新机，脚本会再询问旧机地址。
 
-在 Windows PowerShell 运行，脚本会逐次提示输入旧机和新机的 SSH 密码：
+在 Windows PowerShell 运行。首次使用时，旧机和新机各输入一次 SSH 密码；脚本把专用公钥装到两台服务器，后续连接使用本机 `.ssh/mtl-migration-ed25519` 密钥，不再重复提示密码。输错密码会指出对应服务器并停止：
 
 ```powershell
 .\deploy\migrate-server.ps1 -NewHost 117.72.183.17
