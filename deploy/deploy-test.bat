@@ -69,10 +69,11 @@ echo     [2]  Server only (Docker)
 echo     [3]  Desktop EXE only
 echo     [4]  Android APK (Debug)
 echo     [5]  Backup test server database now (SQLite + S3)
+echo     [6]  一键迁移服务器
 echo     [0]  Exit
 echo.
 set "choice="
-set /p "choice=  Select [0-5]: "
+set /p "choice=  Select [0-6]: "
 if errorlevel 1 goto :quit
 if not defined choice goto :menu
 
@@ -81,6 +82,7 @@ if "%choice%"=="2" goto :run_server
 if "%choice%"=="3" goto :run_desktop
 if "%choice%"=="4" goto :run_android
 if "%choice%"=="5" goto :run_server_backup
+if "%choice%"=="6" goto :run_server_migration
 if "%choice%"=="0" goto :quit
 echo   [WARN] Invalid choice, try again.
 timeout /t 2 >nul
@@ -137,6 +139,13 @@ goto :finished
 
 :run_server_backup
 call :do_backup_server
+if errorlevel 1 goto :failed
+goto :finished
+
+:run_server_migration
+echo.
+echo   --- [Migration] One-click server migration ---
+powershell -NoProfile -ExecutionPolicy Bypass -File "%SCRIPT_DIR%migrate-server.ps1"
 if errorlevel 1 goto :failed
 goto :finished
 

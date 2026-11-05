@@ -18,6 +18,10 @@ if (-not $SourceHost) {
     $SourceHost = $match.Groups[1].Value.Trim()
 }
 if (-not $NewHost) { $NewHost = Read-Host '新服务器 IP 或域名' }
+if ($SourceHost -eq $NewHost) {
+    Write-Host '当前部署配置已指向新机，请输入旧服务器地址。' -ForegroundColor Yellow
+    $SourceHost = Read-Host '旧服务器 IP 或域名'
+}
 foreach ($name in @($SourceHost, $NewHost)) {
     if ($name -notmatch '^[a-zA-Z0-9.-]+$') { throw "非法服务器地址: $name" }
 }
