@@ -1135,10 +1135,13 @@ export class SyncWorker {
     const parentIndex = orderedTables.indexOf('habits')
     const deleted = (row: any) => String(row._sync_operation || row.operation || '') === 'delete'
     const phase = (table: string, wantDeleted: boolean) => ({ table, rows: (tables[table] ?? []).filter(row => deleted(row) === wantDeleted) })
+    const learningTables = ['learning_objectives', 'learning_krs', 'learning_tasks']
+    const normal = (table: string) => ({ table, rows: learningTables.includes(table) ? phase(table, false).rows : (tables[table] ?? []) })
     return [
-      ...orderedTables.slice(0, parentIndex).map(table => ({ table, rows: tables[table] ?? [] })),
+      ...orderedTables.slice(0, parentIndex).map(normal),
       phase('habit_checkins', true), phase('habits', true), phase('habits', false), phase('habit_checkins', false),
-      ...orderedTables.slice(parentIndex + 2).map(table => ({ table, rows: tables[table] ?? [] })),
+      ...orderedTables.slice(parentIndex + 2).map(normal),
+      ...learningTables.slice().reverse().map(table => phase(table, true)),
     ].filter(({ rows }) => rows.length > 0)
   }
 
