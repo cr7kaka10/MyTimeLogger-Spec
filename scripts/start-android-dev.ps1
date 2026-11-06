@@ -45,6 +45,7 @@ $script:activitySurface = $false
 $script:appCrashed = $false
 $script:appRecoveryCount = 0
 $script:activityDiagnostics = 'not_checked'
+$script:reverseVerified = $false
 $script:androidSdkCandidates = @()
 New-Item -ItemType Directory -Force -Path $logDirectory | Out-Null
 
@@ -115,6 +116,7 @@ function Write-StartupSummary([int]$ExitCode) {
         activity_foreground = [bool]$script:activityForeground; activity_surface = [bool]$script:activitySurface
         app_crashed = [bool]$script:appCrashed; app_recovery_count = [int]$script:appRecoveryCount
         activity_diagnostics = $script:activityDiagnostics
+        reverse_verified = [bool]$script:reverseVerified
     } | ConvertTo-Json -Compress | Set-Content -LiteralPath $script:summaryPath -Encoding utf8
     Write-Host "[android] Summary: $script:summaryPath ($result/$script:stage)"
 }
@@ -261,7 +263,7 @@ function Invoke-Preflight {
 function Get-TargetAvdSerial {
     $devices = & $script:adb devices
     $script:transportPorts = @(5554, 5555 | ForEach-Object {
-        if (Get-NetTCPConnection -LocalPort $_ -State Listen -ErrorAction SilentlyContinue) { "$_=listening" } else { "$_=missing" }
+        if (Get-NetTCPConnection -LocalPort $_ -ErrorAction SilentlyContinue) { "$_=present" } else { "$_=missing" }
     })
     foreach ($line in $devices | Select-Object -Skip 1) {
         if ($line -match ('^' + [regex]::Escape($targetSerial) + '\s+device$') -and (Get-TargetEmulatorPid)) {
@@ -478,8 +480,7 @@ function Wait-ForTargetAvd([int]$EmulatorPid, [int]$TimeoutSeconds = 180) {
     do {
         if (-not (Get-Process -Id $EmulatorPid -ErrorAction SilentlyContinue)) { throw 'emulator_exited_before_boot' }
         $serial = Get-TargetAvdSerial
-        $portsReady = ($script:transportPorts -contains '5554=listening') -and ($script:transportPorts -contains '5555=listening')
-        if ($portsReady -and $serial) {
+        if ($serial) {
             $state = Get-AndroidSystemReadiness $serial
             $script:systemStableSamples = if ($state.Ready) { $script:systemStableSamples + 1 } else { 0 }
             Write-Stage "System readiness sample $script:systemStableSamples/2: $($state.Summary)"
@@ -492,7 +493,7 @@ function Wait-ForTargetAvd([int]$EmulatorPid, [int]$TimeoutSeconds = 180) {
                 Write-Stage "Target AVD system is stable: $serial"; return $serial
             }
         }
-        if ((Get-Date) -ge $transportDeadline -and (-not $portsReady -or -not $serial)) {
+        if ((Get-Date) -ge $transportDeadline -and -not $serial) {
             Set-Stage 'transport_wait'
             $EmulatorPid = Repair-TargetAvdTransport $EmulatorPid
             $transportDeadline = (Get-Date).AddSeconds(45)
@@ -548,10 +549,20 @@ function Start-AndroidApp([string]$Serial) {
     }
     Write-Stage 'Configuring HTTP reverse tcp:8000 -> tcp:8000.'
     Invoke-Checked 'adb reverse tcp:8000' { & $script:adb -s $Serial reverse tcp:8000 tcp:8000 }
+    Assert-AndroidReverse $Serial
     Write-Stage "Starting com.mytimelogger.app/.MainActivity on $Serial."
     Invoke-Checked 'adb shell am start MainActivity' {
         & $script:adb -s $Serial shell am start -W -n 'com.mytimelogger.app/.MainActivity'
     }
+}
+
+function Assert-AndroidReverse([string]$Serial) {
+    $script:reverseVerified = $false
+    $mappings = @(& $script:adb -s $Serial reverse --list)
+    if ($LASTEXITCODE -ne 0) { throw 'adb_transport_unavailable: reverse list failed' }
+    $script:reverseVerified = [bool](@($mappings | Where-Object { $_ -match '^\S+\s+tcp:8000\s+tcp:8000\s*$' }).Count)
+    if (-not $script:reverseVerified) { throw "adb_reverse_missing: tcp:8000 mapping absent on $Serial" }
+    Write-Stage "HTTP reverse verified on $Serial."
 }
 
 function Get-AndroidInputReadiness([string]$Serial) {
@@ -688,6 +699,7 @@ try {
                 if (-not $appReady) { $failure = Get-AndroidAppFailureCategory; throw "${failure}: $script:activityDiagnostics" }
             }
             Set-Stage 'foreground_request'; Request-TargetEmulatorForeground $emulatorPid
+            Assert-AndroidReverse $serial
             Write-Stage "Android development client is ready on $serial."
             $exitCode = 0
         }
