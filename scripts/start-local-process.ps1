@@ -13,12 +13,24 @@ function Test-ProjectProcess([int]$ProcessId, [string]$ProcessName) {
     if (-not $processInfo) { return $false }
     $commandLine = [string]$processInfo.CommandLine
     if ($ProcessName -eq 'Server') {
-        return ($commandLine -match 'uvicorn\s+server\.server:app')
+        return ($commandLine -match 'uvicorn\s+server\.server:app') -and
+            ($commandLine -like "*--app-dir `"$root`"*")
     }
     if ($ProcessName -eq 'Vite') {
         return ($commandLine -like "*$root*") -and ($commandLine -match '[/\\]vite[/\\](bin|dist)[/\\]')
     }
     return $false
+}
+
+function Test-TcpBindAvailable([int]$Port, [Net.IPAddress]$Address) {
+    $listener = [Net.Sockets.TcpListener]::new($Address, $Port)
+    try {
+        $listener.Server.ExclusiveAddressUse = $true
+        $listener.Start()
+        return $true
+    } catch [Net.Sockets.SocketException] {
+        return $false
+    } finally { $listener.Stop() }
 }
 
 function Get-VerifiedViteState([switch]$RequireCurrentRun, [switch]$RequireAddress) {
@@ -127,9 +139,15 @@ try {
         }
     }
     if ($definition.Port) {
-        $listeners = @(Get-NetTCPConnection -State Listen -LocalPort $definition.Port -ErrorAction SilentlyContinue)
-        if ($listeners.Count) {
-            $ownerPids = @($listeners.OwningProcess | Sort-Object -Unique)
+        $bindAddress = if ($Name -eq 'Server') { [Net.IPAddress]::Any } else { [Net.IPAddress]::Loopback }
+        if (-not (Test-TcpBindAvailable -Port $definition.Port -Address $bindAddress)) {
+            $listeners = @(Get-NetTCPConnection -LocalPort $definition.Port -ErrorAction SilentlyContinue |
+                Where-Object { $_.RemotePort -eq 0 -and $_.OwningProcess -gt 0 })
+            $ownerPids = @($listeners | ForEach-Object { [int]$_.OwningProcess } | Sort-Object -Unique)
+            if (-not $ownerPids.Count) {
+                [Console]::Error.WriteLine("[start] Port $($definition.Port) cannot bind; owner unknown or port excluded.")
+                exit 2
+            }
             $unknownPids = @($ownerPids | Where-Object { -not (Test-ProjectProcess -ProcessId $_ -ProcessName $Name) })
             if ($unknownPids.Count) {
                 [Console]::Error.WriteLine("[start] Port $($definition.Port) includes unknown PID $($unknownPids -join ','); refusing to stop it.")
@@ -139,11 +157,11 @@ try {
                 Stop-Process -Id $ownerPid -Force -ErrorAction Stop
             }
             $deadline = [DateTime]::UtcNow.AddSeconds(10)
-            while ((Get-NetTCPConnection -State Listen -LocalPort $definition.Port -ErrorAction SilentlyContinue) -and
+            while (-not (Test-TcpBindAvailable -Port $definition.Port -Address $bindAddress) -and
                     [DateTime]::UtcNow -lt $deadline) {
                 Start-Sleep -Milliseconds 100
             }
-            if (Get-NetTCPConnection -State Listen -LocalPort $definition.Port -ErrorAction SilentlyContinue) {
+            if (-not (Test-TcpBindAvailable -Port $definition.Port -Address $bindAddress)) {
                 [Console]::Error.WriteLine("[start] $Name PID stopped but port $($definition.Port) did not become free.")
                 exit 2
             }

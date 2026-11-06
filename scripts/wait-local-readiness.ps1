@@ -39,10 +39,18 @@ foreach ($candidate in @($ServerUrl, $UiUrl)) {
 }
 
 if ($RequirePortsFree) {
-    foreach ($port in @(([Uri]$ServerUrl).Port, ([Uri]$UiUrl).Port)) {
-        if (Get-NetTCPConnection -State Listen -LocalPort $port -ErrorAction SilentlyContinue) {
-            Write-Error "[readiness] Required localhost port $port is already in use" -ErrorAction Continue
+    foreach ($target in @(@{ Port = ([Uri]$ServerUrl).Port; Address = [Net.IPAddress]::Any },
+            @{ Port = ([Uri]$UiUrl).Port; Address = [Net.IPAddress]::Loopback })) {
+        $port = [int]$target.Port
+        $listener = [Net.Sockets.TcpListener]::new($target.Address, $port)
+        try {
+            $listener.Server.ExclusiveAddressUse = $true
+            $listener.Start()
+        } catch [Net.Sockets.SocketException] {
+            [Console]::Error.WriteLine("[readiness] Required localhost port $port is already in use")
             exit 3
+        } finally {
+            $listener.Stop()
         }
     }
     Write-Host '[readiness] Required localhost ports are free.'
