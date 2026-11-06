@@ -705,19 +705,22 @@ export async function pushChecklistOnly(): Promise<SyncNowResult> {
 }
 
 /** 立即拉取服务端增量并 await 结果，用于刷新按钮 */
-export async function pullSync(): Promise<number> {
+export async function pullSync(options: { reason?: 'server-readback' | 'user-action'; required?: boolean } = {}): Promise<number> {
   emitSharedSyncStatus('syncing')
   if (_syncWorker && typeof _syncWorker.pullAndMergeResult === 'function') {
     try {
-      const result = await _syncWorker.pullAndMergeResult(false, { scope: 'core', reason: 'server-readback' })
+      const result = await _syncWorker.pullAndMergeResult(false, { scope: 'core', reason: options.reason ?? 'server-readback' })
       emitSharedSyncStatus(result.ok ? 'synced' : 'failed', result.error)
+      if (options.required && !result.ok) throw new Error(result.error || 'pull_failed')
       return result.ok ? result.merged : 0
     } catch (error: any) {
       emitSharedSyncStatus('failed', error?.message || 'pull_failed')
+      if (options.required) throw error
       return 0
     }
   }
   emitSharedSyncStatus('failed', 'sync_worker_not_ready')
+  if (options.required) throw new Error('sync_worker_not_ready')
   return 0
 }
 

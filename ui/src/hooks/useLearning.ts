@@ -23,10 +23,9 @@ export function sortLearningKrs(krs: LearningKR[]) {
 export function useLearning(runtime?: LearningRuntime) {
   const [objectives, setObjectives] = useState<LearningObjective[]>([])
   const [learningCategories, setLearningCategories] = useState<LearningCategory[]>([])
-  const [refreshTrigger, setRefreshTrigger] = useState(0)
+  const [error, setError] = useState<string | null>(null)
 
   const loadObjectives = useCallback(async () => {
-    try {
       const db = await getDatabase()
       const obs = db.allRaw('SELECT * FROM learning_objectives ORDER BY created_at DESC') as LearningObjective[]
       const krs = db.allRaw('SELECT * FROM learning_krs ORDER BY created_at ASC') as LearningKR[]
@@ -34,14 +33,16 @@ export function useLearning(runtime?: LearningRuntime) {
       const categories = db.allRaw("SELECT id,name FROM categories WHERE is_active=1 AND name IN ('输入','输出') ORDER BY name") as LearningCategory[]
       setObjectives(obs.map(ob => ({ ...ob, krs: sortLearningKrs(krs.filter(kr => kr.objective_id === ob.id)).map(kr => ({ ...kr, tasks: tasks.filter(t => t.kr_id === kr.id) })) })))
       setLearningCategories(categories)
-    } catch {
-      setObjectives([])
-      setLearningCategories([])
-    }
   }, [])
 
-  useEffect(() => { void loadObjectives() }, [loadObjectives, refreshTrigger])
-  const refresh = useCallback(async () => { await loadObjectives() }, [loadObjectives])
+  useEffect(() => { void loadObjectives().catch(() => setError('学习内容读取失败，请重试刷新')) }, [loadObjectives])
+  const refresh = useCallback(async () => {
+    try {
+      await pullSync({ reason: 'user-action', required: true })
+      await loadObjectives()
+      setError(null)
+    } catch { setError('学习内容已保存，但尚未刷新。请重试刷新') }
+  }, [loadObjectives])
 
   const command = useCallback(async (payload: Record<string, unknown>) => {
     if (!runtime?.serverUrl || !runtime.authToken) throw new Error('请先连接服务端')
@@ -52,10 +53,9 @@ export function useLearning(runtime?: LearningRuntime) {
     })
     const body = await response.json().catch(() => null)
     if (!response.ok) throw new Error(body?.detail?.message || body?.detail || body?.message || '学习命令失败')
-    await pullSync()
-    setRefreshTrigger(value => value + 1)
+    await refresh()
     return body
-  }, [runtime?.authToken, runtime?.serverUrl])
+  }, [runtime?.authToken, runtime?.serverUrl, refresh])
 
   const createObjective = useCallback((data: { title: string; duration?: number; baseline?: string; target_description?: string } | string) => {
     const value = typeof data === 'string' ? { title: data } : data
@@ -83,10 +83,9 @@ export function useLearning(runtime?: LearningRuntime) {
     if (!response.ok) throw new Error(body?.detail?.message || body?.detail || '取消清单任务失败')
     if (body?.status === 'not_linked') return false
     if (body?.status !== 'confirmed') throw new Error(body?.error_code || '取消清单任务失败')
-    await pullSync()
-    setRefreshTrigger(value => value + 1)
+    await refresh()
     return true
-  }, [runtime?.authToken, runtime?.serverUrl])
+  }, [runtime?.authToken, runtime?.serverUrl, refresh])
 
   const importFullObjective = useCallback(async (jsonString: string) => {
     try {
@@ -129,5 +128,5 @@ export function useLearning(runtime?: LearningRuntime) {
     return null
   }, [objectives])
 
-  return { objectives, learningCategories, createObjective, addObjective: createObjective, updateObjective, removeObjective, addKR, addTask, toggleTask, setTaskStatus, removeTask, cancelChecklistTask, refresh, importFullObjective, importKRsToObjective, startFocusOnTask }
+  return { objectives, learningCategories, error, createObjective, addObjective: createObjective, updateObjective, removeObjective, addKR, addTask, toggleTask, setTaskStatus, removeTask, cancelChecklistTask, refresh, importFullObjective, importKRsToObjective, startFocusOnTask }
 }

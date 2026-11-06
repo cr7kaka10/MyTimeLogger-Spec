@@ -575,7 +575,7 @@ const EditObjectiveModal = ({ objective, onClose, onSave }: { objective: Learnin
 }
 
 export const LearningPage = memo(({ runtime }: LearningPageProps) => {
-  const { objectives, learningCategories, createObjective, updateObjective, removeObjective, addKR, addTask, removeTask, cancelChecklistTask, refresh: refreshLearning, importFullObjective, importKRsToObjective } = useLearning(runtime)
+  const { objectives, learningCategories, error: learningError, createObjective, updateObjective, removeObjective, addKR, addTask, removeTask, cancelChecklistTask, refresh: refreshLearning, importFullObjective, importKRsToObjective } = useLearning(runtime)
   const { submissions, submit: submitChecklistTask, clear: clearChecklistTaskSubmission } = useChecklistTaskSubmission(runtime, refreshLearning)
   const [showCreateModal, setShowCreateModal] = useState(false)
   const [editingObjective, setEditingObjective] = useState<LearningObjective | null>(null)
@@ -820,6 +820,7 @@ export const LearningPage = memo(({ runtime }: LearningPageProps) => {
         </div>
       )}
 
+      {learningError && <div role="alert" className="mx-5 flex items-center justify-between rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">{learningError}<button type="button" onClick={() => void refreshLearning()} className="ml-3 font-medium underline">重试刷新</button></div>}
       <main className="flex-1 overflow-y-auto px-5 py-4 scrollbar-hide">
         {objectives.map(obj => (
           <ObjectiveCard 
