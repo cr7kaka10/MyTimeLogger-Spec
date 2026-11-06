@@ -12,12 +12,14 @@ export const nextBeijingDailyAt = (hour: number, minute: number, now = new Date(
 }
 
 export const morningNotifications = (now = new Date()): Array<NotificationMessage & { atMs: number }> => {
-  const sleepAt = nextBeijingDailyAt(8, 30, now); const bodyAt = nextBeijingDailyAt(8, 40, now)
+  const sleepAt = nextBeijingDailyAt(8, 30, now)
   return [
     { eventKey: `morning:sleep-upload:${beijingDate(new Date(sleepAt))}`, channel: 'sleep', title: '上传睡眠截图', body: '请上传昨晚的睡眠截图', route: 'sleep', atMs: sleepAt },
-    { eventKey: `morning:body-metrics:${beijingDate(new Date(bodyAt))}`, channel: 'achievements', title: '测量体重体脂', body: '请测量并记录体重和体脂', route: 'exercise', atMs: bodyAt },
   ]
 }
+
+export const obsoleteBodyMetricsKeys = (now = new Date()) => [0, 1].map(days =>
+  `morning:body-metrics:${beijingDate(new Date(now.getTime() + days * 86_400_000))}`)
 
 export const poopReminder = (snapshot: LogicSnapshot, now = Date.now()): (NotificationMessage & { atMs: number }) | null => {
   if (snapshot.category.name !== '拉屎' || snapshot.state !== 'countup_studying' || snapshot.isPaused) return null

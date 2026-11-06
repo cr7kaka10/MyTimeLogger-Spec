@@ -29,6 +29,19 @@ def test_compensation_template_is_unique_and_reserved(account):
         store.delete_reward(user_id, first[0]["id"])
 
 
+def test_existing_compensation_description_is_refreshed_without_changing_ledger(account):
+    store, user_id = account
+    reward_id = f"compensation-credit:{user_id}"
+    store.list_rewards(user_id)
+    with store._connect() as conn:
+        conn.execute("UPDATE server_rewards SET description='旧说明' WHERE id=?", (reward_id,))
+        conn.commit()
+    rewards = store.list_rewards(user_id)
+    assert next(item for item in rewards if item["id"] == reward_id)["description"] == COMPENSATION_DESCRIPTION
+    with store._connect() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM server_reward_ledger WHERE user_id=?", (user_id,)).fetchone()[0] == 0
+
+
 @pytest.mark.parametrize("amount,note,request_id", [
     (0, "面试", uuid.uuid4().hex), (-1, "面试", uuid.uuid4().hex),
     (1.234, "面试", uuid.uuid4().hex), (float("nan"), "面试", uuid.uuid4().hex),

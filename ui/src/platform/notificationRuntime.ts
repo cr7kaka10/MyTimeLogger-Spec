@@ -5,7 +5,7 @@ import { createNotificationService, sleepTimeNotification } from './notification
 import { createNotificationPreferences } from './notificationPreferences'
 import { createNotificationCoordinator } from './notificationCoordinator'
 import { classifySleepNotificationEvents } from './notificationEvents'
-import { morningNotifications, poopReminder } from './contextualNotifications'
+import { morningNotifications, obsoleteBodyMetricsKeys, poopReminder } from './contextualNotifications'
 import type { LogicSnapshot } from '@core/LogicSnapshot'
 import { recordBehavior } from '../utils/behaviorAudit'
 import { hasEarlierLocalDietCheckin } from './dietPenaltyNotificationGuard'
@@ -57,6 +57,7 @@ export async function installNotificationRuntime(runtime: PlatformRuntime, db: a
   }
   prefetchMotivation()
   if (runtime === 'capacitor-android') await current.notifications.schedule(sleepTimeNotification(nextSleepReminderAt())).catch(() => {})
+  if (runtime === 'capacitor-android') for (const key of obsoleteBodyMetricsKeys()) await current.notifications.cancel(key).catch(() => {})
   let morningKeys: string[] = []; let poopKey: string | null = null
   let lastTimerSnapshot: LogicSnapshot | null = null
   const poopStateKey = 'notifications.poop-scheduled-key.v1'

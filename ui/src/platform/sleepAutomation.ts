@@ -2,6 +2,18 @@ export type SleepAutomationError = 'unavailable' | 'native_error' | 'rejected' |
 export type SleepAutomationResult = { ok: boolean, error?: SleepAutomationError }
 export type SleepCaptureTest = { runId: string, date: string, stage: string, reason: string, startedAt?: number, savedAt: string, width: number, height: number, fileName?: string, album?: string }
 export type SleepAutomationStatus = { available: boolean, enabled: boolean, configured?: boolean, stage?: string, phase?: string, sleepDate?: string, updatedAt?: number, reason?: string, captureBlockedReason?: string, captureStep?: string, captureWindow?: string, captureTest?: SleepCaptureTest, mediaSelected?: boolean, requestIdPresent?: boolean, nextRunAt?: string, nextRetryAt?: string, history?: unknown[], error?: SleepAutomationError }
+export function sleepAutomationProgress(status: SleepAutomationStatus): string {
+  if (status.stage === 'SUCCESS') return '本次睡眠分析完成，正在刷新报告'
+  const failures: Record<string, string> = { login_required: '请登录后重试', date_mismatch: '截图日期与今天不符', ocr_failed: '图片识别失败', vision_model_unconfigured: '尚未配置视觉模型', network_error: '网络连接失败', retry_window_elapsed: '今日重试窗口已结束' }
+  if (status.stage === 'FAILED' && !status.nextRetryAt) return `自动化失败：${failures[status.reason || ''] || status.reason || '未知错误'}`
+  const labels: Record<string, string> = {
+    ocr: status.requestIdPresent ? '图片已上传，OCR 正在排队或识别' : '正在上传睡眠图片',
+    ocr_ready: 'OCR 已完成，正在请求睡眠分析',
+    report: '正在生成本次睡眠分析报告',
+  }
+  const label = labels[status.phase || ''] || '正在处理睡眠图片'
+  return status.nextRetryAt && status.reason ? `${label}；下次重试：${status.nextRetryAt}` : label
+}
 type NativeSleepAutomation = { status(): string, enable(): boolean, disable(): void, test(): boolean, retry(): boolean, generateReport(): boolean, oneClick?(): boolean, previewCapture(): boolean, exportCapture?(): string, cancel(): void, configure(url: string, token: string, userId: string): boolean, authorize(permission: string): boolean, clearConfiguration(): void }
 type Host = { MTLSleepAutomation?: NativeSleepAutomation }
 

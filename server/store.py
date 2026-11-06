@@ -47,7 +47,14 @@ except (ImportError, ValueError):
 
 DONE_STATUSES = {"done"}
 UNSET = object()
-COMPENSATION_DESCRIPTION = "只能用于补偿因面试等找工作直接相关、外部不可行力引起的当天金币损失，其他情况禁用！比如当天去面试，无法达标运动健身、睡眠指标无法完成口金币，可以通过此商品补偿金币损失"
+COMPENSATION_DESCRIPTION = (
+    "补偿金币仅限以下四种情况，其他情况禁用：\n"
+    "1. 找工作直接相关事项造成的当天金币损失。\n"
+    "2. 外部不可抗力造成的当天金币损失。\n"
+    "3. 初始化后一次性补偿 200 启动金币。\n"
+    "4. 副业实际赚到钱后，按实际收入金额等额补偿金币。\n"
+    "5. 例如：当天参加面试，导致运动健身或睡眠指标未达标而扣金币，可补偿相应损失。"
+)
 
 
 import hashlib
@@ -1701,6 +1708,13 @@ class ServerSleepStore:
             )
             if inserted.rowcount:
                 self._record_server_change(conn, user_id, "server_rewards", reward_id, "upsert", {"id": reward_id})
+            else:
+                updated = conn.execute(
+                    "UPDATE server_rewards SET description=?,updated_at=? WHERE id=? AND user_id=? AND redemption_mode='compensation_credit' AND description<>?",
+                    (COMPENSATION_DESCRIPTION, stamp, reward_id, user_id, COMPENSATION_DESCRIPTION),
+                )
+                if updated.rowcount:
+                    self._record_server_change(conn, user_id, "server_rewards", reward_id, "upsert", {"id": reward_id})
 
     def _resolve_unlock_source(self, conn, user_id, unlock_source_type=None, unlock_source_id=None, unlock_task_id=None, allow_legacy_exercise=False):
         source = str(unlock_source_id or "")

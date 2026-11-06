@@ -25,7 +25,7 @@ export const RewardsPage = memo(({ balance, rewards, ledger, unclaimedRewards, b
   const [customSpendNote, setCustomSpendNote] = useState('')
   const [purchaseError, setPurchaseError] = useState('')
   const [isBuying, setIsBuying] = useState(false)
-  const [compensationStep, setCompensationStep] = useState<'amount' | 'reason'>('amount')
+  const [purchaseStep, setPurchaseStep] = useState<'amount' | 'reason'>('amount')
   const compensationRequestId = useRef<string | null>(null)
   const customSpendInputRef = useRef<HTMLInputElement>(null)
   const customSpendNoteInputRef = useRef<HTMLInputElement>(null)
@@ -52,7 +52,7 @@ export const RewardsPage = memo(({ balance, rewards, ledger, unclaimedRewards, b
     setCustomSpend('')
     setCustomSpendNote('')
     setPurchaseError('')
-    setCompensationStep('amount')
+    setPurchaseStep('amount')
     compensationRequestId.current = null
   }
 
@@ -65,9 +65,9 @@ export const RewardsPage = memo(({ balance, rewards, ledger, unclaimedRewards, b
       customSpendInputRef.current?.focus()
       return
     }
-    if (isCompensation && compensationStep === 'amount') {
+    if ((selectedReward.redemption_mode === 'custom_spend' || isCompensation) && purchaseStep === 'amount') {
       setPurchaseError('')
-      setCompensationStep('reason')
+      setPurchaseStep('reason')
       return
     }
     if ((selectedReward.redemption_mode === 'custom_spend' || isCompensation) && !customSpendNote.trim()) {
@@ -83,7 +83,7 @@ export const RewardsPage = memo(({ balance, rewards, ledger, unclaimedRewards, b
       setSelectedReward(null)
       setCustomSpend('')
       setCustomSpendNote('')
-      setCompensationStep('amount')
+      setPurchaseStep('amount')
       compensationRequestId.current = null
     } catch (reason: any) {
       setPurchaseError(reason?.message || (isCompensation ? '补偿失败，请重试' : '购买失败，请修改金额后重试'))
@@ -171,7 +171,7 @@ export const RewardsPage = memo(({ balance, rewards, ledger, unclaimedRewards, b
               <div className="text-3xl">{reward.icon}</div>
               <div className="mt-3 pr-20 font-semibold text-gray-900">{reward.title}</div>
               <div className="mt-1 text-sm text-gray-400">{isUnlock ? '完成奖励型 · 请在任务、习惯或学习目标中绑定' : isPending ? '暂未绑定任务' : isCustomSpend ? '填写消费金额 · 1 金币 = 1 元' : isCompensation ? '自由输入补偿金币金额' : `${reward.price}💰`}</div>
-              {isCompensation && <p className="mt-2 whitespace-normal break-words text-sm leading-6 text-gray-600 dark:text-gray-300">{reward.description}</p>}
+              {isCompensation && <p className="mt-2 whitespace-pre-line break-words text-sm leading-6 text-gray-600 dark:text-gray-300">{reward.description}</p>}
               <div className="mt-1 text-xs text-gray-400">{reward.inventory_mode === 'daily' ? `完整卡片今日 ${reward.inventory_used || 0}/${reward.inventory_limit}` : reward.inventory_mode === 'monthly' ? `完整卡片本月 ${reward.inventory_used || 0}/${reward.inventory_limit}` : '完整卡片不限量'}{reward.fulfillment_mode === 'fragment' ? ` · 进度 ${fragmentPercent}%` : ''}{inventoryFull ? ' · 本月已满' : ''}</div>
               <button
                 type="button"
@@ -186,14 +186,14 @@ export const RewardsPage = memo(({ balance, rewards, ledger, unclaimedRewards, b
 
       {/* 兑换确认 */}
       <BottomSheet open={selectedReward !== null} onClose={closePurchaseSheet}>
-        <div className="text-lg font-semibold text-gray-900 dark:text-white">{selectedReward?.redemption_mode === 'compensation_credit' ? compensationStep === 'amount' ? '确认补偿金额' : '填写具体原因' : '确认兑换'}</div>
-        <div className="mt-3 text-sm text-gray-500 dark:text-gray-300">{selectedReward?.redemption_mode === 'compensation_credit' ? compensationStep === 'amount' ? '请输入需要补偿的金币金额，确认后填写具体原因。' : `确认补偿 ${customSpend}🪙，请填写具体原因。` : selectedReward?.redemption_mode === 'custom_spend' ? `填写 ${selectedReward.title} 实际消费金额，1 金币 = 1 元。` : `确定用 ${selectedReward?.price}💰 兑换 ${selectedReward?.title} 吗？`}</div>
-        {(selectedReward?.redemption_mode === 'custom_spend' || (selectedReward?.redemption_mode === 'compensation_credit' && compensationStep === 'amount')) && <input ref={customSpendInputRef} autoFocus type="text" inputMode="decimal" value={customSpend} onFocus={() => { lastCustomSpendFocus.current = 'amount' }} onChange={event => updateCustomSpend(event.target.value)} aria-describedby={purchaseError ? 'custom-spend-error' : undefined} placeholder={selectedReward?.redemption_mode === 'compensation_credit' ? '补偿金额（金币）' : '消费金额（元）'} className="mt-3 w-full rounded-xl border border-gray-200 px-3 py-2 text-sm outline-none focus:border-blue-500 dark:bg-gray-800 dark:text-white" />}
-        {(selectedReward?.redemption_mode === 'custom_spend' || (selectedReward?.redemption_mode === 'compensation_credit' && compensationStep === 'reason')) && <input ref={customSpendNoteInputRef} autoFocus={compensationStep === 'reason'} type="text" value={customSpendNote} maxLength={120} onFocus={() => { lastCustomSpendFocus.current = 'note' }} onChange={event => updateCustomSpendNote(event.target.value)} aria-describedby={purchaseError ? 'custom-spend-error' : undefined} placeholder={selectedReward?.redemption_mode === 'compensation_credit' ? '具体补偿原因（必填）' : '具体买了什么（必填）'} className="mt-3 w-full rounded-xl border border-gray-200 px-3 py-2 text-sm outline-none focus:border-blue-500 dark:bg-gray-800 dark:text-white" />}
+        <div className="text-lg font-semibold text-gray-900 dark:text-white">{selectedReward?.redemption_mode === 'compensation_credit' ? purchaseStep === 'amount' ? '确认补偿金额' : '填写具体原因' : selectedReward?.redemption_mode === 'custom_spend' ? purchaseStep === 'amount' ? '确认消费金额' : '填写消费备注' : '确认兑换'}</div>
+        <div className="mt-3 text-sm text-gray-500 dark:text-gray-300">{selectedReward?.redemption_mode === 'compensation_credit' ? purchaseStep === 'amount' ? '请输入需要补偿的金币金额，确认后填写具体原因。' : `确认补偿 ${customSpend}🪙，请填写具体原因。` : selectedReward?.redemption_mode === 'custom_spend' ? purchaseStep === 'amount' ? `填写 ${selectedReward.title} 实际消费金额，1 金币 = 1 元。` : `确认消费 ${customSpend}🪙，请填写备注。` : `确定用 ${selectedReward?.price}💰 兑换 ${selectedReward?.title} 吗？`}</div>
+        {(selectedReward?.redemption_mode === 'custom_spend' || selectedReward?.redemption_mode === 'compensation_credit') && purchaseStep === 'amount' && <input ref={customSpendInputRef} autoFocus type="text" inputMode="decimal" value={customSpend} onFocus={() => { lastCustomSpendFocus.current = 'amount' }} onChange={event => updateCustomSpend(event.target.value)} aria-describedby={purchaseError ? 'custom-spend-error' : undefined} placeholder={selectedReward?.redemption_mode === 'compensation_credit' ? '补偿金额（金币）' : '消费金额（元）'} className="mt-3 w-full rounded-xl border border-gray-200 px-3 py-2 text-sm outline-none focus:border-blue-500 dark:bg-gray-800 dark:text-white" />}
+        {(selectedReward?.redemption_mode === 'custom_spend' || selectedReward?.redemption_mode === 'compensation_credit') && purchaseStep === 'reason' && <input ref={customSpendNoteInputRef} autoFocus type="text" value={customSpendNote} maxLength={120} onFocus={() => { lastCustomSpendFocus.current = 'note' }} onChange={event => updateCustomSpendNote(event.target.value)} aria-describedby={purchaseError ? 'custom-spend-error' : undefined} placeholder={selectedReward?.redemption_mode === 'compensation_credit' ? '具体补偿原因（必填）' : '具体买了什么（必填）'} className="mt-3 w-full rounded-xl border border-gray-200 px-3 py-2 text-sm outline-none focus:border-blue-500 dark:bg-gray-800 dark:text-white" />}
         {purchaseError && <p id="custom-spend-error" className="mt-2 text-sm text-red-600">{purchaseError}</p>}
         <div className="mt-6 grid grid-cols-2 gap-3">
-          <button type="button" disabled={isBuying} onClick={closePurchaseSheet} className="h-12 rounded-xl bg-gray-100 font-semibold disabled:opacity-60">取消</button>
-          <button type="button" disabled={isBuying} onClick={() => void confirmPurchase()} className="h-12 rounded-xl bg-blue-600 font-semibold text-white disabled:opacity-60">{isBuying ? '处理中…' : selectedReward?.redemption_mode === 'compensation_credit' ? compensationStep === 'amount' ? '确认金额' : '确认补偿' : '确认'}</button>
+          <button type="button" disabled={isBuying} onClick={purchaseStep === 'reason' ? () => { setPurchaseStep('amount'); setPurchaseError('') } : closePurchaseSheet} className="h-12 rounded-xl bg-gray-100 font-semibold disabled:opacity-60">{purchaseStep === 'reason' ? '返回修改金额' : '取消'}</button>
+          <button type="button" disabled={isBuying} onClick={() => void confirmPurchase()} className="h-12 rounded-xl bg-blue-600 font-semibold text-white disabled:opacity-60">{isBuying ? '处理中…' : selectedReward?.redemption_mode === 'compensation_credit' || selectedReward?.redemption_mode === 'custom_spend' ? purchaseStep === 'amount' ? '确认金额' : '确认提交' : '确认'}</button>
         </div>
       </BottomSheet>
 

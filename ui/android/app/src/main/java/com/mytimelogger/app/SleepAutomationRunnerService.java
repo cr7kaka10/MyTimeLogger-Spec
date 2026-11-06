@@ -63,14 +63,14 @@ public final class SleepAutomationRunnerService extends Service {
         long now=System.currentTimeMillis();SleepAutomationStateStore states=new SleepAutomationStateStore(this);SleepAutomationSnapshot s=states.load(today());
         if(s==null){notifyFinalResult(false,reason);return;}
         int nextAttempt=nextRetryAttempt(s.attempt,reason);long at=nextAttempt<0?-1:nextRetry(now,reason);
-        if(at<0){String terminal=nextAttempt<0?reason:"retry_window_elapsed";states.save(new SleepAutomationSnapshot("FAILED",s.sleepDate,s.mediaUri,s.requestId,Math.max(1,s.attempt),terminal,now));states.setNextRetryAt(-1);notifyFinalResult(false,terminal);return;}
+        if(at<0){String terminal=nextAttempt<0?reason:"retry_window_elapsed";states.save(new SleepAutomationSnapshot("FAILED",s.sleepDate,s.mediaUri,s.requestId,Math.max(1,s.attempt),terminal,now,s.mode));states.setNextRetryAt(-1);notifyFinalResult(false,terminal);return;}
         String stage=s.requestId!=null&&!s.requestId.isEmpty()&&"FAILED".equals(s.stage)?"FAILED":"POLLING";
         states.save(new SleepAutomationSnapshot(stage,s.sleepDate,s.mediaUri,s.requestId,nextAttempt,reason,now,s.mode));states.setNextRetryAt(at);keepNotification=true;startForeground(840,notification("POLLING:"+reason));
         ((AlarmManager)getSystemService(ALARM_SERVICE)).setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP,at,retryPending(this));
     }
-    private String reportStateToday(){String[] secret=new SleepAutomationSecretStore(this).read();if(secret==null)return "unknown";SleepAutomationApiClient api=new SleepAutomationApiClient(getContentResolver());return SleepAutomationApiClient.dateReportState(api.statusByDate(today(),secret[0],secret[1]),today());}
+    private boolean currentReportReady(){SleepAutomationStateStore states=new SleepAutomationStateStore(this);SleepAutomationSnapshot s=states.load(today());if(s==null||!"report".equals(s.mode)||s.requestId==null||s.requestId.isEmpty())return false;String[] secret=new SleepAutomationSecretStore(this).read();if(secret==null)return false;SleepAutomationApiClient api=new SleepAutomationApiClient(getContentResolver());return SleepAutomationApiClient.statusJob(api.status(s.requestId,s.sleepDate,secret[0],secret[1]),s.sleepDate).reportReady;}
     private void notifyFinalResult(boolean success,String reason){
-        if(!success){String report=reportStateToday();if("ready".equals(report))success=true;else if("unknown".equals(report)){keepNotification=true;startForeground(840,notification("POLLING:report_status_unknown"));SleepAutomationNotificationFactory.showStatusUnknown(this,reason);return;}}
+        if(!success&&currentReportReady()){success=true;SleepAutomationStateStore states=new SleepAutomationStateStore(this);SleepAutomationSnapshot s=states.load(today());states.save(new SleepAutomationSnapshot("SUCCESS",s.sleepDate,s.mediaUri,s.requestId,s.attempt,"",System.currentTimeMillis(),"report"));}
         keepNotification=true;String stage=success?"SUCCESS":"FAILED:"+reason;startForeground(840,notification(stage));SleepAutomationNotificationFactory.showResult(this,success,reason);
     }
     private void notifyFailure(String reason){notifyFinalResult(false,reason);}
@@ -204,15 +204,15 @@ public final class SleepAutomationRunnerService extends Service {
             }
             SleepAutomationApiClient.Job ocr=awaitStatus(api,s,secret);
             if(!"uploaded".equals(ocr.state)){if(Arrays.asList("queued","running","timeout","network_error","server_error").contains(ocr.state)){scheduleRetry("ocr_pending");stopSelf();}else failSequential(states,s,ocr.state);return;}
-            s=phase(s,"UPLOADED",s.requestId,"","ocr_ready");states.save(s);
+            s=phase(s,"UPLOADED",s.requestId,"","ocr_ready");states.save(s);states.setNextRetryAt(-1);
         }
         if("ocr_ready".equals(s.mode)){
             SleepAutomationApiClient.Job report=SleepAutomationApiClient.uploadJob(api.quickReport(s.sleepDate,secret[0],secret[1]));
             if(report.requestId.isEmpty()){if(Arrays.asList("timeout","network_error","server_error").contains(report.state)){scheduleRetry("report_request_pending");stopSelf();}else failSequential(states,s,report.state);return;}
-            s=phase(s,"POLLING",report.requestId,"sleep_report_pending","report");states.save(s);
+            s=phase(s,"POLLING",report.requestId,"sleep_report_pending","report");states.save(s);states.setNextRetryAt(-1);
         }
         SleepAutomationApiClient.Job report=awaitStatus(api,s,secret);
-        if(report.reportReady){states.save(phase(s,"SUCCESS",s.requestId,"","report"));notifyFinalResult(true,"");stopSelf();return;}
+        if(report.reportReady){states.save(phase(s,"SUCCESS",s.requestId,"","report"));states.setNextRetryAt(-1);notifyFinalResult(true,"");stopSelf();return;}
         if(Arrays.asList("queued","running","uploaded","done","reused","timeout","network_error","server_error").contains(report.state)){scheduleRetry("sleep_report_pending");stopSelf();return;}
         failSequential(states,s,report.state);
     }

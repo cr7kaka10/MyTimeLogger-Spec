@@ -1,4 +1,4 @@
-import { createSleepAutomation, createSleepAutomationConfigSync } from './sleepAutomation'
+import { createSleepAutomation, createSleepAutomationConfigSync, sleepAutomationProgress } from './sleepAutomation'
 
 const assert = (value: unknown, message: string) => { if (!value) throw new Error(message) }
 const calls: string[] = []
@@ -13,6 +13,10 @@ assert(api.enable().ok && api.disable().ok && api.test().ok && api.retry().ok &&
 assert(api.configure('https://example.test', 'secret', '7').ok && api.authorize('media').ok && api.clearConfiguration().ok, 'configuration actions must forward')
 assert(calls.join(',') === 'enable,disable,test,retry,generateReport,preview,cancel,https://example.test:secret:7,authorize:media,clear', 'all bridge actions must be forwarded')
 assert(createSleepAutomation({}).enable().error === 'unavailable', 'web/electron must report unavailable')
+assert(sleepAutomationProgress({ available: true, enabled: true, phase: 'ocr', stage: 'POLLING', requestIdPresent: true, reason: 'ocr_pending', nextRetryAt: '2026-11-06 09:00' }).includes('下次重试：2026-11-06 09:00'), 'OCR retry time must be visible')
+assert(sleepAutomationProgress({ available: true, enabled: true, phase: 'report', stage: 'FAILED', reason: 'network_error', nextRetryAt: '2026-11-06 09:00' }).includes('下次重试'), 'scheduled retry must not look terminal')
+assert(sleepAutomationProgress({ available: true, enabled: true, phase: 'report', stage: 'POLLING' }).includes('报告'), 'report phase must replace OCR label')
+assert(sleepAutomationProgress({ available: true, enabled: true, phase: 'report', stage: 'SUCCESS' }).includes('本次睡眠分析完成'), 'success must use current native task status')
 const broken = createSleepAutomation({ MTLSleepAutomation: { status: () => '{', enable: () => { throw new Error() }, disable: () => {}, test: () => false, retry: () => false, generateReport: () => false, previewCapture: () => false, cancel: () => {}, configure: () => false, authorize: () => false, clearConfiguration: () => {} } })
 assert(broken.status().error === 'native_error' && broken.enable().error === 'native_error', 'native exceptions must normalize')
 assert(broken.test().error === 'rejected' && broken.configure('', '', '').error === 'rejected', 'native rejection must normalize')
