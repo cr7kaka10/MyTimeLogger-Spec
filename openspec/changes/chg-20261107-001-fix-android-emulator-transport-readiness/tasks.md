@@ -6,4 +6,6 @@
 ## 2. 服务端连通
 
 - [x] 2.1 在应用启动前核验 8000 reverse，重连恢复后重复核验；DoD：启动摘要中的目标序列号与转发列表一致，转发缺失时不报告 Android 就绪。（≤3 文件/≤50 行）
-- [ ] 2.2 对目标模拟器真实运行启动流程；DoD：`web_build`、`apk_install`、`activity_start`、前台输入就绪通过，本机 `/ping=200` 且目标 ADB reverse 列表含 8000 映射，并记录 App 本次同步证据。（≤3 文件/≤50 行）
+- [x] 2.2 对目标模拟器真实运行启动流程；DoD：`web_build`、`apk_install`、`activity_start`、前台输入就绪通过，本机 `/ping=200` 且目标 ADB reverse 列表含 8000 映射，并记录 App 本次同步证据。（≤3 文件/≤50 行）
+
+验收（北京时间 2026-11-07 01:01）：`android-20261107-005840.summary.json` 为 success，`emulator-5554` 前台、窗口、输入及 reverse 均为 true；本机 `/ping=200`，ADB reverse 列表为 `host-17 tcp:8000 tcp:8000`。新 APK 的 `/api/sync/pull` 返回 HTTP 200，日志记录 `pull_merge_ok`、`syncNow finish`，App 页面显示「已同步 · 01:01:10」；截图在 `tests/runtime/android-synced-20261107.png`。
