@@ -22,6 +22,7 @@ import {
   syncAudioConfig,
 } from '../utils/audio'
 import { millisecondsUntilAndroidThemeBoundary, nextAndroidThemeBoundaryAt, resolveAndroidTheme, type AndroidThemeOverride } from '../utils/androidScheduledTheme'
+import { markAndroidStartup } from '../utils/startupTrace'
 
 export const formatSettingsNetworkError = formatPlatformNetworkError
 
@@ -153,6 +154,7 @@ export const useSettings = (): UseSettingsReturn => {
   const [selectedEnvironment, setSelectedEnvironment] = useState<EnvironmentName>('development')
   const [selectedEnvironmentProfile, setSelectedEnvironmentProfile] = useState({ serverUrl: '', username: '', authToken: '', verifiedUserId: '' })
   const [profileReady, setProfileReady] = useState(false)
+  useEffect(() => { if (profileReady) markAndroidStartup('profile-ready') }, [profileReady])
   const environmentInitialized = useRef(false)
   const connectionRequestIds = useRef<Record<EnvironmentName, number>>({ development: 0, testing: 0, production: 0 })
   const androidThemeOverrideRef = useRef<AndroidThemeOverride | null>(null)
@@ -402,7 +404,6 @@ export const useSettings = (): UseSettingsReturn => {
       } else {
         setSelectedEnvironmentProfile(readEnvironmentProfile(cfg, selectedEnvironment))
       }
-      setProfileReady(true)
       const active = cfg.active_environment as EnvironmentName
       const activeProfile = readEnvironmentProfile(cfg, active)
       if (detectPlatformRuntime() === 'capacitor-android' && !db.getConfig('account_identity_key') && activeProfile.serverUrl && activeProfile.authToken) {
@@ -421,6 +422,7 @@ export const useSettings = (): UseSettingsReturn => {
           return
         }
       }
+      setProfileReady(true)
       provisionTimerWidgetRuntime(db, activeProfile)
       setSettings({
         server_url: activeProfile.serverUrl || defaultSettings.server_url,

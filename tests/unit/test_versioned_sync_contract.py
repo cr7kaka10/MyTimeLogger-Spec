@@ -18,6 +18,23 @@ import server.server as server_module
 ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 
 
+def test_meal_wheel_config_round_trip_is_account_scoped(tmp_path):
+    db_path = tmp_path / "meal_wheel_sync.db"
+    _, hub = _build_hub(db_path)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("INSERT INTO users (id, username, password_hash, created_at) VALUES (2, 'other', 'p', '2026-11-06 12:00:00')")
+    value = json.dumps({"schemaVersion": 1, "revision": "rev-1", "updatedAt": "2026-11-06 12:00:00",
+                        "items": [{"id": "a", "name": "面条", "weight": 1}, {"id": "b", "name": "米饭", "weight": 3}]}, ensure_ascii=False)
+    result = asyncio.run(hub.handle_push([{"change_id": "meal-1", "table": "system_config", "operation": "upsert",
+                                          "payload": {"key": "meal_wheel_v1", "value": value, "value_type": "string",
+                                                      "description": "选餐转盘配置", "updated_at": "2026-11-06 12:00:00"}}], user_id=1))
+    assert result["accepted"] == 1
+    first = asyncio.run(hub.handle_pull_by_version(0, user_id=1, limit=100))
+    other = asyncio.run(hub.handle_pull_by_version(0, user_id=2, limit=100))
+    assert any(row["key"] == "meal_wheel_v1" and row["value"] == value for row in first["tables"]["system_config"])
+    assert not any(row.get("key") == "meal_wheel_v1" for row in other["tables"].get("system_config", []))
+
+
 def _read(path: str) -> str:
     with open(os.path.join(ROOT_DIR, path), "r", encoding="utf-8") as f:
         return f.read()

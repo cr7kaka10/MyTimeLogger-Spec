@@ -45,8 +45,8 @@ export const SyncStatusBar = memo(() => {
   const lastSuccess = status.state === 'synced' ? ` · ${status.at.slice(11)}` : ''
   return <div className="pointer-events-none inline-flex h-6 items-center rounded-md border border-gray-200/80 bg-white/75 px-1.5 text-[10px] font-semibold text-gray-600 backdrop-blur dark:border-gray-700 dark:bg-gray-800/75 dark:text-gray-200" aria-live="polite" title={`服务端-客户端${labels[status.state]}${status.error ? `：${status.error}` : ''}`}>
     <span className={`${status.state === 'syncing' ? 'animate-pulse' : ''} mr-1 inline-block h-1.5 w-1.5 rounded-full ${dotTones[status.state]}`} />
-    {labels[status.state]}{lastSuccess}{(status.state === 'partial' || status.state === 'failed') && status.error
-      ? <span className="ml-1 max-w-[150px] truncate">· {status.error}</span> : null}
+    {labels[status.state]}<span className="max-[400px]:hidden">{lastSuccess}</span>{(status.state === 'partial' || status.state === 'failed') && status.error
+      ? <span className="ml-1 max-w-[150px] truncate max-[400px]:hidden">· {status.error}</span> : null}
   </div>
 })
 

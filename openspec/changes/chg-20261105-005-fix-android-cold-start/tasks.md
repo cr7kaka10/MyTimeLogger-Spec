@@ -1,16 +1,16 @@
 ## 1. 基线与定位
 
-- [ ] 1.1 只读检查安卓启动链路与既有测试（`ui/src/bootstrap.ts`、`ui/src/db.ts`、`ui/src/hooks/useSettings.ts`；0 行代码）；DoD：列出首屏前 await 顺序及资料恢复时序。
-- [ ] 1.2 增加 JS 启动分段计时（`ui/src/bootstrap.ts`、新增 `ui/src/utils/startupTrace.ts`；≤50 行）；DoD：日志能区分凭据、数据库、提醒、通知的毫秒耗时且无账号隐私。
-- [ ] 1.3 增加首屏和资料恢复计时（`ui/src/App.tsx`、`ui/src/hooks/useSettings.ts`；≤50 行）；DoD：日志含首页可操作与资料恢复时点。
+- [x] 1.1 只读检查安卓启动链路与既有测试（`ui/src/bootstrap.ts`、`ui/src/db.ts`、`ui/src/hooks/useSettings.ts`；0 行代码）；DoD：列出首屏前 await 顺序及资料恢复时序。
+- [x] 1.2 增加 JS 启动分段计时（`ui/src/bootstrap.ts`、新增 `ui/src/utils/startupTrace.ts`；≤50 行）；DoD：日志能区分凭据、数据库、提醒、通知的毫秒耗时且无账号隐私。
+- [x] 1.3 增加首屏和资料恢复计时（`ui/src/App.tsx`、`ui/src/hooks/useSettings.ts`；≤50 行）；DoD：日志含首页可操作与资料恢复时点。
 - [ ] 1.4 在已连接的安卓设备上同版本同账号测 5 次冷启动（0 文件/0 行）；DoD：记录中位数、最慢一次和各段耗时，确认主要阻塞段。
 
 ## 2. 首屏修复
 
-- [ ] 2.1 为启动门添加轻量可见状态及错误重试（`ui/src/bootstrap.ts`；≤50 行）；DoD：数据库慢/失败时分别显示状态/重试按钮，无纯白屏。
-- [ ] 2.2 消除安卓资料恢复中的登录页闪现（`ui/src/App.tsx`、`ui/src/hooks/useSettings.ts`；≤50 行）；DoD：有保存会话时冷启动无登录页闪屏，无 token 时直达登录页。
-- [ ] 2.3 将已证实不影响首屏的数据服务延后启动（`ui/src/bootstrap.ts`；≤50 行）；DoD：首屏可操作先于提醒/通知完成，重入不重复注册。
-- [ ] 2.4 如果 1.4 显示 SQLite 为主要耗时，定向减少冗余数据库调用（`ui/src/db.ts`、`core/models/Schema.ts`、`ui/src/platform/capacitorDatabase.ts` 中最多 3 文件；≤50 行）；DoD：旧库迁移结果一致且该阶段耗时下降；若非瓶颈，记录证据并勾选无需修改。
+- [x] 2.1 为 HTML 首次绘制及启动门添加轻量可见状态、错误重试（`ui/index.html`、`ui/src/bootstrap.ts`；≤50 行）；DoD：脚本加载/数据库慢/失败时显示状态或重试按钮，无纯白屏。
+- [x] 2.2 消除安卓资料恢复中的登录页闪现（`ui/src/App.tsx`、`ui/src/hooks/useSettings.ts`；≤50 行）；DoD：有保存会话时冷启动无登录页闪屏，无 token 时直达登录页。
+- [x] 2.3 将已证实不影响首屏的数据服务延后启动（`ui/src/bootstrap.ts`；≤50 行）；DoD：首屏可操作先于提醒/通知完成，重入不重复注册。
+- [x] 2.4 如果 1.4 显示 SQLite 为主要耗时，定向减少冗余数据库调用（`ui/src/db.ts`、`core/models/Schema.ts`、`ui/src/platform/capacitorDatabase.ts` 中最多 3 文件；≤50 行）；DoD：旧库迁移结果一致且该阶段耗时下降；若非瓶颈，记录证据并勾选无需修改。模拟器 5 次数据库就绪为 165–339 ms，非主要阻塞段，无需改库。
 
 ## 3. 回归与验收
 

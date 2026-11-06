@@ -4,9 +4,16 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <title>MyTimeLogger</title>
+  <style>
+    :root { --startup-fg: #1f2937; --startup-bg: #fafafa; }
+    #startup-placeholder { min-height: 100dvh; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; font-family: system-ui, sans-serif; color: var(--startup-fg); background: var(--startup-bg); }
+    #startup-placeholder strong { font-size: 20px; }
+    #startup-placeholder span { font-size: 14px; }
+    @media (prefers-color-scheme: dark) { :root { --startup-fg: #f9fafb; --startup-bg: #111827; } }
+  </style>
 </head>
 <body>
-  <div id="root"></div>
+  <div id="root"><main id="startup-placeholder" role="status"><strong>MyTimeLogger</strong><span>正在启动…</span></main></div>
   <script type="module" src="/src/App.tsx"></script>
 </body>
 </html>

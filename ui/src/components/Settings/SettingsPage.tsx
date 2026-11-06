@@ -22,6 +22,7 @@ interface SettingsPageProps extends UseSettingsReturn {
   onOpenSleep: () => void
   onSleepReportReady: () => void
   onOpenCategoryManager: () => void
+  onOpenMealWheelSettings: () => void
   onSignedOut: () => void
 }
 
@@ -164,7 +165,7 @@ ServiceRow.displayName = 'ServiceRow'
 export const SettingsPage = memo(({
   settings, updateSetting,
   onSleepReportReady,
-  onOpenCategoryManager, exportConfig, importConfig,
+  onOpenCategoryManager, onOpenMealWheelSettings, exportConfig, importConfig,
   activeEnvironment, selectedEnvironment, selectedEnvironmentProfile, clearActiveSession, logoutActiveSession, verifyActiveSession, onSignedOut,
 }: SettingsPageProps) => {
   const [editingKey, setEditingKey] = useState<string | null>(null)
@@ -707,6 +708,7 @@ export const SettingsPage = memo(({
       {/* 其他 */}
       <section className={sectionClass}>
         <SettingRow label="分类管理" value="›" onClick={onOpenCategoryManager} />
+        <SettingRow label="转盘设置" value="›" onClick={onOpenMealWheelSettings} />
         <SettingRow label="导出完整配置" value="›" onClick={exportConfig} />
         <SettingRow label="导入完整配置" value="›" onClick={importConfig} />
       </section>

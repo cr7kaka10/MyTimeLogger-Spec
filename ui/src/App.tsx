@@ -36,6 +36,8 @@ import { CategoryManager } from './components/Categories/CategoryManager'
 import { ManagementPlanSheet } from './components/ManagementPlan/ManagementPlanSheet'
 import type { MindmapNavigation, MindmapRewardReturnContext } from './components/ManagementPlan/ManagementPlanMindmap'
 import { CoinExplosion } from './components/common/CoinExplosion'
+import { MealWheelSheet } from './components/MealWheel/MealWheelSheet'
+import { MealWheelSettings } from './components/MealWheel/MealWheelSettings'
 import { detectPlatformRuntime, getElectronApi } from './platform'
 import { resolveSavedSession, type SavedSessionVerification } from './auth/sessionState'
 import { BootstrapGate } from './bootstrap'
@@ -50,12 +52,15 @@ import type { ManagementPlanDraft } from './hooks/useManagementPlan'
 import { mindmapRewardFingerprint, type ManagementPlanMindmap } from './hooks/useManagementPlanMindmap'
 import { configureBehaviorAudit, flushBehaviorEvents, recordBehavior } from './utils/behaviorAudit'
 import { createUserActionSyncScheduler } from './utils/userActionSync'
+import { markAndroidStartup } from './utils/startupTrace'
 
 const STATUS_SWITCH_DEDUPE_MS = 300
 
 const AppSession = ({ initialAuthenticated, onAccountActivated }: { initialAuthenticated: boolean; onAccountActivated: () => void }) => {
   const [activeTab, setActiveTab] = useState<MainTab>('timer')
   const [showLedger, setShowLedger] = useState(false)
+  const [showMealWheel, setShowMealWheel] = useState(false)
+  const [showMealWheelSettings, setShowMealWheelSettings] = useState(false)
   const [showCategoryManager, setShowCategoryManager] = useState(false)
   const [showManagementPlan, setShowManagementPlan] = useState(false)
   const [managementPlanMode, setManagementPlanMode] = useState<'draft' | 'history'>('draft')
@@ -201,6 +206,8 @@ const AppSession = ({ initialAuthenticated, onAccountActivated }: { initialAuthe
   }, [settings.activeEnvironment, settings.clearActiveSession, settings.markEnvironmentUnauthorized, settings.verifyActiveSession])
 
   useEffect(() => createBackNavigationService().subscribe(() => runBackNavigation(() => {
+    if (showMealWheelSettings) { setShowMealWheelSettings(false); return true }
+    if (showMealWheel) { setShowMealWheel(false); return true }
     if (showOnboarding) { setShowOnboarding(false); return true }
     if (showLedger) { setShowLedger(false); return true }
     if (showCategoryManager) { setShowCategoryManager(false); return true }
@@ -211,7 +218,8 @@ const AppSession = ({ initialAuthenticated, onAccountActivated }: { initialAuthe
     if (!previous) return false
     previousTabRef.current = null; recordBehavior('navigation.back', { tab: previous }); setActiveTab(previous)
     return true
-  })), [showCategoryManager, showLedger, showManagementPlan, showOnboarding])
+  })), [showCategoryManager, showLedger, showMealWheel, showMealWheelSettings, showManagementPlan, showOnboarding])
+  useEffect(() => { if (activeTab !== 'settings') setShowMealWheelSettings(false) }, [activeTab])
 
   const handleStartLearningFocus = useCallback(async (categoryId: number | null, taskTitle: string): Promise<TaskFocusResult> => {
     const requestedCategory = timer.categories.find(category => category.id === categoryId)
@@ -391,7 +399,7 @@ const AppSession = ({ initialAuthenticated, onAccountActivated }: { initialAuthe
     if (activeTab === 'settings') return (
       showCategoryManager
         ? <CategoryManager onClose={handleCloseCategoryManager} />
-        : <SettingsPage {...settings} onOpenSleep={handleOpenSleepFromSettings} onSleepReportReady={handleSleepReportReady} onOpenCategoryManager={handleOpenCategoryManager} onSignedOut={() => setAuthenticated(false)} />
+        : <SettingsPage {...settings} onOpenSleep={handleOpenSleepFromSettings} onSleepReportReady={handleSleepReportReady} onOpenCategoryManager={handleOpenCategoryManager} onOpenMealWheelSettings={() => setShowMealWheelSettings(true)} onSignedOut={() => setAuthenticated(false)} />
     )
     if (activeTab === 'goals') return <GoalsPage {...goals} balance={timer.balance} activeSection="goals" onSectionChange={handleHabitSectionChange} categories={timeBook.categories} />
     if (activeTab === 'rewards') return <RewardsPage {...rewards} activeSection="rewards" onSectionChange={handleHabitSectionChange} ledgerHook={ledgerHook} />
@@ -429,8 +437,19 @@ const AppSession = ({ initialAuthenticated, onAccountActivated }: { initialAuthe
     if (session.authenticated) setAuthenticated(true)
     else if (session.clearToken) void settings.clearActiveSession().then(() => setAuthenticated(false)).catch(() => {})
   }, [settings.clearActiveSession, settings.connectionStatus, settings.selectedEnvironmentProfile.authToken])
-  const needsLogin = !authenticated
   const restoringAndroidProfile = detectPlatformRuntime() === 'capacitor-android' && !settings.profileReady
+  const savedSession = restoringAndroidProfile ? false : detectPlatformRuntime() === 'capacitor-android' &&
+    resolveSavedSession(settings.selectedEnvironmentProfile.authToken,
+      settings.connectionStatus === 'unauthorized' ? 'unauthorized' : 'checking').authenticated
+  const needsLogin = !authenticated && !savedSession
+  const firstHomePaint = useRef(false)
+  useEffect(() => {
+    if (needsLogin || restoringAndroidProfile || firstHomePaint.current) return
+    const frame = requestAnimationFrame(() => setTimeout(() => {
+      firstHomePaint.current = true; markAndroidStartup('home-interactive')
+    }, 0))
+    return () => cancelAnimationFrame(frame)
+  }, [needsLogin, restoringAndroidProfile])
   const onboardingKey = `mtl.familyOnboardingSeen.${settings.activeEnvironment}.${settings.selectedEnvironmentProfile.username || 'user'}`
   const completeOnboarding = useCallback(() => {
     window.localStorage.setItem(onboardingKey, '1')
@@ -453,7 +472,7 @@ const AppSession = ({ initialAuthenticated, onAccountActivated }: { initialAuthe
       }}
     />
   ) : (
-    <MainLayout activeTab={activeTab} onTabChange={handleNavigate} balance={timer.balance} theme={settings.theme} onToggleTheme={settings.toggleTheme} onOpenLedger={() => setShowLedger(true)} onOpenManagementPlanHistory={openManagementPlanHistory}>
+    <MainLayout activeTab={activeTab} onTabChange={handleNavigate} balance={timer.balance} theme={settings.theme} onToggleTheme={settings.toggleTheme} onOpenLedger={() => setShowLedger(true)} onOpenMealWheel={() => setShowMealWheel(true)} onOpenManagementPlanHistory={openManagementPlanHistory}>
       {page}
 
       {/* 全局待领取奖励横幅 */}
@@ -476,6 +495,8 @@ const AppSession = ({ initialAuthenticated, onAccountActivated }: { initialAuthe
       )}
 
       {showLedger && <LedgerSheet {...ledgerHook} onClose={() => setShowLedger(false)} />}
+      {showMealWheel && <MealWheelSheet onClose={() => setShowMealWheel(false)} />}
+      {showMealWheelSettings && <MealWheelSettings onClose={() => setShowMealWheelSettings(false)} />}
       <ManagementPlanSheet open={showManagementPlan} mode={managementPlanMode} goals={goals.goals} runtime={{ serverUrl: settings.selectedEnvironmentProfile.serverUrl, authToken: settings.selectedEnvironmentProfile.authToken }} initialRequest={managementPlanRequest} initialDraft={managementPlanDraft} onNavigate={handleMindmapNavigate} onClose={() => setShowManagementPlan(false)} />
       {explosionPos && <CoinExplosion x={explosionPos.x} y={explosionPos.y} onComplete={() => setExplosionPos(null)} />}
       {showOnboarding && (
