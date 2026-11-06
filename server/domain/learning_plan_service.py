@@ -143,6 +143,16 @@ class LearningPlanService:
                     conn.execute("INSERT INTO server_learning_krs(id,user_id,objective_id,title,target_value,current_value,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)", (record_id, user_id, objective_id, title, int(payload.get("target_value") or 0), int(payload.get("current_value") or 0), now, now))
                     self._change(conn, user_id, "server_learning_krs", record_id, "upsert", {"id": record_id})
                     result = {"kr_id": record_id, "objective_id": objective_id}
+                elif action == "update_kr":
+                    record_id = str(payload.get("id") or "")
+                    title = str(payload.get("title") or "").strip()
+                    if not title:
+                        raise ManagementPlanError("invalid_learning_kr", "关键结果标题不能为空", status=422)
+                    if not conn.execute("SELECT 1 FROM server_learning_krs WHERE id=? AND user_id=?", (record_id, user_id)).fetchone():
+                        raise ManagementPlanError("learning_kr_not_found", "关键结果不存在", status=404)
+                    conn.execute("UPDATE server_learning_krs SET title=?,updated_at=? WHERE id=? AND user_id=?", (title, now, record_id, user_id))
+                    self._change(conn, user_id, "server_learning_krs", record_id, "upsert", {"id": record_id, "title": title})
+                    result = {"kr_id": record_id, "title": title}
                 elif action == "create_task":
                     title = str(payload.get("title") or "").strip()
                     kr_id = str(payload.get("kr_id") or "")
