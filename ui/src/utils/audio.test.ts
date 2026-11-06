@@ -3,6 +3,8 @@ import {
   audioConfigFromSettings,
   normalizeAudioSettingValue,
   playAudioCue,
+  playMealWheelChime,
+  prepareMealWheelChime,
   syncAudioConfig,
 } from './audio'
 
@@ -31,4 +33,21 @@ let audioObjects = 0
 syncAudioConfig({ start: 'none' })
 playAudioCue('start')
 assert(audioObjects === 0, 'none must not create an Audio object')
+let contexts = 0, starts = 0
+;(globalThis as any).AudioContext = class {
+  state = 'running'; currentTime = 0; destination = {}
+  constructor() { contexts++ }
+  createOscillator() { return { frequency: { setValueAtTime() {} }, connect() {}, disconnect() {},
+    start() { starts++ }, stop() {}, type: 'sine', onended: null } }
+  createGain() { return { gain: { setValueAtTime() {}, exponentialRampToValueAtTime() {} }, connect() {}, disconnect() {} } }
+}
+syncAudioConfig({ victory: 'none' })
+prepareMealWheelChime(); playMealWheelChime()
+assert(contexts === 0 && starts === 0, 'muted wheel must not unlock or play audio')
+syncAudioConfig({ victory: 'victory' })
+prepareMealWheelChime(); playMealWheelChime()
+assert(contexts === 1 && starts === 2, 'wheel finish must schedule a two-note chime once')
+syncAudioConfig({ victory: 'none' })
+playMealWheelChime()
+assert(starts === 2, 'muting after unlock must suppress the chime')
 console.log('audio normalization tests passed')
