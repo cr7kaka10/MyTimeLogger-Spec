@@ -12,7 +12,7 @@ foreach ($name in @('Test-ProjectProcess', 'Test-TcpBindAvailable')) {
 function Get-CimInstance {
     [CmdletBinding()] param([Parameter(Position=0)][string]$ClassName, [string]$Filter)
     $id = [int]([regex]::Match($Filter, '\d+').Value)
-    $base = if ($id -eq 8) { 'D:\OtherProject' } else { $root }
+    $base = if ($id -eq 8) { Join-Path (Split-Path $root -Parent) 'OtherProject' } else { $root }
     if ($id -eq 9) { return [pscustomobject]@{ CommandLine = 'node unrelated.js' } }
     return [pscustomobject]@{ CommandLine = "python -m uvicorn server.server:app --app-dir `"$base`" --host 0.0.0.0 --port 8000" }
 }

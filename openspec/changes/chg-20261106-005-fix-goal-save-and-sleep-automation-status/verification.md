@@ -18,3 +18,4 @@
 - 本次睡眠任务的 OCR→报告推进、目标编辑后重开数值、08:40 体重体脂通知的升级设备实测，均待截图手机连接后验证；旧报告不能代替本次成功证据。
 - 服务端改动尚未部署到测试机；测试机当前 HTTP 200 仅证明现有服务可达，不代表新补偿文案已上线。现有 Android 模拟器安装的是本地调试 APK，截图手机仍是其原安装版本。
 - 测试机 SSH 只读连接正常；本机 Docker Desktop 后台启动未成功，Linux Engine 命名管道不存在，现有部署脚本需要本机 Docker 构建镜像。已请老板手动启动 Docker Desktop；在引擎和备份条件都满足前不切换现有容器。
+- 老板手动启动后本机 Docker Engine 29.2.1 可用。部署安全检查最初命中 `tests/unit/test_local_startup_port.ps1` 的虚构绝对路径；已改为从项目父目录动态生成，原测试输出 `local startup port tests passed`，重跑安全检查输出 `[OK] Security preflight passed.`。测试机旧镜像 ID `sha256:ba63fecc05aaa8f00602dbb6a375263a159085d334ba19feb26f5bbde889e1c6` 已另存 `mytimelogger-server:before-chg-20261106-005` 供回退。
