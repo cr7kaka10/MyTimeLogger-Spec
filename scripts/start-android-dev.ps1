@@ -365,13 +365,17 @@ function Get-TargetEmulatorPid {
 
 function Request-TargetEmulatorForeground([int]$EmulatorPid) {
     $windowPid = Get-TargetEmulatorPid
-    if (-not $windowPid) { Write-Stage "Target emulator window PID is unavailable; App startup continues."; return }
-    for ($attempt = 1; $attempt -le 10; $attempt++) {
+    if (-not $windowPid -or $windowPid -ne $EmulatorPid) {
+        Write-Stage "Target emulator window PID is unavailable or changed (expected $EmulatorPid); App startup continues."
+        return
+    }
+    $lastError = 'window_handle_unavailable'
+    for ($attempt = 1; $attempt -le 30; $attempt++) {
         try {
             & $windowBoundsHelper -WindowProcessId $windowPid -Attempt $attempt
             if ($LASTEXITCODE -eq 0) { Write-Stage "Target emulator window is fully visible and foreground (PID $windowPid, attempt $attempt)."; return }
         } catch { $lastError = $_.Exception.Message }
-        Start-Sleep -Milliseconds 500
+        if ($attempt -lt 30) { Start-Sleep -Milliseconds 500 }
     }
     Write-Stage "Unable to foreground target emulator PID $windowPid; App startup continues. $lastError"
 }
@@ -660,6 +664,7 @@ try {
         else {
             Set-Stage 'runtime_state'; $coldStart = Repair-TargetAvdRuntimeState
             Set-Stage 'avd_acquisition'; $emulatorPid = Start-TargetAvd $coldStart
+            Set-Stage 'foreground_launch'; Request-TargetEmulatorForeground $emulatorPid
             Set-Stage 'boot_wait'; $serial = Wait-ForTargetAvd -EmulatorPid $emulatorPid; $script:serial = $serial
             Set-Stage 'foreground_boot'; Request-TargetEmulatorForeground $emulatorPid
             Set-Stage 'web_build'; Invoke-AndroidWebBuild

@@ -15,5 +15,11 @@ def test_android_emulator_window_is_clamped_to_windows_working_area():
     assert "ensure-window-visible.ps1" in android
     assert "-windowprocessid $windowpid" in android
     assert "foreground_boot" in android and "window_visibility_failed" in bounds
+    acquire = android.index("set-stage 'avd_acquisition'; $emulatorpid = start-targetavd")
+    early = android.index("set-stage 'foreground_launch'; request-targetemulatorforeground $emulatorpid", acquire)
+    wait = android.index("set-stage 'boot_wait'; $serial = wait-fortargetavd", acquire)
+    assert acquire < early < wait, "emulator must be centered before ADB boot wait"
+    assert "$windowpid -ne $emulatorpid" in android, "window must still belong to target QEMU"
+    foreground = android.split("function request-targetemulatorforeground", 1)[1].split("\nfunction ", 1)[0]
     for forbidden in ("stop-process", "taskkill", "wipe-data", "adb emu kill"):
-        assert forbidden not in bounds and forbidden not in android
+        assert forbidden not in bounds and forbidden not in foreground
