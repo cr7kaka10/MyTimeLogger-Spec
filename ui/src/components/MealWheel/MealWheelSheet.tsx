@@ -12,9 +12,11 @@ function sections(items: MealWheelItem[]) {
   return items.map((item, index) => {
     const start = angle, sweep = probabilities[index] * 360, end = angle += sweep
     const a = point(start, 143), b = point(end, 143), label = point(start + sweep / 2, 93)
+    const labelChars = sweep >= 45 ? 5 : sweep >= 30 ? 3 : sweep >= 18 ? 2 : 0
     return <g key={item.id}>
+      <title>{item.name}</title>
       <path d={`M 150 150 L ${a.x} ${a.y} A 143 143 0 ${sweep > 180 ? 1 : 0} 1 ${b.x} ${b.y} Z`} className={colors[index % colors.length]} stroke="currentColor" strokeWidth="2" />
-      <text x={label.x} y={label.y} textAnchor="middle" dominantBaseline="middle" className="fill-gray-950 text-[13px] font-bold dark:fill-white">{Array.from(item.name).slice(0, 5).join('')}</text>
+      {labelChars > 0 && <text x={label.x} y={label.y} textAnchor="middle" dominantBaseline="middle" className="fill-gray-950 text-[13px] font-bold dark:fill-white">{Array.from(item.name).slice(0, labelChars).join('')}</text>}
     </g>
   })
 }
