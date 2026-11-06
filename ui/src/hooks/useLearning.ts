@@ -67,6 +67,7 @@ export function useLearning(runtime?: LearningRuntime) {
   }, [command])
   const removeObjective = useCallback((id: string) => command({ action: 'delete_objective', id }), [command])
   const addKR = useCallback((objectiveId: string, title: string) => command({ action: 'create_kr', objective_id: objectiveId, title }), [command])
+  const updateKR = useCallback((id: string, title: string) => command({ action: 'update_kr', id, title }), [command])
   const addTask = useCallback((krId: string, data: { title: string; category_id: number; priority?: number; reward?: number; due_date?: string }) => {
     return command({ action: 'create_task', kr_id: krId, ...data })
   }, [command])
@@ -128,5 +129,5 @@ export function useLearning(runtime?: LearningRuntime) {
     return null
   }, [objectives])
 
-  return { objectives, learningCategories, error, createObjective, addObjective: createObjective, updateObjective, removeObjective, addKR, addTask, toggleTask, setTaskStatus, removeTask, cancelChecklistTask, refresh, importFullObjective, importKRsToObjective, startFocusOnTask }
+  return { objectives, learningCategories, error, createObjective, addObjective: createObjective, updateObjective, removeObjective, addKR, updateKR, addTask, toggleTask, setTaskStatus, removeTask, cancelChecklistTask, refresh, importFullObjective, importKRsToObjective, startFocusOnTask }
 }
