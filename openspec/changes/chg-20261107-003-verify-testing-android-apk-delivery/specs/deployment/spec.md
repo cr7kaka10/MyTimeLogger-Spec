@@ -1,24 +1,23 @@
 ## ADDED Requirements
 
-### Requirement: 测试部署明确交付 Android APK
-测试部署 SHALL 从当前工作树构建 Android APK，显示产物路径、构建修订及 SHA256，并分别报告 APK 构建与目标设备安装状态。桌面 EXE 打包 SHALL 不阻止“全部部署”先生成 Android 产物。
+### Requirement: 测试部署使用当前本地源码并标明 2.0 版
 
-#### Scenario: 桌面打包停滞前已生成 Android 产物
+`deploy-test.bat` SHALL 在每次被选择的客户端部署阶段重新构建当前本地工作树，标明 Git 修订及未提交改动状态。Android APK 和桌面 EXE SHALL 分别标为 2.0 和 2.0.0；Android `versionCode` SHALL 大于现有值 1。构建失败 SHALL 不得将旧产物报告为本次产物。
+
+#### Scenario: 全部部署时桌面打包停滞
+
 - **GIVEN** 用户选择 [1] 且服务端阶段成功
-- **WHEN** 桌面 EXE 打包开始
-- **THEN** 当前源码的 Android APK 已生成，日志可见其路径、修订与 SHA256
+- **WHEN** 桌面打包阶段开始
+- **THEN** Android 已从当前工作树完成本次构建，日志可核对 APK 路径、修订与 SHA256
 
-#### Scenario: 手机未连接
-- **GIVEN** APK 已构建且 ADB 无处于 `device` 状态的目标
-- **WHEN** 部署流程报告 Android 结果
-- **THEN** 明确显示“APK 已构建、手机待安装”，并给出可使用的 APK 路径
+#### Scenario: 本次 Android 构建失败
 
-#### Scenario: 指定设备覆盖安装
-- **GIVEN** 用户明确选择安装且恰有一个处于 `device` 状态的目标
-- **WHEN** 对该序列号执行覆盖安装
-- **THEN** 只有安装和包核验均成功才报告“手机已更新”；失败时保留旧 App 和 APK 并报告原因
+- **GIVEN** 固定产物路径存在上次 APK
+- **WHEN** 本次 Android 构建失败
+- **THEN** 部署任务失败且不宣称上次 APK 是本次的新包
 
-#### Scenario: 多个设备
-- **GIVEN** ADB 列出多个处于 `device` 状态的目标
-- **WHEN** 用户未指定唯一目标
-- **THEN** 不安装任何设备，并明确提示选择目标或手工安装
+#### Scenario: 版本和安装状态
+
+- **GIVEN** 客户端构建成功
+- **WHEN** 用户读取构建日志及产物元数据
+- **THEN** 桌面显示 2.0.0，Android 显示 2.0/code 2，日志仅宣称 APK 已构建而不宣称手机已安装

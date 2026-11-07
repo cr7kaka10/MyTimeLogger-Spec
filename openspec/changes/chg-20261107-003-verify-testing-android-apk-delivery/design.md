@@ -1,48 +1,29 @@
 ## Context
 
-`deploy-test.bat` 的 [1] 顺序为服务端→桌面 EXE→Android APK；桌面打包长时间无进展会挡住 Android。`deploy/build-android.ps1` 构建后仅复制到 `deploy/artifacts/MyTimeLogger-debug.apk`。当前 APK 的 JS 含“选餐转盘”和“转盘设置”，但截图手机看不到，且 ADB 无连接设备，无法证明手机安装版本。
+`deploy-test.bat` 的 [1] 顺序为服务端→桌面→Android；桌面 `electron-builder` 停滞时 Android 阶段不会开始。Android 脚本已从当前工作树构建并复制 APK，但固定目标路径可能留下旧包；当前桌面和 Android 版本仍分别为 1.0.0/1.0。
 
 ## Goals / Non-Goals
 
-**Goals:** 明确产物与设备安装状态，让 Android 构建不排在可能卡住的桌面打包之后；可对明确选择的唯一设备安装并验收。
+**Goals:** 每次测试部署明确从当前本地工作树重新构建，失败时不得把旧包报成新包；Android 阶段不受桌面打包阻塞；两个客户端显示 2.0 版。
 
-**Non-Goals:** 不修复 electron-builder 自身停滞，不清除手机数据，不改变服务器与转盘功能。
+**Non-Goals:** 自动 Git 拉取、手机安装、Electron 打包性能修复、转盘功能改动。
 
 ## Decisions
 
-- [1] 保持服务端先行，将 Android 构建移至桌面打包之前；Android 成功即打印产物、Git 修订和 SHA256。备选为继续现有顺序并等待桌面失败后再构建，不能处理无错误但无限等待的情况。
-- 安装必须是明确的菜单选择；仅接受一个处于 `device` 状态的 ADB 序列号，输出序列号供确认。`adb install -r` 成功后核验包仍在目标设备；零/多设备或签名不兼容则报告“待安装”，保留 APK，不做卸载。备选为自动安装任意连接设备，可能更新错设备。
-- [1]/[4] 分别报告“构建成功”“安装成功”“待安装”；全部部署的成功结论依旧要求各选中阶段成功。日志不包含私有配置值。
-
-```mermaid
-sequenceDiagram
-  participant U as 用户
-  participant B as deploy-test.bat
-  participant A as Android 构建脚本
-  participant D as ADB 设备
-  U->>B: 选择 [1] 或 [4]
-  B->>A: 构建当前源码 APK
-  A-->>B: 路径、修订、SHA256
-  B-->>U: APK 已构建，手机待安装
-  opt 用户选择安装且只有一个目标
-    B->>D: adb install -r 指定序列号
-    D-->>B: 安装与包校验结果
-    B-->>U: 手机安装成功或具体失败
-  end
-  opt [1] 全部部署
-    B->>B: 继续桌面 EXE 打包
-  end
-```
+- [1] 保持服务端先行，将 Android 阶段移到桌面阶段之前。[4] 继续只构建 Android。部署前记录 `git rev-parse HEAD`、工作树变更标记和北京时间；这表示本地当前源码，未提交改动也属于本次构建输入。
+- Android 构建前清除其固定目标 APK，构建成功后核对文件确实由本次构建生成并输出 SHA256；失败不保留会被误认为新产物的旧包。桌面包同理在日志中核对本次输出及版本。
+- 桌面 `package.json` 与锁文件根版本同步为 `2.0.0`；Android `versionName=2.0`、`versionCode=2`。只调整应用展示/安装版本，不调整协议或数据格式版本。
+- 保持“APK 已构建、手机安装状态未核验”的准确措辞；部署流程不执行 ADB 安装。
 
 ## Risks / Trade-offs
 
-- [手机未接入 ADB] → 输出 APK 绝对路径与手工安装提示，不能宣称手机已更新。
-- [安装签名不匹配] → 停止设备安装并报告原错误，不卸载旧 App。
-- [桌面打包继续停滞] → Android 产物已生成，但整套任务仍不得报告全部完成。
+- 桌面打包仍可能停滞，但在此之前 APK 已完成；整套部署仍需如实报告桌面阶段未完成。
+- 不自动拉取远端，若用户需要远端最新提交，应先更新本地分支；当前本地 `dev` 比 `origin/dev` 超前，直接拉取不是确定的“最新”定义。
+- Android `versionCode` 递增允许从当前 code 1 覆盖升级；签名不同的旧安装仍需按 Android 规则处理。
 
 ## Migration Plan
 
-批准后改部署脚本并在无设备/单设备/多设备模拟条件下验证；手机接入后再现场安装及检查 🎡、设置项。回退脚本即可恢复原顺序和输出，无数据迁移。
+批准后改脚本与两个版本文件，仅做部署入口、版本及本次产物时间/哈希的定向核对；不做额外设备矩阵测试。回退提交即可恢复。
 
 ## Open Questions
 
