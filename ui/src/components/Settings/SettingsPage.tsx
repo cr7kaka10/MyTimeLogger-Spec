@@ -186,6 +186,10 @@ export const SettingsPage = memo(({
   const [rewardRebuildMessage, setRewardRebuildMessage] = useState('')
   const [rewardRebuildFailure, setRewardRebuildFailure] = useState<RewardRebuildFailureView | null>(null)
   const [statisticsStartDateDraft, setStatisticsStartDateDraft] = useState(settings.statistics_start_date)
+  const [sloganDraft, setSloganDraft] = useState(settings.home_slogan)
+  const [sloganDirty, setSloganDirty] = useState(false)
+  const [sloganSaving, setSloganSaving] = useState(false)
+  const [sloganError, setSloganError] = useState('')
   const [sleepStatus, setSleepStatus] = useState(() => sleepAutomation.status())
   const [sleepActionFeedback, setSleepActionFeedback] = useState('')
   const atimeloggerPasswordRef = useRef<HTMLInputElement>(null)
@@ -260,6 +264,19 @@ export const SettingsPage = memo(({
   useEffect(() => {
     setStatisticsStartDateDraft(settings.statistics_start_date)
   }, [settings.statistics_start_date])
+
+  useEffect(() => {
+    if (!sloganDirty) setSloganDraft(settings.home_slogan)
+  }, [settings.home_slogan])
+
+  const saveHomeSlogan = async (value = sloganDraft.trim()) => {
+    setSloganSaving(true)
+    setSloganError('')
+    const result = await updateSetting('home_slogan', value).catch(() => ({ ok: false, error: '设置保存失败，请重试' }))
+    setSloganSaving(false)
+    if (result.ok) { setSloganDraft(value); setSloganDirty(false) }
+    else setSloganError(result.error || '设置保存失败，请重试')
+  }
 
   useEffect(() => installSleepAutomationStatusLifecycle(
     createCapacitorAppLifecycleService(), refreshSleepStatus,
@@ -615,6 +632,20 @@ export const SettingsPage = memo(({
 
       {/* 计时设置 */}
       <section className={sectionClass}>
+        <div className="border-b border-gray-100 px-4 py-3 dark:border-slate-700">
+          <label htmlFor="home-slogan" className="font-medium text-gray-900 dark:text-gray-100">首页标语</label>
+          <textarea id="home-slogan" value={sloganDraft} rows={3}
+            onChange={event => { setSloganDraft(event.target.value); setSloganDirty(true); setSloganError('') }}
+            placeholder="写一句给自己的话"
+            className="mt-2 w-full resize-y rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none focus:border-blue-400 dark:border-slate-600 dark:bg-slate-800 dark:text-gray-100" />
+          {sloganError && <p role="alert" className="mt-1 text-sm text-rose-600 dark:text-rose-400">{sloganError}</p>}
+          <div className="mt-2 flex justify-end gap-2">
+            <button type="button" disabled={sloganSaving} onClick={() => { setSloganDraft(''); setSloganDirty(true); void saveHomeSlogan('') }}
+              className="rounded-lg px-3 py-2 text-sm text-gray-500 disabled:opacity-50 dark:text-gray-300">清空</button>
+            <button type="button" disabled={sloganSaving || !sloganDirty} onClick={() => { void saveHomeSlogan() }}
+              className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white disabled:opacity-50">{sloganSaving ? '保存中…' : '保存标语'}</button>
+          </div>
+        </div>
         <div className="flex h-12 items-center justify-between gap-4 border-b border-gray-50 px-4">
           <span className="font-medium text-gray-900">随机休息提醒频率</span>
           <select
