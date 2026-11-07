@@ -67,6 +67,12 @@ export const saveSleepDiaryAndSync = async (
   requestSync: (changeId: string, options: SyncNowOptions) => Promise<SyncChangeResult> = syncChangeNow,
 ): Promise<{ state: 'confirmed' | 'delivered' | 'pending' | 'rejected'; reason?: string; changeId: string }> => {
   const { changeId } = db.saveSleepDiary(date, type, text)
+  if (type === 'evening') {
+    const bridge = (window as any).MTLEveningDiary
+    if (text.trim()) bridge?.saved?.(date)
+    else bridge?.refresh?.()
+    window.dispatchEvent(new Event('mtl:evening-diary-updated'))
+  }
   try {
     const result = await requestSync(changeId, {
       reason: `sleep-${type}-diary-save`,
@@ -192,6 +198,7 @@ export const useSleep = (): UseSleepReturn => {
           const result = job.result || job.sleep_data || {}
           const resultDate = result.date || result.sleep_date || date
           db.saveSleepData(resultDate, result)
+          window.dispatchEvent(new Event('mtl:evening-diary-updated'))
           await syncAfterDateSwitch('sleep', resultDate).catch(error => console.warn('[useSleep] report completion sync failed:', error))
           setIsAnalyzing(false)
           setStatusMessage('')

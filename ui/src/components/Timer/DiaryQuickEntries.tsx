@@ -1,20 +1,27 @@
-import { memo, useState } from 'react'
+import { memo, useEffect, useRef, useState } from 'react'
 import { BottomSheet } from '../common/BottomSheet'
 import { continueDiaryNumbering, diaryInitialValue } from '../Sleep/SleepPage'
 
 export type DiaryType = 'morning' | 'evening'
 export type HomeDiary = { morning_diary?: string; evening_diary?: string; report_status?: number; morning_diary_reward_status?: string; morning_diary_reward_amount?: number; evening_diary_reward_status?: string; evening_diary_reward_amount?: number }
-type Props = { diary: HomeDiary | null; onSave: (type: DiaryType, value: string) => void; onLockedClick: () => void }
+type Props = { diary: HomeDiary | null; onSave: (type: DiaryType, value: string) => void; onLockedClick: () => void; openEveningRequest?: number }
 
 const ITEMS = [
   { type: 'morning', icon: '☀️', title: '晨间日记' },
   { type: 'evening', icon: '🌙', title: '晚间日记' },
 ] as const
 
-export const DiaryQuickEntries = memo(({ diary, onSave, onLockedClick }: Props) => {
+export const DiaryQuickEntries = memo(({ diary, onSave, onLockedClick, openEveningRequest = 0 }: Props) => {
   const reportStatus = Number(diary?.report_status || 0)
   const [editing, setEditing] = useState<DiaryType | null>(null)
   const [draft, setDraft] = useState('')
+  const handledEveningRequest = useRef(0)
+  useEffect(() => {
+    if (!openEveningRequest || handledEveningRequest.current === openEveningRequest || reportStatus < 2) return
+    handledEveningRequest.current = openEveningRequest
+    setDraft(diaryInitialValue('晚间日记', diary?.evening_diary || ''))
+    setEditing('evening')
+  }, [openEveningRequest, reportStatus, diary?.evening_diary])
   const open = (type: DiaryType, locked: boolean, content: string) => {
     if (locked) { onLockedClick(); return }
     setDraft(diaryInitialValue(type === 'morning' ? '晨间日记' : '晚间日记', content)); setEditing(type)

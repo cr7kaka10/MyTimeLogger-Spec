@@ -251,6 +251,12 @@ export const useTimeBook = (isActive = true, runtime?: ManagementPlanRuntime): U
           ...currentDiary,
           [type === 'morning' ? 'morning_diary' : 'evening_diary']: content,
         })
+        if (type === 'evening') {
+          const bridge = (window as any).MTLEveningDiary
+          if (content.trim()) bridge?.saved?.(selectedDate)
+          else bridge?.refresh?.()
+          window.dispatchEvent(new Event('mtl:evening-diary-updated'))
+        }
         setRefreshTrigger(prev => prev + 1)
       }
     })

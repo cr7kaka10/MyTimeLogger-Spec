@@ -69,6 +69,7 @@
             </intent-filter>
         </receiver>
         <receiver android:name=".MorningDiaryReminderReceiver" android:exported="false" />
+        <receiver android:name=".EveningDiaryReminderReceiver" android:exported="false" />
         <receiver android:name=".DietCheckinReminderReceiver" android:exported="false">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />

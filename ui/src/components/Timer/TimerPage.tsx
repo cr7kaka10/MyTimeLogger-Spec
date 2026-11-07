@@ -29,6 +29,7 @@ interface TimerPageProps extends UseTimerReturn {
   onOpenLockedDiary: () => void
   focusAiRequest?: number
   onFocusAiHandled?: () => void
+  openEveningDiaryRequest?: number
 }
 
 export const TimerPage = memo((props: TimerPageProps) => {
@@ -72,6 +73,7 @@ export const TimerPage = memo((props: TimerPageProps) => {
     onOpenLockedDiary,
     focusAiRequest,
     onFocusAiHandled,
+    openEveningDiaryRequest,
   } = props
   const [editingNote, setEditingNote] = useState(false)
   const [noteDraft, setNoteDraft] = useState('')
@@ -172,7 +174,7 @@ export const TimerPage = memo((props: TimerPageProps) => {
         />
       </div>
       <div data-testid="timer-diary-slot" className="flex min-h-0 flex-1 items-center md:flex-none md:pt-1">
-        <DiaryQuickEntries diary={diary} onSave={onSaveDiary} onLockedClick={onOpenLockedDiary} />
+        <DiaryQuickEntries diary={diary} onSave={onSaveDiary} onLockedClick={onOpenLockedDiary} openEveningRequest={openEveningDiaryRequest} />
       </div>
       {showPauseReason ? (
         <PauseReasonSheet onConfirm={submitPauseReason} onSkip={skipPauseReason} />

@@ -10,6 +10,7 @@ $gradleWrapper = Join-Path $androidDir "gradlew.bat"
 $outputDir = Join-Path $root "deploy\artifacts"
 $outputPath = Join-Path $outputDir "MyTimeLogger-debug.apk"
 $apkSource = Join-Path $androidDir "app\build\outputs\apk\debug\app-debug.apk"
+$startedAt = [TimeZoneInfo]::ConvertTimeBySystemTimeZoneId([datetime]::UtcNow, "China Standard Time")
 
 function Require-Command([string]$Name) {
     if (-not (Get-Command $Name -ErrorAction SilentlyContinue)) {
@@ -25,6 +26,11 @@ function Invoke-Checked([string]$Label, [scriptblock]$Command) {
 }
 
 try {
+    if (Test-Path -LiteralPath $outputPath) {
+        Remove-Item -LiteralPath $outputPath -Force
+    }
+    New-Item -ItemType Directory -Force -Path $outputDir | Out-Null
+
     Require-Command "node"
     Require-Command "npm"
     Require-Command "npx"
@@ -70,11 +76,6 @@ try {
     $env:JAVA_HOME = $jdkHome
     $env:PATH = "$(Join-Path $jdkHome 'bin');$env:PATH"
 
-    if (Test-Path -LiteralPath $outputPath) {
-        Remove-Item -LiteralPath $outputPath -Force
-    }
-    New-Item -ItemType Directory -Force -Path $outputDir | Out-Null
-
     Push-Location $uiDir
     try {
         Write-Host "[Android] Building web staging..."
@@ -98,7 +99,11 @@ try {
     }
     Copy-Item -LiteralPath $apkSource -Destination $outputPath -Force
     $sizeMb = [math]::Round((Get-Item -LiteralPath $outputPath).Length / 1MB, 1)
+    $hash = (Get-FileHash -LiteralPath $outputPath -Algorithm SHA256).Hash
     Write-Host "[OK] Android Debug APK: $outputPath ($sizeMb MB)"
+    Write-Host "[INFO] Build started Beijing: $($startedAt.ToString('yyyy-MM-dd HH:mm:ss'))"
+    Write-Host "[INFO] APK SHA256: $hash"
+    Write-Host "[INFO] APK built locally; phone installation was not checked."
     exit 0
 } catch {
     Write-Host "[FAIL] Android APK build failed: $($_.Exception.Message)" -ForegroundColor Red

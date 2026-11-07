@@ -6,13 +6,13 @@ Android SHALL 在当前账户的北京时间当天全天报告已生成且晚间
 
 #### Scenario: 报告完成且日记未写
 
-- **GIVEN** 当前账户今天的 `report_status >= 2`，且 `evening_diary` 为空
+- **GIVEN** 当前账户今天的 `report_status >= 2`、`full_report_state=generated`，且 `evening_diary` 为空
 - **WHEN** 全天报告完成状态落地
 - **THEN** 立即提醒写晚间日记，之后每 5 分钟复查并提醒，提醒可进入编辑页
 
 #### Scenario: 仅有快速报告或任务运行中
 
-- **GIVEN** 今天的 `report_status < 2` 或报告任务仍在运行
+- **GIVEN** 今天的 `report_status < 2`、`full_report_state` 未生成，或报告任务仍在运行
 - **WHEN** 提醒器复查状态
 - **THEN** 不提示“全天报告已完成”，也不启动晚间日记循环提醒
 

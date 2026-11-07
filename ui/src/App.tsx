@@ -17,7 +17,8 @@ import { BackpackPage } from './components/Backpack/BackpackPage'
 import { ExercisePage } from './pages/ExercisePage'
 import { LearningPage } from './components/Learning/LearningPage'
 import { LoginPage } from './components/Auth/LoginPage'
-import { getRawDb, setCoreActionSyncRequester, syncNow } from './db'
+import { getDatabase, getRawDb, setCoreActionSyncRequester, syncNow } from './db'
+import { formatBeijingDate } from '@core/BeijingTime'
 
 import { useGoals } from './hooks/useGoals'
 import { useHabits } from './hooks/useHabits'
@@ -68,6 +69,10 @@ const AppSession = ({ initialAuthenticated, onAccountActivated }: { initialAuthe
   const [managementPlanDraft, setManagementPlanDraft] = useState<ManagementPlanDraft | null>(null)
   const [mindmapReturnContext, setMindmapReturnContext] = useState<MindmapRewardReturnContext | null>(null)
   const [timerAiFocusRequest, setTimerAiFocusRequest] = useState(0)
+  const [eveningDiaryFocusRequest, setEveningDiaryFocusRequest] = useState(0)
+  const [showEveningDiaryPrompt, setShowEveningDiaryPrompt] = useState(false)
+  const [eveningDiaryReady, setEveningDiaryReady] = useState(false)
+  const [beijingToday, setBeijingToday] = useState(() => formatBeijingDate())
   const [sleepFocusIntent, setSleepFocusIntent] = useState<DailySummaryNavigationIntent | null>(null)
   const handleTimerAiFocusHandled = useCallback(() => setTimerAiFocusRequest(0), [])
   const [explosionPos, setExplosionPos] = useState<{ x: number; y: number } | null>(null)
@@ -94,6 +99,32 @@ const AppSession = ({ initialAuthenticated, onAccountActivated }: { initialAuthe
   const goals = useGoals()
   const rewards = useRewards()
   const sleep = useSleep()
+  useEffect(() => {
+    const timer = window.setInterval(() => setBeijingToday(formatBeijingDate()), 60_000)
+    return () => window.clearInterval(timer)
+  }, [])
+  useEffect(() => {
+    if (!eveningDiaryReady) { setShowEveningDiaryPrompt(false); return }
+    setShowEveningDiaryPrompt(true)
+    const timer = window.setInterval(() => setShowEveningDiaryPrompt(true), 300_000)
+    return () => window.clearInterval(timer)
+  }, [eveningDiaryReady])
+  useEffect(() => {
+    if (detectPlatformRuntime() !== 'capacitor-android' || !authenticated) { setEveningDiaryReady(false); return }
+    let active = true
+    const read = () => {
+      void getDatabase().then(db => {
+        const diary = db.getDiaryForDate(beijingToday)
+        if (active) setEveningDiaryReady(Number(diary?.report_status || 0) >= 2 && diary?.full_report_state === 'generated' && !diary?.evening_diary?.trim())
+      }).catch(() => { if (active) setEveningDiaryReady(false) })
+    }
+    const refresh = () => { (window as any).MTLEveningDiary?.refresh(); read() }
+    window.addEventListener('sync-pull-complete', refresh)
+    window.addEventListener('mtl:evening-diary-updated', refresh)
+    const timer = window.setInterval(read, 30_000)
+    refresh()
+    return () => { active = false; window.clearInterval(timer); window.removeEventListener('sync-pull-complete', refresh); window.removeEventListener('mtl:evening-diary-updated', refresh) }
+  }, [authenticated, beijingToday, settings.selectedEnvironmentProfile.verifiedUserId])
   const backpack = useBackpack()
   const ledgerHook = useLedger()
 
@@ -157,23 +188,27 @@ const AppSession = ({ initialAuthenticated, onAccountActivated }: { initialAuthe
 
   useEffect(() => {
     const navigate = (event: Event) => {
-      const page = window as typeof window & { __mtlPendingNavigation?: { route: string, focusAi: boolean } }
+      const page = window as typeof window & { __mtlPendingNavigation?: { route: string, focusAi: boolean, focusEvening?: boolean } }
       const detail = page.__mtlPendingNavigation ?? (event as CustomEvent).detail
       delete page.__mtlPendingNavigation
       if (detail === 'timer' || detail?.route === 'timer') {
         handleNavigate('timer')
         if (detail?.focusAi) setTimerAiFocusRequest(current => current + 1)
+        if (detail?.focusEvening) {
+          setEveningDiaryFocusRequest(current => current + 1)
+          void syncNow({ reason: 'evening-diary-notification' }).catch(() => {})
+        }
       } else if (detail?.route === 'checklist') {
         handleNavigate('checklist')
       } else if (detail?.route === 'exercise') {
         handleNavigate('exercise')
       } else if (detail?.route === 'sleep') {
-        sleep.setSelectedDate(new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(new Date()))
+        sleep.setSelectedDate(formatBeijingDate())
         handleNavigate('sleep')
       }
     }
     window.addEventListener('mtl:navigate', navigate)
-    const pending = (window as typeof window & { __mtlPendingNavigation?: { route: string, focusAi: boolean } }).__mtlPendingNavigation
+    const pending = (window as typeof window & { __mtlPendingNavigation?: { route: string, focusAi: boolean, focusEvening?: boolean } }).__mtlPendingNavigation
     if (pending) navigate(new CustomEvent('mtl:navigate', { detail: pending }))
     return () => window.removeEventListener('mtl:navigate', navigate)
   }, [handleNavigate, sleep.setSelectedDate])
@@ -383,7 +418,7 @@ const AppSession = ({ initialAuthenticated, onAccountActivated }: { initialAuthe
     if (activeTab === 'backpack') return <BackpackPage {...backpack} />
     if (activeTab === 'exercise') return <ExercisePage theme={settings.theme} onToggleTheme={settings.toggleTheme} onStartFocus={handleStartExerciseFocus} />
     if (activeTab === 'learning') return <LearningPage onNavigate={handleNavigate} onStartFocus={handleStartLearningFocus} runtime={{ serverUrl: settings.selectedEnvironmentProfile.serverUrl, authToken: settings.selectedEnvironmentProfile.authToken }} />
-    if (activeTab === 'timer') return <TimerPage {...timer} theme={settings.theme} onToggleTheme={settings.toggleTheme} onNavigate={handleNavigate} onOpenLedger={() => setShowLedger(true)} onOpenSettings={() => handleNavigate('settings')} runtime={{ serverUrl: settings.selectedEnvironmentProfile.serverUrl, authToken: settings.selectedEnvironmentProfile.authToken }} onRecordFlashCard={timeBook.recordFlashCard} diary={timeBook.diary} onSaveDiary={timeBook.saveDiary} onOpenLockedDiary={() => handleNavigateToSleep(timeBook.selectedDate)} focusAiRequest={timerAiFocusRequest} onFocusAiHandled={handleTimerAiFocusHandled} />
+    if (activeTab === 'timer') return <TimerPage {...timer} theme={settings.theme} onToggleTheme={settings.toggleTheme} onNavigate={handleNavigate} onOpenLedger={() => setShowLedger(true)} onOpenSettings={() => handleNavigate('settings')} runtime={{ serverUrl: settings.selectedEnvironmentProfile.serverUrl, authToken: settings.selectedEnvironmentProfile.authToken }} onRecordFlashCard={timeBook.recordFlashCard} diary={timeBook.diary} onSaveDiary={timeBook.saveDiary} onOpenLockedDiary={() => handleNavigateToSleep(timeBook.selectedDate)} focusAiRequest={timerAiFocusRequest} onFocusAiHandled={handleTimerAiFocusHandled} openEveningDiaryRequest={eveningDiaryFocusRequest} />
     if (activeTab === 'timebook') return <TimeBookPage {...timeBook} checklistTasks={checklist.tasks} onNavigate={handleNavigate} onSummaryNavigate={handleSummaryNavigate} />
       if (activeTab === 'sleep') return (
         <SleepPage {...sleep}
@@ -495,6 +530,7 @@ const AppSession = ({ initialAuthenticated, onAccountActivated }: { initialAuthe
       )}
 
       {showLedger && <LedgerSheet {...ledgerHook} onClose={() => setShowLedger(false)} />}
+      {showEveningDiaryPrompt && <div role="dialog" aria-label="晚间日记提醒" className="fixed inset-0 z-[70] flex items-center justify-center bg-black/45 px-5"><div className="w-full max-w-sm rounded-2xl bg-white p-5 shadow-xl dark:bg-slate-900"><h2 className="text-lg font-bold">🌙 全天报告已生成</h2><p className="mt-2 text-sm">晚间日记还没写，现在记录一下吧。</p><div className="mt-5 flex gap-3"><button type="button" className="h-11 flex-1 rounded-xl bg-slate-100 dark:bg-slate-800" onClick={() => setShowEveningDiaryPrompt(false)}>稍后提醒</button><button type="button" className="h-11 flex-1 rounded-xl bg-blue-600 font-semibold text-white" onClick={() => { setShowEveningDiaryPrompt(false); setEveningDiaryFocusRequest(value => value + 1); handleNavigate('timer') }}>写晚间日记</button></div></div></div>}
       {showMealWheel && <MealWheelSheet onClose={() => setShowMealWheel(false)} />}
       {showMealWheelSettings && <MealWheelSettings onClose={() => setShowMealWheelSettings(false)} />}
       <ManagementPlanSheet open={showManagementPlan} mode={managementPlanMode} goals={goals.goals} runtime={{ serverUrl: settings.selectedEnvironmentProfile.serverUrl, authToken: settings.selectedEnvironmentProfile.authToken }} initialRequest={managementPlanRequest} initialDraft={managementPlanDraft} onNavigate={handleMindmapNavigate} onClose={() => setShowManagementPlan(false)} />
