@@ -220,6 +220,7 @@ export interface SystemSettings {
   sync_interval: number
   statistics_start_date: string
   last_sync_at: string
+  home_slogan: string
   // aTimeLogger 备份同步
   atimelogger_enabled?: boolean
   atimelogger_username?: string

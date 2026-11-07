@@ -86,6 +86,7 @@ const defaultSettings: SystemSettings = {
   sync_interval: 15,
   statistics_start_date: DEFAULT_STATISTICS_START_DATE,
   last_sync_at: '—',
+  home_slogan: '',
   atimelogger_enabled: false,
   atimelogger_username: '',
   atimelogger_password: '',
@@ -159,6 +160,19 @@ export const useSettings = (): UseSettingsReturn => {
   const connectionRequestIds = useRef<Record<EnvironmentName, number>>({ development: 0, testing: 0, production: 0 })
   const androidThemeOverrideRef = useRef<AndroidThemeOverride | null>(null)
   const sleepAutomationSync = useRef(createSleepAutomationConfigSync())
+
+  useEffect(() => {
+    let active = true
+    const refreshHomeSlogan = () => {
+      void getDatabase().then(db => {
+        if (!active) return
+        const homeSlogan = db.getConfig('home_slogan') || ''
+        setSettings(previous => previous.home_slogan === homeSlogan ? previous : { ...previous, home_slogan: homeSlogan })
+      }).catch(() => {})
+    }
+    window.addEventListener('sync-pull-complete', refreshHomeSlogan)
+    return () => { active = false; window.removeEventListener('sync-pull-complete', refreshHomeSlogan) }
+  }, [])
 
   useEffect(() => {
     if (!profileReady || detectPlatformRuntime() !== 'capacitor-android' || selectedEnvironment !== activeEnvironment) return
@@ -436,6 +450,7 @@ export const useSettings = (): UseSettingsReturn => {
         sync_interval: configNumber(cfg, 'sync_interval', defaultSettings.sync_interval),
         statistics_start_date: resolveStatisticsStartDate(cfg['statistics_start_date'] || cfg['checklist_sync_start_date']).date,
         last_sync_at: cfg['last_sync_at'] || '—',
+        home_slogan: cfg['home_slogan'] || '',
         atimelogger_enabled: false,
         atimelogger_username: '',
         atimelogger_password: '',

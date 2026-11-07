@@ -1,7 +1,7 @@
 ## 1. 标语配置
 
-- [ ] 1.1 在 `ui/src/types.ts`、`ui/src/hooks/useSettings.ts` 加入 `home_slogan` 类型、空默认值和本地配置读取；验收：旧账号缺少该键时设置值为空，新账号读取已存值。（≤2 文件，预计 ≤35 行）
-- [ ] 1.2 在 `ui/src/hooks/useSettings.ts` 响应 `sync-pull-complete`，只重读当前账号标语并在卸载时解绑；验收：另一设备同步更新后首页无需重启即可显示新值。（≤1 文件，预计 ≤30 行）
+- [x] 1.1 在 `ui/src/types.ts`、`ui/src/hooks/useSettings.ts` 加入 `home_slogan` 类型、空默认值和本地配置读取；验收：旧账号缺少该键时设置值为空，新账号读取已存值。（≤2 文件，预计 ≤35 行）
+- [x] 1.2 在 `ui/src/hooks/useSettings.ts` 响应 `sync-pull-complete`，只重读当前账号标语并在卸载时解绑；验收：另一设备同步更新后首页无需重启即可显示新值。（≤1 文件，预计 ≤30 行）
 
 ## 2. 设置入口与首页布局
 
