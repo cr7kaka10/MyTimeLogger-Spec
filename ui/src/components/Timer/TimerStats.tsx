@@ -4,6 +4,7 @@ import { memo, useMemo } from 'react'
 interface TimerStatsProps {
   totalTodayMinutes: number
   compactSyncText?: string
+  homeSlogan: string
 }
 
 const formatMinutes = (minutes: number): string => {
@@ -12,7 +13,7 @@ const formatMinutes = (minutes: number): string => {
   return `${hours}h ${rest}m`
 }
 
-export const TimerStats = memo(({ totalTodayMinutes, compactSyncText }: TimerStatsProps) => {
+export const TimerStats = memo(({ totalTodayMinutes, compactSyncText, homeSlogan }: TimerStatsProps) => {
   const total = useMemo(() => formatMinutes(totalTodayMinutes), [totalTodayMinutes])
 
   const todayStr = useMemo(() => {
@@ -26,10 +27,15 @@ export const TimerStats = memo(({ totalTodayMinutes, compactSyncText }: TimerSta
 
   return (
     <header className="shrink-0">
-      <div className="flex min-w-0 flex-col gap-2 md:flex-row md:items-baseline md:gap-4 md:whitespace-nowrap">
-        <div className="font-mono text-3xl font-bold text-gray-900">{total}</div>
-        <div className="text-sm text-gray-400">{todayStr}</div>
-        {compactSyncText ? <div data-testid="compact-sync-status" className="text-xs text-slate-500 md:ml-auto md:whitespace-nowrap" aria-live="polite">{compactSyncText}</div> : null}
+      <div className="flex min-w-0 flex-col gap-2 md:flex-row md:items-start md:gap-4">
+        <div className="flex min-w-0 items-start gap-3 md:contents">
+          <div className="shrink-0 font-mono text-3xl font-bold text-gray-900 dark:text-gray-100">{total}</div>
+          <div className="min-w-0 flex-1 text-right md:contents">
+            <div className="text-sm text-gray-400 dark:text-gray-300 md:order-2 md:shrink-0 md:whitespace-nowrap">{todayStr}</div>
+            {compactSyncText ? <div data-testid="compact-sync-status" className="min-w-0 break-words text-xs text-slate-500 dark:text-slate-400 md:order-4 md:ml-auto md:shrink-0 md:whitespace-nowrap" aria-live="polite">{compactSyncText}</div> : null}
+          </div>
+        </div>
+        {homeSlogan ? <div data-testid="home-slogan" className="min-w-0 whitespace-pre-wrap break-words text-sm text-gray-700 [overflow-wrap:anywhere] dark:text-gray-200 md:order-3 md:flex-1 md:text-center">{homeSlogan}</div> : null}
       </div>
     </header>
   )

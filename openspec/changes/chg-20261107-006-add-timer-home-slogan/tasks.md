@@ -6,7 +6,7 @@
 ## 2. 设置入口与首页布局
 
 - [x] 2.1 在 `ui/src/components/Settings/SettingsPage.tsx` 增加多行标语编辑、保存、清空和失败提示；验收：保存后首页立即更新，失败时草稿不丢失，空值可清除。（≤1 文件，预计 ≤50 行）
-- [ ] 2.2 在 `ui/src/App.tsx`、`ui/src/components/Timer/TimerPage.tsx` 传递当前账号标语，并让顶部内容增高时可滚动查看；验收：切换账号或修改设置后计时页显示对应值。（≤2 文件，预计 ≤25 行）
+- [x] 2.2 在 `ui/src/App.tsx`、`ui/src/components/Timer/TimerPage.tsx` 传递当前账号标语，并让顶部内容增高时可滚动查看；验收：切换账号或修改设置后计时页显示对应值。（≤2 文件，预计 ≤25 行）
 - [ ] 2.3 在 `ui/src/components/Timer/TimerStats.tsx` 调整安卓首行左右列和 PC 中间标语区，支持手动换行、长字符串断行与完整显示；验收：日期、同步状态、标语在两端均不重叠、不截断。（≤1 文件，预计 ≤50 行）
 
 ## 3. 验证与交付

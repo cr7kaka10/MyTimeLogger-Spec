@@ -17,6 +17,7 @@ import { createTimerInputTrace, observeEventLoopLag, type TimerInputTrace } from
 import { TIMER_NOTE_PRESETS } from './notePresets'
 
 interface TimerPageProps extends UseTimerReturn {
+  homeSlogan: string
   onNavigate: (tab: MainTab) => void
   onOpenLedger: () => void
   theme?: 'light' | 'dark'
@@ -37,6 +38,7 @@ export const TimerPage = memo((props: TimerPageProps) => {
     state,
     isPaused,
     totalTodayMinutes,
+    homeSlogan,
     elapsedMs,
     remainingMs,
     microBreakRemainingSeconds,
@@ -120,8 +122,8 @@ export const TimerPage = memo((props: TimerPageProps) => {
     : ''
 
   return (
-    <div className="flex h-full min-h-0 overflow-hidden flex-col gap-3 bg-[#FAFAFA] p-5 md:gap-2 md:px-5 md:pt-2 md:pb-4">
-      <TimerStats totalTodayMinutes={totalTodayMinutes} compactSyncText={compactSyncText} />
+    <div className="flex h-full min-h-0 flex-col gap-3 overflow-x-hidden overflow-y-auto bg-[#FAFAFA] p-5 md:gap-2 md:px-5 md:pt-2 md:pb-4">
+      <TimerStats totalTodayMinutes={totalTodayMinutes} compactSyncText={compactSyncText} homeSlogan={homeSlogan} />
       {!commandsEnabled ? (
         <div id="timer-readiness-status" className="rounded-xl bg-slate-100 px-3 py-2 text-sm text-slate-700" aria-live="polite">
           {timerSyncStatus === 'switching' ? '正在切换…' :
