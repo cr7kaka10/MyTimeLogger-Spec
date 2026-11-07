@@ -18,6 +18,7 @@ public class WidgetTimerCommandReceiverTest {
 
     @Test public void commandContractBlocksOnlyStructuredCategories() {
         assertTrue(WidgetTimerCommand.isBlockedCategoryName("输入")); assertTrue(WidgetTimerCommand.isBlockedCategoryName("输出"));
+        assertTrue(WidgetTimerCommand.isBlockedCategoryName("副业研发")); assertTrue(WidgetTimerCommand.isBlockedCategoryName("工作"));
         assertFalse(WidgetTimerCommand.isBlockedCategoryName("状态切换")); assertEquals("start", command("ordinary").action);
         assertThrows(IllegalArgumentException.class, () -> WidgetTimerCommand.parse(Collections.singletonMap("url", "x")));
     }

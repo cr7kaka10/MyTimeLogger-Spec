@@ -69,3 +69,16 @@ def test_ticktick_test_probe_uses_opt_in_environment_only(monkeypatch):
     settings = load_ticktick_test_probe_settings()
     assert settings.access_token == "test-only-token"
     assert settings.verify_tls is True
+
+
+def test_ticktick_private_proxy_is_opt_in_and_mode_is_redacted():
+    conn = _conn()
+    assert load_ticktick_settings(conn, 1).transport_mode == "direct"
+    conn.execute(
+        "INSERT INTO server_system_config (user_id, key, value) VALUES (?, ?, ?)",
+        (1, "ticktick_config", json.dumps({"access_token": "secret", "proxy_url": "http://user:pass@127.0.0.1:8899"})),
+    )
+    settings = load_ticktick_settings(conn, 1)
+    assert settings.proxy_url == "http://user:pass@127.0.0.1:8899"
+    assert settings.transport_mode == "explicit_proxy"
+    assert "user" not in settings.transport_mode and "pass" not in settings.transport_mode

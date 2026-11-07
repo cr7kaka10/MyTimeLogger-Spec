@@ -4,6 +4,9 @@ import type { UseSettingsReturn } from '../../hooks/useSettings'
 import { NumberSheet } from '../common/NumberSheet'
 import { LoggingSettings } from './LoggingSettings'
 import { NotificationSettings } from './NotificationSettings'
+import { SleepAutomationSettings, type SleepPermissions } from './SleepAutomationSettings'
+import { sleepAutomation, type SleepAutomationStatus } from '../../platform/sleepAutomation'
+import { createCapacitorAppLifecycleService, installSleepAutomationStatusLifecycle } from '../../platform/lifecycle'
 import { AVAILABLE_AUDIO_FILES } from '../../utils/audio'
 import { getDatabase, syncNow } from '../../db'
 import { getElectronCapabilities } from '../../platform/electron'
@@ -13,10 +16,13 @@ import { platformFetch } from '../../platform'
 import { formatPlatformNetworkError } from '../../platform/fetch'
 import { logRewardRebuildStage, parseRewardRebuildFailure, rewardRebuildHeader } from './rewardRebuildDiagnostics'
 import type { RewardRebuildFailureView } from './rewardRebuildDiagnostics'
+import { beijingDateOffset, isAllowedStatisticsStartDate } from '../../utils/statisticsStartDate'
 
 interface SettingsPageProps extends UseSettingsReturn {
   onOpenSleep: () => void
+  onSleepReportReady: () => void
   onOpenCategoryManager: () => void
+  onOpenMealWheelSettings: () => void
   onSignedOut: () => void
 }
 
@@ -158,7 +164,8 @@ ServiceRow.displayName = 'ServiceRow'
 
 export const SettingsPage = memo(({
   settings, updateSetting,
-  onOpenCategoryManager, exportConfig, importConfig,
+  onSleepReportReady,
+  onOpenCategoryManager, onOpenMealWheelSettings, exportConfig, importConfig,
   activeEnvironment, selectedEnvironment, selectedEnvironmentProfile, clearActiveSession, logoutActiveSession, verifyActiveSession, onSignedOut,
 }: SettingsPageProps) => {
   const [editingKey, setEditingKey] = useState<string | null>(null)
@@ -179,13 +186,101 @@ export const SettingsPage = memo(({
   const [rewardRebuildMessage, setRewardRebuildMessage] = useState('')
   const [rewardRebuildFailure, setRewardRebuildFailure] = useState<RewardRebuildFailureView | null>(null)
   const [statisticsStartDateDraft, setStatisticsStartDateDraft] = useState(settings.statistics_start_date)
+  const [sloganDraft, setSloganDraft] = useState(settings.home_slogan)
+  const [sloganDirty, setSloganDirty] = useState(false)
+  const [sloganSaving, setSloganSaving] = useState(false)
+  const [sloganError, setSloganError] = useState('')
+  const [sleepStatus, setSleepStatus] = useState(() => sleepAutomation.status())
+  const [sleepActionFeedback, setSleepActionFeedback] = useState('')
   const atimeloggerPasswordRef = useRef<HTMLInputElement>(null)
   const desktopCapabilities = getElectronCapabilities()
-  const beijingToday = new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString().slice(0, 10)
+  const maximumStatisticsStartDate = beijingDateOffset(1)
+  const nativeSleepPermissions = (sleepStatus as any).permissions || {}
+  const sleepPermissions: SleepPermissions = { accessibility: nativeSleepPermissions.accessibility === true, notifications: nativeSleepPermissions.notifications === true, media: nativeSleepPermissions.media === true, battery: nativeSleepPermissions.battery === true }
+  const refreshSleepStatus = useCallback(() => setSleepStatus(sleepAutomation.status()), [])
+  const sleepCaptureBlockMessage = (reason?: string) => ({ accessibility_required: '请先开启辅助功能控制', notifications_required: '请先允许通知提醒', media_permission_required: '请先允许睡眠图片访问', device_locked: '请先解锁手机' } as Record<string, string>)[reason || ''] || '请检查权限和手机状态'
+  const toggleSleepAutomation = useCallback((enabled: boolean) => { enabled ? sleepAutomation.enable() : sleepAutomation.disable(); refreshSleepStatus() }, [refreshSleepStatus])
+  const pollSleepStatus = useCallback((done: (status: SleepAutomationStatus) => boolean, maxAttempts = 120) => {
+    let attempts = 0
+    const refresh = () => {
+      const next = sleepAutomation.status()
+      setSleepStatus(next)
+      if (done(next)) setSleepActionFeedback(next.captureTest?.stage === 'FAILED' || next.stage === 'FAILED' ? `运行失败：${next.captureTest?.reason || next.reason || '请查看运行记录'}` : '本次操作已完成')
+      else if (attempts++ < maxAttempts) window.setTimeout(refresh, 1000)
+      else setSleepActionFeedback('等待超时，请查看最近运行记录或重试')
+    }
+    window.setTimeout(refresh, 500)
+  }, [])
+  const testSleepAutomation = useCallback(() => {
+    const previousRun = sleepAutomation.status().captureTest?.runId
+    const result = sleepAutomation.test()
+    setSleepActionFeedback(result.ok ? '图片采集已受理，正在等待结果…' : `图片采集未受理：${sleepCaptureBlockMessage(sleepAutomation.status().captureBlockedReason)}`)
+    setSleepStatus(sleepAutomation.status())
+    if (result.ok) pollSleepStatus(status => Boolean(status.captureTest?.runId && status.captureTest.runId !== previousRun && status.captureTest.stage !== 'RUNNING'))
+  }, [pollSleepStatus])
+  const generateSleepReport = useCallback(() => {
+    const result = sleepAutomation.generateReport()
+    setSleepActionFeedback(result.ok ? '今日睡眠报告已受理，正在等待结果…' : '今日图片尚未保存或不可读取，请先采集图片')
+    setSleepStatus({ ...sleepAutomation.status(), stage: result.ok ? 'PENDING' : 'FAILED', reason: result.ok ? '' : 'capture_required' })
+    if (result.ok) {
+      let sawProgress = false
+      pollSleepStatus(status => {
+        sawProgress ||= ['MEDIA', 'UPLOADED', 'POLLING'].includes(status.stage || '')
+        return sawProgress && ['SUCCESS', 'FAILED'].includes(status.stage || '')
+      })
+    }
+  }, [pollSleepStatus])
+  const runOneClickSleepAutomation = useCallback(() => {
+    let sawReportProgress = false
+    const previousRunId = sleepAutomation.status().captureTest?.runId
+    const result = sleepAutomation.oneClick()
+    setSleepActionFeedback(result.ok ? '一键自动化已受理，正在等待采集和报告结果…' : `一键自动化未受理：${sleepCaptureBlockMessage(sleepAutomation.status().captureBlockedReason)}`)
+    setSleepStatus({ ...sleepAutomation.status(), stage: result.ok ? 'PENDING' : 'FAILED', reason: result.ok ? '' : 'automation_rejected' })
+    if (result.ok) pollSleepStatus(status => {
+      sawReportProgress ||= ['MEDIA', 'UPLOADED', 'POLLING'].includes(status.stage || '')
+      const captureFailed = Boolean(status.captureTest?.runId && status.captureTest.runId !== previousRunId && status.captureTest.stage === 'FAILED')
+      const done = captureFailed || (sawReportProgress && ['SUCCESS', 'FAILED'].includes(status.stage || ''))
+      if (sawReportProgress && status.stage === 'SUCCESS') onSleepReportReady()
+      return done
+    }, 180)
+  }, [onSleepReportReady, pollSleepStatus])
+  const previewSleepCapture = useCallback(() => { sleepAutomation.previewCapture(); setSleepStatus(sleepAutomation.status()) }, [])
+  const exportSleepCapture = useCallback(() => {
+    const result = sleepAutomation.exportCapture()
+    setSleepActionFeedback(result === 'saved' || result === 'already_saved' ? '图片已保存到系统相册 Pictures/MyTimeLogger' : `保存到相册失败：${result}`)
+    refreshSleepStatus()
+  }, [refreshSleepStatus])
+  const authorizeSleepAutomation = useCallback((permission: keyof SleepPermissions) => { sleepAutomation.authorize(permission) }, [])
+  const updateSleepConsent = useCallback(async (value: boolean) => {
+    if (!value) {
+      const disabled = sleepAutomation.disable()
+      refreshSleepStatus()
+      if (!disabled.ok) { window.alert('无法停止睡眠自动化，请重试'); return }
+    }
+    const saved = await updateSetting('sleep_automation_consent', value)
+    if (!saved.ok) window.alert(saved.error || '设置保存失败，请重试')
+  }, [refreshSleepStatus, updateSetting])
 
   useEffect(() => {
     setStatisticsStartDateDraft(settings.statistics_start_date)
   }, [settings.statistics_start_date])
+
+  useEffect(() => {
+    if (!sloganDirty) setSloganDraft(settings.home_slogan)
+  }, [settings.home_slogan])
+
+  const saveHomeSlogan = async (value = sloganDraft.trim()) => {
+    setSloganSaving(true)
+    setSloganError('')
+    const result = await updateSetting('home_slogan', value).catch(() => ({ ok: false, error: '设置保存失败，请重试' }))
+    setSloganSaving(false)
+    if (result.ok) { setSloganDraft(value); setSloganDirty(false) }
+    else setSloganError(result.error || '设置保存失败，请重试')
+  }
+
+  useEffect(() => installSleepAutomationStatusLifecycle(
+    createCapacitorAppLifecycleService(), refreshSleepStatus,
+  ), [refreshSleepStatus])
 
   const playPreview = useCallback((srcKey: string) => {
     if (srcKey && srcKey !== 'none') {
@@ -514,9 +609,9 @@ export const SettingsPage = memo(({
         <div className="flex min-h-14 w-full items-center justify-between gap-4 border-b border-gray-50 px-4 py-2">
           <div><div className="font-medium text-gray-900">统计起始日期</div>{rewardRebuildMessage && <div className="mt-0.5 text-xs text-gray-400">{rewardRebuildMessage}</div>}</div>
           <div className="flex items-center gap-2">
-            <input type="date" max={beijingToday} value={statisticsStartDateDraft} onChange={event => {
+            <input type="date" max={maximumStatisticsStartDate} value={statisticsStartDateDraft} onChange={event => {
               const value = event.target.value
-              if (resolveStatisticsStartDate(value).date === value && value <= beijingToday) setStatisticsStartDateDraft(value)
+              if (resolveStatisticsStartDate(value).date === value && isAllowedStatisticsStartDate(value)) setStatisticsStartDateDraft(value)
             }} className="bg-transparent text-sm text-gray-400 outline-none hover:text-gray-600 focus:text-blue-600" />
             <button type="button" disabled={rewardRebuildBusy} onClick={() => void rebuildRewardLedger(statisticsStartDateDraft)} className="text-xs text-blue-600 hover:text-blue-700 disabled:text-gray-300">{rewardRebuildBusy ? '处理中' : '重新拉取并重算金币'}</button>
           </div>
@@ -537,6 +632,20 @@ export const SettingsPage = memo(({
 
       {/* 计时设置 */}
       <section className={sectionClass}>
+        <div className="border-b border-gray-100 px-4 py-3 dark:border-slate-700">
+          <label htmlFor="home-slogan" className="font-medium text-gray-900 dark:text-gray-100">首页标语</label>
+          <textarea id="home-slogan" value={sloganDraft} rows={3}
+            onChange={event => { setSloganDraft(event.target.value); setSloganDirty(true); setSloganError('') }}
+            placeholder="写一句给自己的话"
+            className="mt-2 w-full resize-y rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none focus:border-blue-400 dark:border-slate-600 dark:bg-slate-800 dark:text-gray-100" />
+          {sloganError && <p role="alert" className="mt-1 text-sm text-rose-600 dark:text-rose-400">{sloganError}</p>}
+          <div className="mt-2 flex justify-end gap-2">
+            <button type="button" disabled={sloganSaving} onClick={() => { setSloganDraft(''); setSloganDirty(true); void saveHomeSlogan('') }}
+              className="rounded-lg px-3 py-2 text-sm text-gray-500 disabled:opacity-50 dark:text-gray-300">清空</button>
+            <button type="button" disabled={sloganSaving || !sloganDirty} onClick={() => { void saveHomeSlogan() }}
+              className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white disabled:opacity-50">{sloganSaving ? '保存中…' : '保存标语'}</button>
+          </div>
+        </div>
         <div className="flex h-12 items-center justify-between gap-4 border-b border-gray-50 px-4">
           <span className="font-medium text-gray-900">随机休息提醒频率</span>
           <select
@@ -611,6 +720,11 @@ export const SettingsPage = memo(({
 
       <NotificationSettings />
 
+      {sleepStatus.available ? <SleepAutomationSettings status={sleepStatus} consented={settings.sleep_automation_consent === true} permissions={sleepPermissions}
+        onConsent={value => { void updateSleepConsent(value) }} onToggle={toggleSleepAutomation} onAuthorize={authorizeSleepAutomation}
+        onTest={testSleepAutomation} onPreview={previewSleepCapture} onExport={exportSleepCapture} onGenerate={generateSleepReport} onOneClick={runOneClickSleepAutomation} feedback={sleepActionFeedback} />
+        : <section className={sectionClass}><div className="px-4 py-3 font-medium">睡眠图片自动分析</div><div className="border-t border-gray-50 px-4 py-3 text-sm text-gray-400">仅 Android 手机端可用；PC/Web 不会访问华为运动健康或本地图片。</div></section>}
+
       {/* 声音设置 */}
       <section className={sectionClass}>
         <div className="px-4 py-2 text-xs font-semibold uppercase tracking-wider text-gray-500 border-b border-gray-50 bg-gray-50/50">声音设置</div>
@@ -625,6 +739,7 @@ export const SettingsPage = memo(({
       {/* 其他 */}
       <section className={sectionClass}>
         <SettingRow label="分类管理" value="›" onClick={onOpenCategoryManager} />
+        <SettingRow label="转盘设置" value="›" onClick={onOpenMealWheelSettings} />
         <SettingRow label="导出完整配置" value="›" onClick={exportConfig} />
         <SettingRow label="导入完整配置" value="›" onClick={importConfig} />
       </section>

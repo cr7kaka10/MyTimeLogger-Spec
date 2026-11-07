@@ -7,6 +7,7 @@
 
 import { initDatabase } from './Schema'
 import { HabitService } from './services/HabitService'
+import { assertLocalHabitEditable, normalizeHabitEdits, type HabitEdits } from './HabitEdits'
 import { RewardLedgerService, type LedgerSummary } from './services/RewardLedgerService'
 import { encryptString, decryptString } from '../utils/crypto'
 import { normalizeShanghaiDateTime, normalizeTaskTimeFields } from '../utils/time'
@@ -17,6 +18,17 @@ import { sessionBusinessDate } from '../core/SessionBusinessDate'
 import type { ExercisePlanDefinition, PlanDay, ScoreRule } from './ExercisePlanSampleDataInitializer'
 
 const V4_DIET_RULE_KEYS = ['no_snacks', 'no_sugary_drinks', 'no_refined_staples']
+const V5_LEGACY_DIET_RULE_KEYS = ['protein_at_lunch_and_dinner', 'vegetables_at_lunch_and_dinner', 'controlled_staple_and_no_sugary_drink']
+const V5_MEAL_RULE_KEYS = ['breakfast_on_time', 'lunch_on_time', 'dinner_on_time']
+const V5_RESTORED_DIET_RULE_KEYS = ['no_sugary_drinks', 'no_refined_staples', 'no_snacks']
+const V5_DIET_RULE_KEYS = [...V5_LEGACY_DIET_RULE_KEYS, ...V5_RESTORED_DIET_RULE_KEYS, ...V5_MEAL_RULE_KEYS]
+const AUTHORITATIVE_DIET_RULE_KEYS: Record<string, string[]> = { v4: V4_DIET_RULE_KEYS, v5: V5_DIET_RULE_KEYS }
+const parseGoalWeekdays = (value: unknown): number[] | undefined => {
+  try {
+    const days = typeof value === 'string' ? JSON.parse(value) : value
+    return Array.isArray(days) ? days.map(Number).filter(day => Number.isInteger(day) && day >= 1 && day <= 7) : undefined
+  } catch { return undefined }
+}
 
 // system_config 表 key 名常量
 export const SYSTEM_CONFIG_KEYS = {
@@ -73,10 +85,13 @@ export interface ATimeLoggerSegment {
 }
 
 export interface Habit {
-  id: number | string; title: string; icon: string; color: string
+  id: number | string; name: string; title?: string; icon: string; color: string
   category_id: number | null; sort_order: number
   is_active: number; difficulty: string; created_at?: string
+  source?: string; repeat_rule?: string | null
+  journal_prompt_enabled?: number
   updated_at?: string; pushed_at?: string | null
+  window_start_minute?: number | null; window_end_minute?: number | null
 }
 
 export interface CategoryNormalizationPreview {
@@ -94,13 +109,15 @@ const CATEGORY_REFERENCE_COLUMNS = [
 
 export interface HabitCheckin {
   id: number | string; habit_id: number | string; checkin_date: string
-  checkin_time?: string; status: number; updated_at?: string; pushed_at?: string | null
+  checkin_time?: string; status: number; note?: string | null; updated_at?: string; pushed_at?: string | null
 }
 
 export interface Goal {
   id: number | string; title: string; category_id: number | null
   category_ids?: number[]
   metric: string; target_value: number; period: string
+  weekdays?: number[]
+  weekdays_effective_from?: string
   reward_coins: number; reward_id?: number | string; operator: string
   penalty_coins: number; is_active: number; created_at?: string
   updated_at?: string; pushed_at?: string | null
@@ -110,13 +127,13 @@ export interface Reward {
   id: number | string; title: string; icon: string; price: number
   redemption_mode?: 'coins' | 'task' | 'goal' | 'pending_binding' | 'custom_spend'
   description?: string; unlock_task_id?: string; unlock_task_title?: string
-  fulfillment_mode?: 'immediate' | 'fragment'; fragment_target_count?: number; fragment_rule_version?: number
+  fulfillment_mode?: 'immediate' | 'fragment'; fragment_target_count?: number; fragment_measure_mode?: 'count' | 'percent'; fragment_rule_version?: number
   is_active: number; created_at?: string; updated_at?: string; pushed_at?: string | null
 }
 
 export interface LedgerEntry {
   id: number | string; amount: number; source_type: string; source_id?: number | string
-  description?: string; target_date?: string; occurred_at?: string | null; created_at?: string; updated_at?: string; pushed_at?: string | null
+  description?: string; target_date?: string; occurred_at?: string | null; expires_at?: string | null; created_at?: string; updated_at?: string; pushed_at?: string | null
 }
 
 export interface ServerLedgerSnapshot {
@@ -167,7 +184,7 @@ const SLEEP_DATA_COLUMNS = new Set([
   'analysis_report', 'analysis_html', 'official_advice',
   'morning_diary', 'evening_diary', 'morning_diary_written_at', 'evening_diary_written_at', 'report_status',
   'full_report_state', 'tracked_duration_seconds',
-  'source', 'synced_at', 'sync_status', 'sync_error', 'updated_at', 'pushed_at',
+  'source', 'synced_at', 'sync_status', 'sync_error', 'image_uploaded_at', 'updated_at', 'pushed_at',
 ])
 
 export type SqlDB = any  // Electron better-sqlite3 bridge 或 Android 原生 SQLite 适配器
@@ -365,28 +382,31 @@ export class Database {
   }
 
   private _enqueueOutbox(table: string, recordId: number | string, operation: string, payload: Record<string, any>, baseVersion?: string | null): void {
+    const baseline = /^\d+$/.test(String(baseVersion ?? '')) ? String(baseVersion) : String(this.getLastServerVersion())
     const existing = this._get(
       `SELECT id FROM sync_outbox WHERE table_name = ? AND record_id = ? AND status IN ('pending', 'failed') ORDER BY id DESC LIMIT 1`,
       [table, String(recordId)],
     )
     if (existing) {
       this._run(
-        `UPDATE sync_outbox SET operation = ?, payload_json = ?, base_version = ?, status = 'pending', last_error = NULL, updated_at = ? WHERE id = ?`,
-        [operation, JSON.stringify(payload), baseVersion ?? null, this._now(), existing.id],
+        `UPDATE sync_outbox SET operation = ?, payload_json = ?, status = 'pending', retry_count = 0, last_error = NULL, updated_at = ? WHERE id = ?`,
+        [operation, JSON.stringify(payload), this._now(), existing.id],
       )
       return
     }
-    this.createOutboxOperation(table, recordId, operation, payload, baseVersion)
+    this.createOutboxOperation(table, recordId, operation, payload, baseline)
   }
 
   private repairInterruptedDietCheckinOutbox(): void {
-    const placeholders = V4_DIET_RULE_KEYS.map(() => '?').join(',')
-    const rows = this._all(`SELECT d.* FROM exercise_diet_checkins d
-      WHERE d.plan_version='v4' AND d.rule_key IN (${placeholders}) AND d.pushed_at IS NULL
-      AND COALESCE(d.updated_at,'') > COALESCE(d.pulled_at,'')
-      AND NOT EXISTS (SELECT 1 FROM sync_outbox o WHERE o.table_name='exercise_diet_checkins'
-        AND o.record_id=CAST(d.id AS TEXT) AND o.status IN ('pending','failed','sending'))`, V4_DIET_RULE_KEYS)
-    rows.forEach(row => this._enqueueOutbox('exercise_diet_checkins', row.id, 'upsert', row, row.pulled_at ?? null))
+    for (const [version, keys] of Object.entries(AUTHORITATIVE_DIET_RULE_KEYS)) {
+      const placeholders = keys.map(() => '?').join(',')
+      const rows = this._all(`SELECT d.* FROM exercise_diet_checkins d
+        WHERE d.plan_version=? AND d.rule_key IN (${placeholders}) AND d.pushed_at IS NULL
+        AND COALESCE(d.updated_at,'') > COALESCE(d.pulled_at,'')
+        AND NOT EXISTS (SELECT 1 FROM sync_outbox o WHERE o.table_name='exercise_diet_checkins'
+          AND o.record_id=CAST(d.id AS TEXT) AND o.status IN ('pending','failed','sending'))`, [version, ...keys])
+      rows.forEach(row => this._enqueueOutbox('exercise_diet_checkins', row.id, 'upsert', row, row.pulled_at ?? null))
+    }
   }
 
   private _formatLedgerDescription(template: string, replacements: Record<string, string>): string {
@@ -461,10 +481,13 @@ export class Database {
     return this._get(`SELECT * FROM ${table} WHERE id = ?`, [id])
   }
 
-  getPendingOutbox(limit = 50): SyncOutboxEntry[] {
+  getPendingOutbox(limit = 50, scope?: 'core' | 'checklist'): SyncOutboxEntry[] {
+    const scopeFilter = scope === 'core'
+      ? `AND (table_name NOT IN ('tasks','habits') OR payload_json LIKE '%"source":"local"%')` : ''
     return this._all(
       `SELECT * FROM sync_outbox
-       WHERE status IN ('pending', 'failed')
+       WHERE status IN ('pending', 'failed', 'exhausted')
+       ${scopeFilter}
        ORDER BY id ASC
        LIMIT ?`,
       [limit],
@@ -474,7 +497,7 @@ export class Database {
   hasPendingOutbox(table: string, recordId: number | string): boolean {
     const row = this._get(
       `SELECT 1 AS found FROM sync_outbox
-       WHERE table_name = ? AND record_id = ? AND status IN ('pending', 'failed', 'sending')
+       WHERE table_name = ? AND record_id = ? AND status IN ('pending', 'failed', 'sending', 'exhausted')
        LIMIT 1`,
       [table, String(recordId)],
     )
@@ -485,7 +508,8 @@ export class Database {
     if (ids.length === 0) return
     const now = this._now()
     const placeholders = ids.map(() => '?').join(',')
-    this._run(`UPDATE sync_outbox SET status = 'sending', updated_at = ? WHERE id IN (${placeholders})`, [now, ...ids])
+    this._run(`UPDATE sync_outbox SET status = CASE WHEN status = 'exhausted' THEN status ELSE 'sending' END,
+      updated_at = ? WHERE id IN (${placeholders})`, [now, ...ids])
   }
 
   recoverInterruptedOutboxSending(): number {
@@ -520,10 +544,23 @@ export class Database {
     const placeholders = ids.map(() => '?').join(',')
     this._run(
       `UPDATE sync_outbox
-       SET status = 'failed', retry_count = retry_count + 1, last_error = ?, updated_at = ?
+       SET status = CASE WHEN retry_count >= 3 OR status = 'exhausted' THEN 'exhausted' ELSE 'failed' END,
+           retry_count = CASE WHEN status = 'exhausted' THEN retry_count ELSE retry_count + 1 END,
+           last_error = ?, updated_at = ?
        WHERE id IN (${placeholders})`,
       [error, now, ...ids],
     )
+  }
+
+  resolveOutbox(id: number, status: 'resolved' | 'terminated', reason: string): void {
+    this._run('UPDATE sync_outbox SET status=?, last_error=?, updated_at=? WHERE id=?',
+      [status, reason, this._now(), id])
+  }
+
+  getOutboxIssues(): { count: number; firstError: string | null } {
+    const count = this._get("SELECT COUNT(*) AS count FROM sync_outbox WHERE status IN ('failed','exhausted','terminated')")
+    const first = this._get("SELECT last_error FROM sync_outbox WHERE status IN ('failed','exhausted','terminated') ORDER BY id LIMIT 1")
+    return { count: Number(count?.count ?? 0), firstError: first?.last_error ?? null }
   }
 
   getLastServerVersion(): number {
@@ -1234,10 +1271,61 @@ export class Database {
 
   getHabits(): Habit[] {
     // is_active = 0 表示正常（与 TickTick 一致），is_active = 1 表示归档
-    return this._all('SELECT * FROM habits WHERE is_active = 0 ORDER BY sort_order') as Habit[]
+    return this._all("SELECT * FROM habits WHERE is_active=0 AND source IN ('local','system') ORDER BY sort_order") as Habit[]
   }
 
-  addHabit(name: string, icon = '✅', difficulty = 'easy'): string {
+  getHabitWindowsForDate(date: string): Map<string, { start_minute: number | null; end_minute: number | null }> {
+    const windows = new Map<string, { start_minute: number | null; end_minute: number | null }>()
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return windows
+    for (const row of this._all('SELECT habit_id,start_minute,end_minute FROM habit_windows WHERE effective_from<=? ORDER BY effective_from DESC', [date])) {
+      const id = String(row.habit_id)
+      if (!windows.has(id)) windows.set(id, { start_minute: row.start_minute == null ? null : Number(row.start_minute), end_minute: row.end_minute == null ? null : Number(row.end_minute) })
+    }
+    return windows
+  }
+
+  getHabitWindowDefinitions(): Map<string, { effective_from: string; start_minute: number | null; end_minute: number | null }> {
+    const windows = new Map<string, { effective_from: string; start_minute: number | null; end_minute: number | null }>()
+    for (const row of this._all('SELECT habit_id,effective_from,start_minute,end_minute FROM habit_windows ORDER BY effective_from DESC')) {
+      const id = String(row.habit_id)
+      if (!windows.has(id)) windows.set(id, { effective_from: String(row.effective_from), start_minute: row.start_minute == null ? null : Number(row.start_minute), end_minute: row.end_minute == null ? null : Number(row.end_minute) })
+    }
+    return windows
+  }
+
+  getIgnoredHabitIds(date: string): Set<string> {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return new Set()
+    return new Set(this._all('SELECT habit_id FROM habit_day_ignores WHERE date=? AND is_ignored=1', [date])
+      .map(row => String(row.habit_id)))
+  }
+
+  getIgnoredHabitRows(date: string): Record<string, any>[] {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return []
+    return this._all('SELECT * FROM habit_day_ignores WHERE date=? AND is_ignored=1 ORDER BY habit_id', [date])
+  }
+
+  getArchivedLocalHabits(): Habit[] {
+    return this._all("SELECT * FROM habits WHERE source='local' AND is_active=1 ORDER BY updated_at DESC") as Habit[]
+  }
+
+  getLocalHabitDetails(id: string | number): { habit: Habit; checkins: (HabitCheckin & { date: string })[]; category: string | null } | undefined {
+    const habit = this._get("SELECT * FROM habits WHERE id=? AND source='local'", [id]) as Habit | undefined
+    if (!habit) return undefined
+    const category = habit.category_id == null ? null : this._get('SELECT name FROM categories WHERE id=? AND is_active=1', [habit.category_id])?.name
+    const checkins = this._all('SELECT * FROM habit_checkins WHERE habit_id=? ORDER BY date DESC LIMIT 30', [id]) as (HabitCheckin & { date: string })[]
+    return { habit, checkins, category: category ?? null }
+  }
+
+  getHabitMonthCheckins(id: string | number, month: string): HabitCheckin[] {
+    if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) return []
+    const [year, part] = month.split('-').map(Number)
+    const next = part === 12 ? `${year + 1}-01` : `${year}-${String(part + 1).padStart(2, '0')}`
+    const rows = this._all('SELECT * FROM habit_checkins WHERE habit_id=? AND COALESCE(checkin_date,date)>=? AND COALESCE(checkin_date,date)<? ORDER BY COALESCE(checkin_date,date) DESC',
+      [id, `${month}-01`, `${next}-01`]) as (HabitCheckin & { date?: string })[]
+    return rows.map(row => ({ ...row, checkin_date: row.checkin_date || row.date || '' }))
+  }
+
+  addHabit(name: string, icon = '✅', fields: Pick<HabitEdits, 'repeat_rule' | 'category_id'> = {}): string {
     const now = this._now()
     const normalizedName = name.trim()
     if (!normalizedName) throw new Error('习惯名称不能为空')
@@ -1245,29 +1333,39 @@ export class Database {
     const order = ((row as any)?.m ?? 0) + 1
     const localId = 'local_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8)
     this._run(
-      `INSERT INTO habits (id, name, icon, color, sort_order, is_active, difficulty, source, created_at, updated_at)
-       VALUES (?,?,?,'#A3BE8C',?,0,?, 'local', ?,?)`,  // is_active = 0 表示正常
-      [localId, normalizedName, icon, order, difficulty, now, now],
+      `INSERT INTO habits (id, name, icon, color, category_id, sort_order, is_active, difficulty, repeat_rule, source, created_at, updated_at)
+       VALUES (?,?,?,'#A3BE8C',?,?,0,?,?,'local',?,?)`,
+      [localId, normalizedName, icon, fields.category_id ?? null, order, 'easy', fields.repeat_rule || 'FREQ=DAILY', now, now],
     )
     this._afterWrite('habits', localId)
     return localId
   }
 
-  updateHabit(id: string | number, fields: Partial<Habit>): void {
+  updateHabit(id: string | number, fields: HabitEdits, expectedUpdatedAt?: string): void {
+    assertLocalHabitEditable(this.getRecordById('habits', id), expectedUpdatedAt)
+    const normalized = normalizeHabitEdits(fields)
+    if (!Object.keys(normalized).length) return
     const now = this._now()
     const sets: string[] = ['updated_at = ?']
     const vals: any[] = [now]
-    for (const [k, v] of Object.entries(fields)) {
-      if (v !== undefined && k !== 'id') { sets.push(`${k} = ?`); vals.push(v) }
-    }
+    for (const [k, v] of Object.entries(normalized)) { sets.push(`${k} = ?`); vals.push(v) }
     vals.push(id)
     this._run(`UPDATE habits SET ${sets.join(', ')} WHERE id = ?`, vals)
     this._afterWrite('habits', id)
   }
 
-  deleteHabit(id: string | number): void {
+  setHabitJournalPrompt(id: string | number, enabled: boolean): void {
+    const row = this.getRecordById('habits', id)
+    if (!row || row.is_active !== 0) throw new Error('习惯不存在或已归档')
+    this._run('UPDATE habits SET journal_prompt_enabled=?,updated_at=? WHERE id=?', [enabled ? 1 : 0, this._now(), id])
+    if (row.source === 'local') this._afterWrite('habits', id)
+    else this.createOutboxOperation('habits', String(id), 'upsert', { id: String(id), source: row.source || 'ticktick', journal_prompt_enabled: enabled ? 1 : 0 })
+  }
+
+  deleteHabit(id: string | number, expectedUpdatedAt?: string): void {
+    assertLocalHabitEditable(this.getRecordById('habits', id), expectedUpdatedAt)
     // is_active = 1 表示归档（与 TickTick 一致）
-    this._run('UPDATE habits SET is_active = 1, updated_at = ? WHERE id = ?', [this._now(), id])
+    this._run("UPDATE habits SET is_active=1,updated_at=?,archived_at=?,archive_reason='local_user' WHERE id=?", [this._now(), this._now(), id])
     this._afterWrite('habits', id)
   }
 
@@ -1461,6 +1559,7 @@ export class Database {
     }
     return goals.map(goal => ({
       ...goal,
+      weekdays: parseGoalWeekdays((goal as any).weekdays),
       category_ids: byGoal.get(String(goal.id)) ?? (goal.category_id == null ? [] : [goal.category_id]),
     }))
   }
@@ -1468,10 +1567,11 @@ export class Database {
   addGoal(g: Omit<Goal, 'id'>): number {
     const now = this._now()
     this._run(
-      `INSERT INTO goals (title, category_id, metric, target_value, period, reward_coins, reward_id, operator, penalty_coins, is_active, created_at, updated_at)
-       VALUES (?,?,?,?,?,?,?,?,?,1,?,?)`,
+      `INSERT INTO goals (title, category_id, metric, target_value, period, reward_coins, reward_id, operator, penalty_coins, weekdays, is_active, created_at, updated_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,1,?,?)`,
       [g.title, g.category_id, g.metric, g.target_value, g.period,
-       g.reward_coins, g.reward_id ?? null, g.operator ?? '>=', g.penalty_coins ?? g.reward_coins, now, now],
+       g.reward_coins, g.reward_id ?? null, g.operator ?? '>=', g.penalty_coins ?? g.reward_coins,
+       g.weekdays ? JSON.stringify(g.weekdays) : null, now, now],
     )
     const id = (this._get('SELECT last_insert_rowid() as id') as any).id as number
     this._afterWrite('goals', id)
@@ -1483,7 +1583,10 @@ export class Database {
     const sets: string[] = ['updated_at = ?']
     const vals: any[] = [now]
     for (const [k, v] of Object.entries(fields)) {
-      if (v !== undefined && k !== 'id') { sets.push(`${k} = ?`); vals.push(v) }
+      if (v !== undefined && k !== 'id') {
+        sets.push(`${k} = ?`)
+        vals.push(k === 'weekdays' && Array.isArray(v) ? JSON.stringify(v) : v)
+      }
     }
     vals.push(id)
     this._run(`UPDATE goals SET ${sets.join(', ')} WHERE id = ?`, vals)
@@ -1598,17 +1701,17 @@ export class Database {
       this._run('DELETE FROM reward_ledger')
       this._run("DELETE FROM sync_outbox WHERE table_name = 'reward_ledger' AND status IN ('pending', 'failed', 'sending')")
       for (const row of rows) this._run(
-        `INSERT INTO reward_ledger (id, amount, source_type, source_id, description, target_date, occurred_at, created_at, updated_at, pushed_at, pulled_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)` ,
-        [row.id, row.amount, row.source_type, row.source_id ?? null, row.description ?? '', row.target_date ?? '', row.occurred_at ?? null, row.created_at ?? this._now(), row.updated_at ?? this._now(), this._now()],
+        `INSERT INTO reward_ledger (id, amount, source_type, source_id, description, target_date, occurred_at, expires_at, created_at, updated_at, pushed_at, pulled_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)` ,
+        [row.id, row.amount, row.source_type, row.source_id ?? null, row.description ?? '', row.target_date ?? '', row.occurred_at ?? null, row.expires_at ?? null, row.created_at ?? this._now(), row.updated_at ?? this._now(), this._now()],
       )
       this._run('DELETE FROM reward_fragments')
       for (const row of fragments) this._run(
         `INSERT INTO reward_fragments
-           (id,reward_id,source_type,source_id,completion_event_key,rule_version,progress_units,consumed_units,issued_at,expires_at,status,compose_batch_id,created_at,updated_at,pulled_at)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+           (id,reward_id,source_type,source_id,completion_event_key,rule_version,fragment_measure_mode,progress_units,consumed_units,issued_at,expires_at,status,compose_batch_id,created_at,updated_at,pulled_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
         [row.id, row.reward_id, row.source_type, row.source_id, row.completion_event_key,
-          row.rule_version, row.progress_units ?? 100, row.consumed_units ?? 0, row.issued_at, row.expires_at, row.status, row.compose_batch_id ?? null,
+          row.rule_version, row.fragment_measure_mode ?? 'count', row.progress_units ?? 1, row.consumed_units ?? 0, row.issued_at, row.expires_at, row.status, row.compose_batch_id ?? null,
           row.created_at, row.updated_at, this._now()],
       )
       const now = this._now()
@@ -1857,9 +1960,10 @@ export class Database {
     return total
   }
 
-  getDiaryForDate(date: string): { morning_diary?: string; evening_diary?: string; morning_diary_written_at?: string; evening_diary_written_at?: string; report_status: number; morning_diary_reward_status?: string; morning_diary_reward_amount?: number; morning_diary_reward_reason?: string; evening_diary_reward_status?: string; evening_diary_reward_amount?: number; evening_diary_reward_reason?: string } | null {
+  getDiaryForDate(date: string): { morning_diary?: string; evening_diary?: string; morning_diary_written_at?: string; evening_diary_written_at?: string; image_uploaded_at?: string; report_status: number; source?: string; sync_status?: string; full_report_state?: string; report_completed_at?: string; morning_diary_reward_status?: string; morning_diary_reward_amount?: number; morning_diary_reward_reason?: string; evening_diary_reward_status?: string; evening_diary_reward_amount?: number; evening_diary_reward_reason?: string } | null {
     const row = this._get(
       `SELECT h.morning_diary,h.evening_diary,h.morning_diary_written_at,h.evening_diary_written_at,h.report_status,
+              h.source,h.sync_status,h.full_report_state,h.image_uploaded_at,s.report_completed_at,
               s.morning_diary_reward_status,s.morning_diary_reward_amount,s.morning_diary_reward_reason,
               s.evening_diary_reward_status,s.evening_diary_reward_amount,s.evening_diary_reward_reason
        FROM huawei_sleep_data h LEFT JOIN sleep_score_settlements s ON s.sleep_date=h.date
@@ -1873,6 +1977,11 @@ export class Database {
       morning_diary_written_at: (row as any).morning_diary_written_at || undefined,
       evening_diary_written_at: (row as any).evening_diary_written_at || undefined,
       report_status: typeof (row as any).report_status === 'number' ? (row as any).report_status : 0,
+      source: (row as any).source || undefined,
+      sync_status: (row as any).sync_status || undefined,
+      full_report_state: (row as any).full_report_state || undefined,
+      image_uploaded_at: (row as any).image_uploaded_at || undefined,
+      report_completed_at: (row as any).report_completed_at || undefined,
       morning_diary_reward_status: (row as any).morning_diary_reward_status || undefined,
       morning_diary_reward_amount: Number((row as any).morning_diary_reward_amount || 0),
       morning_diary_reward_reason: (row as any).morning_diary_reward_reason || undefined,
@@ -2072,7 +2181,7 @@ export class Database {
     this._run(`UPDATE ${table} SET pushed_at = ? WHERE id = ?`, [serverTime, id])
   }
 
-  getGoalProgress(goal: Goal): { current: number; target: number; percent: number } {
+  getGoalProgress(goal: Goal): { current: number; target: number; percent: number; isRestDay?: boolean } {
     const today = this._beijingNow()
     let startStr = ''
     let endStr = ''
@@ -2085,7 +2194,7 @@ export class Database {
       return `${year}-${month}-${day}`
     }
 
-    if (period === 'daily') {
+    if (period === 'daily' || period === 'custom_weekdays') {
       startStr = formatYYYYMMDD(today)
       endStr = startStr
     } else if (period === 'weekly') {
@@ -2103,6 +2212,10 @@ export class Database {
       const end = new Date(today.getFullYear(), today.getMonth() + 1, 0)
       endStr = formatYYYYMMDD(end)
     }
+
+    const weekday = today.getDay() || 7
+    const isRestDay = period === 'custom_weekdays' && !(goal.weekdays ?? []).includes(weekday)
+    if (isRestDay) return { current: 0, target: goal.target_value, percent: 0, isRestDay: true }
 
     const categoryIds = goal.category_ids?.length
       ? goal.category_ids
@@ -2125,7 +2238,76 @@ export class Database {
     const target = goal.target_value
     const percent = target > 0 ? Math.min(100, Math.round((current / target) * 100)) : 0
 
-    return { current, target, percent }
+    return { current, target, percent, ...(period === 'custom_weekdays' ? { isRestDay: false } : {}) }
+  }
+
+  getGoalProgressForDate(goal: Goal, date: string): { current: number; target: number; percent: number } {
+    const categoryIds = goal.category_ids?.length ? goal.category_ids : (goal.category_id == null ? [] : [goal.category_id])
+    if (categoryIds.length === 0) return { current: 0, target: goal.target_value, percent: 0 }
+    const placeholders = categoryIds.map(() => '?').join(', ')
+    const aggregate = goal.metric === 'duration' ? 'SUM(net_duration_minutes)' : 'COUNT(*)'
+    const row = this._get(`SELECT ${aggregate} AS val FROM study_sessions WHERE category_id IN (${placeholders}) AND date=?`, [...categoryIds, date]) as any
+    const current = Number(row?.val || 0), target = Number(goal.target_value || 0)
+    return { current, target, percent: target > 0 ? Math.min(100, Math.round((current / target) * 100)) : 0 }
+  }
+
+  getDailyGoalsForDate(date: string): Array<Goal & { current: number; target: number; percent: number }> {
+    const end = `${date} 23:59:59`
+    const goals = this._all(
+      `SELECT * FROM goals WHERE period='daily' AND COALESCE(created_at,'')<=? AND (is_active=1 OR COALESCE(updated_at,'')>?)`,
+      [end, end],
+    ) as Goal[]
+    const bindings = this._all('SELECT goal_id,category_id FROM goal_category_bindings') as Array<{ goal_id: string; category_id: number }>
+    return goals.map(goal => {
+      const category_ids = bindings.filter(binding => String(binding.goal_id) === String(goal.id)).map(binding => Number(binding.category_id))
+      const projected = { ...goal, category_ids: category_ids.length ? category_ids : (goal.category_id == null ? [] : [goal.category_id]) }
+      return { ...projected, ...this.getGoalProgressForDate(projected, date) }
+    })
+  }
+
+  getSummaryGoalsForDate(date: string): Array<Goal & { current: number; target: number; periodKey: string; periodEnd: string }> {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return []
+    const day = new Date(`${date}T00:00:00Z`)
+    if (Number.isNaN(day.getTime())) return []
+    const monday = new Date(day); monday.setUTCDate(day.getUTCDate() - ((day.getUTCDay() + 6) % 7))
+    const mondayText = monday.toISOString().slice(0, 10)
+    const monthStart = `${date.slice(0, 7)}-01`
+    const monthEnd = new Date(Date.UTC(day.getUTCFullYear(), day.getUTCMonth() + 1, 0)).toISOString().slice(0, 10)
+    const weekEnd = new Date(monday); weekEnd.setUTCDate(monday.getUTCDate() + 6)
+    const bindings = this._all('SELECT goal_id,category_id FROM goal_category_bindings') as Array<{ goal_id: string; category_id: number }>
+    const rows = this._all("SELECT * FROM goals WHERE COALESCE(created_at,'')<=? AND (is_active=1 OR COALESCE(updated_at,'')>?)", [`${date} 23:59:59`, `${date} 23:59:59`]) as Goal[]
+    return rows.flatMap(goal => {
+      const weekdays = parseGoalWeekdays((goal as any).weekdays)
+      if (goal.period === 'custom_weekdays' && !weekdays?.includes(day.getUTCDay() || 7)) return []
+      const categories = bindings.filter(row => String(row.goal_id) === String(goal.id)).map(row => Number(row.category_id))
+      const ids = categories.length ? categories : goal.category_id == null ? [] : [goal.category_id]
+      if (goal.period === 'per_session') {
+        if (!ids.length) return []
+        return (this._all(`SELECT id,net_duration_minutes FROM study_sessions WHERE category_id IN (${ids.map(() => '?').join(',')}) AND date=?`, [...ids, date]) as any[])
+          .map(session => ({ ...goal, weekdays, current: goal.metric === 'duration' ? Number(session.net_duration_minutes || 0) : 1,
+            target: Number(goal.target_value), periodKey: `session_${session.id}`, periodEnd: date }))
+      }
+      const start = goal.period === 'weekly' ? mondayText : goal.period === 'monthly' ? monthStart : date
+      const periodEnd = goal.period === 'weekly' ? weekEnd.toISOString().slice(0, 10) : goal.period === 'monthly' ? monthEnd : date
+      const thursday = new Date(monday); thursday.setUTCDate(monday.getUTCDate() + 3)
+      const isoWeek = Math.floor((thursday.getTime() - Date.UTC(thursday.getUTCFullYear(), 0, 1)) / 604800000) + 1
+      const periodKey = goal.period === 'weekly' ? `${thursday.getUTCFullYear()}W${String(isoWeek).padStart(2, '0')}` : goal.period === 'monthly' ? date.slice(0, 7).replace('-', '') : date.replace(/-/g, '')
+      const aggregate = goal.metric === 'duration' ? 'SUM(net_duration_minutes)' : 'COUNT(*)'
+      const placeholders = ids.map(() => '?').join(',')
+      const current = ids.length ? Number((this._get(`SELECT ${aggregate} AS val FROM study_sessions WHERE category_id IN (${placeholders}) AND date BETWEEN ? AND ?`, [...ids, start, date]) as any)?.val || 0) : 0
+      return [{ ...goal, weekdays, current, target: Number(goal.target_value), periodKey, periodEnd }]
+    })
+  }
+
+  getDailySummaryLedger(date: string): LedgerEntry[] {
+    const sources = ['body_metric_deadline_penalty', 'exercise_diet_penalty', 'goal_reward', 'goal_penalty', 'sleep_settlement_reward', 'sleep_cycle_penalty', 'sleep_deep_penalty', 'sleep_no_sleep_penalty', 'sleep_completion_reward', 'sleep_bedtime_adjustment', 'sleep_diary_completion_reward', 'sleep_morning_diary_reward', 'sleep_evening_diary_reward']
+    const placeholders = sources.map(() => '?').join(',')
+    const compact = date.replace(/-/g, '')
+    return this._all(
+      `SELECT id,amount,source_type,source_id,description,target_date,occurred_at,created_at,updated_at FROM reward_ledger
+       WHERE source_type IN (${placeholders}) AND (target_date=? OR (source_type IN ('goal_reward','goal_penalty') AND source_id LIKE ?)) ORDER BY created_at,id`,
+      [...sources, date, `%${compact}%`],
+    ) as LedgerEntry[]
   }
 
   getCategoryHistory(categoryId: number, metric: 'duration' | 'count', days = 30): Record<string, number> {
@@ -2535,7 +2717,11 @@ export class Database {
 
   private _isExercisePlanComplete(version: string): boolean {
     if (!this._get('SELECT 1 FROM exercise_plan_versions WHERE version=? AND is_active=1', [version])) return false;
-    const required: Array<[string, number]> = version === 'v4' ? [
+    const required: Array<[string, number]> = version === 'v5' ? [
+      ['exercise_plan_schedule_items', 3], ['exercise_plan_items', 41],
+      ['exercise_plan_progress_items', 10], ['exercise_plan_diet_rules', 3],
+      ['exercise_plan_category_rules', 3],
+    ] : version === 'v4' ? [
       ['exercise_plan_schedule_items', 8], ['exercise_plan_items', 23],
       ['exercise_plan_progress_items', 4], ['exercise_plan_diet_rules', 3],
       ['exercise_plan_category_rules', 3],
@@ -2611,9 +2797,11 @@ export class Database {
       note: row.note || '',
     }))
     const dietKeys = diet.map(rule => rule.ruleKey || '')
-    const dietRulesValid = planVersion !== 'v4' || (dietKeys.length === V4_DIET_RULE_KEYS.length
-      && new Set(dietKeys).size === V4_DIET_RULE_KEYS.length
-      && dietKeys.every(key => V4_DIET_RULE_KEYS.includes(key)))
+    const expectedDietKeys = AUTHORITATIVE_DIET_RULE_KEYS[planVersion]
+    const matchesDietKeys = (keys: string[]) => dietKeys.length === keys.length && new Set(dietKeys).size === keys.length && dietKeys.every(key => keys.includes(key))
+    const dietRulesValid = !expectedDietKeys || (planVersion === 'v5'
+      ? matchesDietKeys(V5_LEGACY_DIET_RULE_KEYS) || matchesDietKeys([...V5_LEGACY_DIET_RULE_KEYS, ...V5_MEAL_RULE_KEYS]) || matchesDietKeys([...V5_RESTORED_DIET_RULE_KEYS, ...V5_MEAL_RULE_KEYS])
+      : matchesDietKeys(expectedDietKeys))
     return {
       version: planVersion,
       title: version?.title || '每日打卡表',
@@ -2734,15 +2922,17 @@ export class Database {
   }
 
   getExerciseDietCheckins(date: string, planVersion = this.getActiveExercisePlanVersion()): any[] {
-    if (planVersion !== 'v4') return this._all('SELECT * FROM exercise_diet_checkins WHERE date=? AND plan_version=? ORDER BY rule_key', [date, planVersion]);
-    const placeholders = V4_DIET_RULE_KEYS.map(() => '?').join(',')
-    return this._all(`SELECT * FROM exercise_diet_checkins WHERE date=? AND plan_version=? AND rule_key IN (${placeholders}) ORDER BY rule_key`, [date, planVersion, ...V4_DIET_RULE_KEYS]);
+    const keys = AUTHORITATIVE_DIET_RULE_KEYS[planVersion]
+    if (!keys) return this._all('SELECT * FROM exercise_diet_checkins WHERE date=? AND plan_version=? ORDER BY rule_key', [date, planVersion]);
+    const placeholders = keys.map(() => '?').join(',')
+    return this._all(`SELECT * FROM exercise_diet_checkins WHERE date=? AND plan_version=? AND rule_key IN (${placeholders}) ORDER BY rule_key`, [date, planVersion, ...keys]);
   }
 
   discardInvalidV4DietCheckins(date: string, planVersion = this.getActiveExercisePlanVersion()): number {
-    if (planVersion !== 'v4') return 0
-    const placeholders = V4_DIET_RULE_KEYS.map(() => '?').join(',')
-    const rows = this._all(`SELECT id FROM exercise_diet_checkins WHERE date=? AND plan_version=? AND rule_key NOT IN (${placeholders})`, [date, planVersion, ...V4_DIET_RULE_KEYS])
+    const keys = AUTHORITATIVE_DIET_RULE_KEYS[planVersion]
+    if (!keys) return 0
+    const placeholders = keys.map(() => '?').join(',')
+    const rows = this._all(`SELECT id FROM exercise_diet_checkins WHERE date=? AND plan_version=? AND rule_key NOT IN (${placeholders})`, [date, planVersion, ...keys])
     for (const row of rows) {
       this._run('DELETE FROM exercise_diet_checkins WHERE id=?', [row.id])
       this._run("DELETE FROM sync_outbox WHERE table_name='exercise_diet_checkins' AND record_id=?", [String(row.id)])
@@ -2755,8 +2945,15 @@ export class Database {
   }
 
   toggleExerciseDietCheckin(date: string, ruleKey: string, status: 'pending' | 'completed' | 'failed' | boolean, planVersion = this.getActiveExercisePlanVersion()): void {
-    if (this.isExerciseDateLocked(date) || planVersion !== 'v4' || !V4_DIET_RULE_KEYS.includes(ruleKey)) return;
+    const keys = AUTHORITATIVE_DIET_RULE_KEYS[planVersion]
+    if (this.isExerciseDateLocked(date) || !keys?.includes(ruleKey)) return;
     if (typeof status === 'boolean') status = status ? 'completed' : 'pending';
+    if (status === 'completed') {
+      const times: Record<string, string> = { breakfast_on_time: '08:30:00', lunch_on_time: '13:31:00', dinner_on_time: '19:01:00' }
+      const cutoff = times[ruleKey] ? new Date(`${date}T${times[ruleKey]}+08:00`).getTime()
+        : new Date(`${date}T00:00:00+08:00`).getTime() + 86_400_000
+      if (Date.now() >= cutoff) return
+    }
     const now = this._now(); const id = `diet:${date}:${planVersion}:${ruleKey}`;
     const deadline = new Date(`${date}T00:00:00+08:00`); deadline.setDate(deadline.getDate() + 1);
     this._run(`INSERT INTO exercise_diet_checkins
@@ -2793,7 +2990,8 @@ export class Database {
   getExerciseDailyLogs(limit = 8, planVersion = this.getActiveExercisePlanVersion()): any[] {
     return this._all(`SELECT logs.*, settlement.score_total AS settlement_score_total,
       settlement.coin_amount AS settlement_coin_amount, settlement.settlement_status,
-      settlement.reason_code AS settlement_reason_code
+      settlement.reason_code AS settlement_reason_code,
+      settlement.completed_items AS settlement_completed_items, settlement.total_items AS settlement_total_items
       FROM exercise_daily_logs logs
       LEFT JOIN exercise_settlements settlement
         ON settlement.business_date=logs.date AND settlement.plan_version=logs.plan_version

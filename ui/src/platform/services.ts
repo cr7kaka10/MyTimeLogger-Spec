@@ -49,7 +49,7 @@ export interface RemindersService {
 }
 
 export type NotificationChannel = 'timer' | 'sleep' | 'achievements' | 'rewards' | 'account'
-export type NotificationRoute = 'timer' | 'sleep' | 'goals' | 'rewards' | 'backpack' | 'settings'
+export type NotificationRoute = 'timer' | 'sleep' | 'goals' | 'rewards' | 'backpack' | 'settings' | 'exercise'
 export interface NotificationMessage {
   eventKey: string; channel: NotificationChannel; title: string; body: string
   route: NotificationRoute; atMs?: number

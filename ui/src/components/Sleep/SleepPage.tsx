@@ -10,6 +10,7 @@ import { BottomSheet } from '../common/BottomSheet'
 import { applySleepReportHeadingAnchors, extractSleepReportOutline } from './sleepReportOutline'
 import { hasSleepSourceEvidence } from '../../utils/sleepSourceStatus'
 import { selectSleepReportSource } from './sleepReportSource'
+import { sleepAutomation, sleepAutomationProgress } from '../../platform/sleepAutomation'
 
 interface SleepPageProps extends UseSleepReturn {
   onSelectSleepDate?: (date: string) => void
@@ -17,12 +18,16 @@ interface SleepPageProps extends UseSleepReturn {
   onSleepAnalysis?: () => void
   onFullAnalysis?: () => void
   onForceRefresh?: () => void
+  onAutomationDone?: (date: string) => void
+  focusIntent?: { date: string; target: 'morning-diary' | 'evening-diary'; nonce: number } | null
+  onFocusHandled?: (nonce: number) => void
 }
 
 type DiaryType = 'morning' | 'evening'
 type MarkdownTable = { headers: string[]; rows: string[][] }
-export const EVENING_DIARY_TEMPLATE = '今天满意的三件事：\n1. '
-export const diaryInitialValue = (title: string, value: string) => value || (title === '晚间日记' ? EVENING_DIARY_TEMPLATE : '1. ')
+export const MORNING_DIARY_TEMPLATE = '1. 睡醒后的感受：\n   1. xx\n2. 今天必须完成的一个小目标（只能写一个）：\n   1. xx'
+export const EVENING_DIARY_TEMPLATE = '让我开心/满意/感到耳目一新的3件事：\n1. '
+export const diaryInitialValue = (title: string, value: string) => value || (title === '晚间日记' ? EVENING_DIARY_TEMPLATE : MORNING_DIARY_TEMPLATE)
 export const continueDiaryNumbering = (value: string, cursorStart: number, cursorEnd: number) => {
   const beforeCursor = value.slice(0, cursorStart)
   const currentLine = beforeCursor.slice(beforeCursor.lastIndexOf('\n') + 1)
@@ -310,7 +315,7 @@ function injectDiaryButtonsHtml(html: string, morning: string, evening: string):
     const headingPattern = type === 'morning' ? '晨间日记' : '(晚间复盘|晚间日记)'
     const pattern = new RegExp(`(<h3[^>]*>[^<]*${headingPattern}[^<]*<\\/h3>\\s*)(<blockquote[\\s\\S]*?<\\/blockquote>)?`, 'i')
     const text = diaryMarkdownToHtml(value.trim() || emptyText)
-    const button = `<div role="button" tabindex="0" data-diary-edit="${type}" class="sleep-diary-edit">${text}</div>`
+    const button = `<div id="sleep-diary-${type}" role="button" tabindex="0" data-diary-edit="${type}" class="sleep-diary-edit">${text}</div>`
     return input.replace(pattern, `$1${button}`)
   }
   return replaceBlock(
@@ -427,6 +432,8 @@ function renderMarkdown(text: string, onDiaryEdit?: (type: DiaryType) => void): 
         nodes.push(
           <button
             key={idx}
+            id={`sleep-diary-${type}`}
+            data-diary-edit={type}
             type="button"
             onClick={() => onDiaryEdit(type)}
             className="my-3 block w-full rounded-lg border-l-4 border-rose-200 bg-rose-50/70 px-4 py-3 text-left text-[14px] leading-7 text-gray-700 active:bg-rose-100"
@@ -553,7 +560,7 @@ const DiaryModal = memo(({ title, value, onChange, onClose, onSave }: {
             }
           }}
           rows={10}
-          placeholder={title === '晨间日记' ? '今天起床后的状态、计划、风险点。' : '今晚复盘一下完成情况、问题和明天调整。'}
+          placeholder={title === '晨间日记' ? '写下睡醒后的感受，以及今天必须完成的一个小目标（只能写一个）。' : '回想三件让你开心、满意或感到耳目一新的事。'}
           className="w-full resize-none rounded-xl border border-gray-200 px-3.5 py-2.5 text-sm leading-6 outline-none focus:border-blue-400"
           autoFocus
         />
@@ -705,10 +712,28 @@ const SleepModuleStatus = memo(({ data, statusMessage }: { data?: SleepData | nu
 ))
 SleepModuleStatus.displayName = 'SleepModuleStatus'
 
-export const SleepPage = memo(({ sleepData, selectedDate, setSelectedDate, saveDiary, sleepHistory, onSelectSleepDate, onPickImage, onSleepAnalysis, onFullAnalysis, onForceRefresh, statusMessage, uploadMessage }: SleepPageProps) => {
+export const SleepPage = memo(({ sleepData, selectedDate, setSelectedDate, saveDiary, sleepHistory, onSelectSleepDate, onPickImage, onSleepAnalysis, onFullAnalysis, onForceRefresh, onAutomationDone, statusMessage, uploadMessage, errorDetails, focusIntent, onFocusHandled }: SleepPageProps) => {
   const imageInputRef = useRef<HTMLInputElement>(null)
   const reportReaderContentRef = useRef<HTMLDivElement>(null)
+  const reportSectionRef = useRef<HTMLElement>(null)
   const [isReportReaderOpen, setIsReportReaderOpen] = useState(false)
+  const [focusMessage, setFocusMessage] = useState('')
+  const [automationProgress, setAutomationProgress] = useState('')
+  const handledAutomationRef = useRef('')
+  useEffect(() => {
+    const refresh = () => {
+      const status = sleepAutomation.status()
+      if (!status.phase || status.sleepDate !== selectedDate) { setAutomationProgress(''); return }
+      setAutomationProgress(sleepAutomationProgress(status))
+      if (status.stage === 'SUCCESS' && handledAutomationRef.current !== `${status.sleepDate}:${status.updatedAt}`) {
+        handledAutomationRef.current = `${status.sleepDate}:${status.updatedAt}`
+        onAutomationDone?.(status.sleepDate)
+      }
+    }
+    refresh()
+    const timer = window.setInterval(refresh, 2000)
+    return () => window.clearInterval(timer)
+  }, [selectedDate, onAutomationDone])
   const reportOutline = useMemo(() => {
     if (!sleepData) return []
     const reportSource = selectSleepReportSource(sleepData)
@@ -720,6 +745,24 @@ export const SleepPage = memo(({ sleepData, selectedDate, setSelectedDate, saveD
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [isReportReaderOpen])
+  useEffect(() => {
+    if (!focusIntent || focusIntent.date !== selectedDate || sleepData?.date !== selectedDate) return
+    if (!sleepData.analysis_html && !sleepData.analysis_report) {
+      setFocusMessage('该日期尚无完整睡眠报告，暂时无法定位日记。')
+      onFocusHandled?.(focusIntent.nonce)
+      return
+    }
+    const timer = window.setTimeout(() => {
+      const target = reportSectionRef.current?.querySelector<HTMLElement>(`#sleep-diary-${focusIntent.target === 'morning-diary' ? 'morning' : 'evening'}`)
+      if (target) {
+        setFocusMessage('')
+        target.scrollIntoView({ behavior: 'smooth', block: 'center' })
+        target.focus({ preventScroll: true })
+      } else setFocusMessage('报告中没有找到对应日记位置。')
+      onFocusHandled?.(focusIntent.nonce)
+    }, 0)
+    return () => window.clearTimeout(timer)
+  }, [focusIntent, onFocusHandled, selectedDate, sleepData])
   const calendarDate = useMemo(() => {
     const [year, month, day] = selectedDate.split('-').map(Number)
     return new Date(year, month - 1, day)
@@ -737,6 +780,7 @@ export const SleepPage = memo(({ sleepData, selectedDate, setSelectedDate, saveD
       </div>
       <div className="space-y-4 p-6">
         <SleepModuleStatus data={sleepData} statusMessage={statusMessage} />
+        {automationProgress && <div role="status" className="rounded-xl bg-blue-50 p-3 text-center text-xs text-blue-700">{automationProgress}</div>}
         {/* PC 版操作按钮：始终显示，调用服务端睡眠分析服务 */}
         <div className="grid grid-cols-4 gap-2 font-sans">
           <input ref={imageInputRef} type="file" accept="image/*" className="hidden" onChange={async event => {
@@ -775,6 +819,8 @@ export const SleepPage = memo(({ sleepData, selectedDate, setSelectedDate, saveD
             {statusMessage}
           </div>
         )}
+        {errorDetails && <details className="rounded-xl border border-red-100 bg-red-50/50 p-3 text-xs text-red-700"><summary className="cursor-pointer font-semibold">查看技术详情</summary><pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-all">{errorDetails}</pre></details>}
+        {focusMessage && <div role="status" className="rounded-xl bg-amber-50 p-3 text-center text-xs text-amber-700">{focusMessage}</div>}
 
         <SleepAutoScorePanel data={sleepData || { date: selectedDate }} />
 
@@ -794,7 +840,7 @@ export const SleepPage = memo(({ sleepData, selectedDate, setSelectedDate, saveD
             )}
 
             {(sleepData.analysis_html || sleepData.analysis_report) && (
-              <section className="rounded-xl border border-gray-100 bg-white p-4">
+              <section ref={reportSectionRef} className="rounded-xl border border-gray-100 bg-white p-4">
                 <div className="flex items-center justify-between gap-4 font-semibold text-gray-900">
                   <span>📊 AI 分析报告</span>
                   <button type="button" aria-label="全屏阅读睡眠报告" onClick={() => setIsReportReaderOpen(true)} className="hidden rounded-md px-2 py-1 text-xs font-medium text-gray-400 transition hover:bg-gray-100 hover:text-gray-700 focus:outline-none focus:ring-2 focus:ring-violet-400 md:inline-flex">全屏</button>

@@ -8,6 +8,7 @@
  */
 
 import { ApiClient } from './ApiClient'
+import { planHabitLifecycle } from './HabitLifecycleMerge'
 import { resolve, SyncAction } from './SyncResolver'
 import { applyBulkWithIsolation, planBulkMerge, type SafeBulkFailure } from './SyncBulkMerge'
 import { pullCursorDecision, SyncFailureGate } from './SyncFailureGate'
@@ -52,10 +53,11 @@ export interface SyncRunContext {
 
 export interface SyncOperationResult {
   change_id: string
-  status: 'accepted' | 'duplicate' | 'skipped' | 'rejected'
+  status: 'accepted' | 'duplicate' | 'skipped' | 'rejected' | 'server_wins' | 'authority_missing'
   reason?: string
   table?: string
   record_id?: string | number
+  canonical_record?: Record<string, any>
 }
 
 interface PushResult {
@@ -91,6 +93,7 @@ export class SyncWorker {
   private _db: Database | null = null
   private _queue = new Map<string, Set<number>>()
   private _retryCount = 0
+  private _retryTimer: ReturnType<typeof setTimeout> | null = null
   private _running = false
   private _pausedForReset = false
   private _eventSource: EventSource | null = null
@@ -276,6 +279,8 @@ export class SyncWorker {
 
   /** 停止 */
   stop(): void {
+    if (this._retryTimer) clearTimeout(this._retryTimer)
+    this._retryTimer = null
     this._running = false
     this._flush(this._createContext('worker-stop')).catch(() => {})
   }
@@ -284,6 +289,8 @@ export class SyncWorker {
   pauseForReset(): void {
     this._pausedForReset = true
     this._running = false
+    if (this._retryTimer) clearTimeout(this._retryTimer)
+    this._retryTimer = null
     this._queue.clear()
   }
 
@@ -302,7 +309,7 @@ export class SyncWorker {
     if (this._pausedForReset) return { ok: true, merged: 0, pending: 0 }
     if (!this._identityReady()) return { ok: false, merged: 0, pending: 0, error: 'account_identity_mismatch' }
 
-    const pendingOutboxCount = (this._db as any).getPendingOutbox?.(1)?.length ?? 0
+    const pendingOutboxCount = (this._db as any).getPendingOutbox?.(1, this._syncScope(context))?.length ?? 0
     if (pendingOutboxCount === 0) {
       console.info('[SyncWorker] pushOnly skipped: pending=0')
       return { ok: true, merged: 0, pending: 0 }
@@ -339,7 +346,7 @@ export class SyncWorker {
 
   private async _flushOutbox(context: SyncRunContext = {}): Promise<PushResult> {
     if (!this._api || !this._db) return { ok: false, error: 'sync_worker_not_ready' }
-    const entries = (this._db as any).getPendingOutbox?.(50) ?? []
+    const entries = (this._db as any).getPendingOutbox?.(50, this._syncScope(context)) ?? []
     if (entries.length === 0) return { ok: true }
 
     const ignoredIds: number[] = []
@@ -371,7 +378,7 @@ export class SyncWorker {
         ignoredIds.push(entry.id)
         return []
       }
-      if (entry.table_name === 'tasks' && (
+      if (entry.table_name === 'tasks' && String(payload.source || 'ticktick') !== 'local' && (
         entry.operation === 'delete' || entry.operation === 'archive' || String(payload.id || entry.record_id || '').startsWith('local_')
       )) {
         blockedTaskIds.push(entry.id)
@@ -382,15 +389,47 @@ export class SyncWorker {
         device_id: entry.device_id,
         table: entry.table_name,
         record_id: entry.record_id,
-        operation: entry.operation,
+        operation: entry.status === 'exhausted' ? 'probe' : entry.operation,
         base_version: entry.base_version,
         payload: payload,
       }]
     })
     const ids = entries.filter((entry: any) => !ignoredIds.includes(entry.id) && !blockedTaskIds.includes(entry.id) && !deferredProviderIds.includes(entry.id)).map((entry: any) => entry.id)
     if (ignoredIds.length) (this._db as any).markOutboxSynced?.(ignoredIds, this._now())
-    if (blockedTaskIds.length) (this._db as any).markOutboxFailed?.(blockedTaskIds, 'task_structure_requires_command')
-    if (operations.length === 0) return { ok: true, diagnostics: {
+    let blockedError: string | undefined
+    const failBlocked = (rows: any[], reason: string) => {
+      const retry = rows.filter(entry => Number(entry.retry_count || 0) < 3).map(entry => entry.id)
+      const isolate = rows.filter(entry => Number(entry.retry_count || 0) >= 3)
+      if (retry.length) (this._db as any).markOutboxFailed?.(retry, reason)
+      for (const entry of isolate) (this._db as any).resolveOutbox?.(entry.id, 'terminated', reason)
+    }
+    if (blockedTaskIds.length) {
+      const authority = await this._api.get('/api/tasks', undefined, SYNC_CONFIG.timeout.pull, context.syncRunId)
+      this._emitAuthState(authority.status)
+      if (!authority.ok || authority.data?.status !== 'ok' || !Array.isArray(authority.data.tasks)) {
+        blockedError = authority.error || 'task_authority_unavailable'
+        failBlocked(entries.filter((item: any) => blockedTaskIds.includes(item.id)), blockedError)
+      } else {
+        const tasks = new Map<string, Record<string, any>>(authority.data.tasks.map((task: any) => [String(task.id), task]))
+        for (const entry of entries.filter((item: any) => blockedTaskIds.includes(item.id))) {
+          const canonical = tasks.get(String(entry.record_id))
+          try {
+            this._db.runInTransaction(() => {
+              ;(this._db as any).resolveOutbox?.(entry.id, canonical ? 'resolved' : 'terminated',
+                canonical ? 'task_structure_server_wins' : 'task_structure_authority_missing')
+              if (canonical) {
+                const error = this._upsertLocal('tasks', canonical, this._now(), this._now())
+                if (error) throw new Error(error)
+              }
+            })
+          } catch (error) {
+            blockedError = error instanceof Error ? error.message : 'task_authority_merge_failed'
+            failBlocked([entry], blockedError)
+          }
+        }
+      }
+    }
+    if (operations.length === 0) return { ok: !blockedError, error: blockedError, diagnostics: {
       scope, provider_requested: deferredProviderIds.length > 0, provider_executed: false, provider_blocked: deferredProviderIds.length,
     } }
     ;(this._db as any).markOutboxSending?.(ids)
@@ -410,6 +449,10 @@ export class SyncWorker {
         request_id: resp.request_id ?? context.syncRunId,
       }
       if (results.length === 0) {
+        if (operations.some((operation: any) => operation.operation === 'probe')) {
+          ;(this._db as any).markOutboxFailed?.(ids, 'probe_response_missing')
+          return { ok: false, error: 'probe_response_missing', diagnostics: responseDiagnostics }
+        }
         ;(this._db as any).markOutboxSynced?.(ids, serverTime)
         this._db.setConfig('client_to_server_synced_at', serverTime)
         return { ok: true, diagnostics: responseDiagnostics, operationResults: operations.map((operation: any) => ({ ...operation, status: 'accepted' })) }
@@ -448,12 +491,38 @@ export class SyncWorker {
           } catch (error) {
             failed.push({ id: entry.id as number, reason: error instanceof Error ? error.message : 'category_id_rekey_failed' })
           }
+        } else if (result.status === 'server_wins' && result.canonical_record) {
+          try {
+            this._db.runInTransaction(() => {
+              const canonical = { ...result.canonical_record! }
+              const local = this._db!.getRecordById(entry.table_name, entry.record_id)
+              if (local?.id != null) canonical.id = local.id
+              ;(this._db as any).resolveOutbox?.(entry.id, 'resolved', result.reason || 'server_wins')
+              const error = this._upsertLocal(entry.table_name, canonical, serverTime, serverTime)
+              if (error) throw new Error(error)
+            })
+          } catch (error) {
+            failed.push({ id: entry.id as number, reason: error instanceof Error ? error.message : 'server_wins_merge_failed' })
+          }
+        } else if (result.status === 'authority_missing') {
+          ;(this._db as any).resolveOutbox?.(entry.id, 'terminated', result.reason || 'authority_missing')
         } else if (result.status === 'rejected' && String(result.reason || '').startsWith('server_owned_')) {
           acceptedIds.push(entry.id as number)
+        } else if (result.status === 'rejected' && ['habit_deleted','habit_archived','provider_habit_readonly',
+          'server_authoritative_habit_checkin_command_required'].includes(String(result.reason))) {
+          ;(this._db as any).runInTransaction(() => {
+            this._db!.runRaw('INSERT OR IGNORE INTO habit_lifecycle_outbox_audit VALUES(?,?,?,?,?,?)',
+              [entry.id,entry.record_id,JSON.stringify(entry),result.reason,0,serverTime])
+            this._db!.runRaw("UPDATE sync_outbox SET status='terminated',last_error=?,updated_at=? WHERE id=?", [result.reason,serverTime,entry.id])
+          })
         } else {
           failed.push({ id: entry.id as number, reason: result.reason || 'operation_rejected' })
         }
       }
+      const seen = new Set(results.map((result: any) => String(result.change_id)))
+      for (const entry of entries)
+        if (ids.includes(entry.id) && !seen.has(String(entry.change_id)))
+          failed.push({ id: entry.id, reason: 'push_result_missing' })
       if (acceptedIds.length > 0) {
         ;(this._db as any).markOutboxSynced?.(acceptedIds, serverTime)
       }
@@ -466,8 +535,8 @@ export class SyncWorker {
         accepted: acceptedIds.length,
         failed: failed.length,
       })
-      if (failed.length > 0) {
-        const error = failed[0].reason || 'operation_rejected'
+      if (failed.length > 0 || blockedError) {
+        const error = failed[0]?.reason || blockedError || 'operation_rejected'
         return { ok: false, statsStr, error, diagnostics: responseDiagnostics, operationResults: results }
       }
       return { ok: true, statsStr, diagnostics: responseDiagnostics, operationResults: results }
@@ -628,6 +697,9 @@ export class SyncWorker {
     const rawTables = { ...(resp.data.tables ?? {}) }
     const ledgerSnapshot = resp.data.ledger_snapshot
     if (ledgerSnapshot) delete rawTables.reward_ledger
+    // 旧服务端允许空投放模式；本地表要求非空，语义等同默认 fixed。
+    if (rawTables.reward_source_bindings) rawTables.reward_source_bindings = rawTables.reward_source_bindings.map((row: any) =>
+      row._sync_operation === 'delete' || row.drop_mode != null ? row : { ...row, drop_mode: 'fixed' })
     const naturalMerge = this._deduplicateNaturalKeyRows(rawTables)
     const tables = naturalMerge.tables
     const serverTime = resp.data.server_time ?? this._now()
@@ -648,20 +720,6 @@ export class SyncWorker {
     const conflicts: string[] = []
     let bulkFailures: SafeBulkFailure[] = []
     const bulk = (this._db as any).androidBulk as AndroidBulkCapability | undefined
-    if (ledgerSnapshot) {
-      try {
-        const replace = (this._db as any).replaceServerLedgerSnapshot
-        if (typeof replace !== 'function') throw new Error('ledger_snapshot_unsupported')
-        const before = this._db.getLedgerSummary?.()
-        const result = replace.call(this._db, ledgerSnapshot, Number(resp.data.to_version ?? lastServerVersion))
-        walletChanged = Number(before?.balance) !== Number(ledgerSnapshot.summary?.balance)
-        diagnostics.ledger_snapshot = { applied: true, removed: result.removed, count: ledgerSnapshot.integrity?.count, epoch: ledgerSnapshot.epoch }
-      } catch (error) {
-        diagnostics.ledger_snapshot = { applied: false, error: error instanceof Error ? error.message : 'ledger_snapshot_failed' }
-        diagnostics.cursor = { previous: lastServerVersion, next: lastServerVersion, advanced: false }
-        return { ok: false, merged: 0, diagnostics, error: 'ledger_snapshot_failed' }
-      }
-    }
     if (bulk && this._lastBulkFailure && context.reason !== 'manual-flush') {
       const gate = this._bulkFailureGate.canAttempt(this._lastBulkFailure.fingerprint, Number(resp.data.to_version ?? -1))
       if (!gate.allowed) return { ok: false, merged: 0, diagnostics: { stage: 'backoff', retry_at: gate.retryAt }, error: 'local_merge_backoff' }
@@ -707,6 +765,14 @@ export class SyncWorker {
     }
 
     if ((tables.categories ?? []).length > 0) this._alignPulledCategoryIds(tables.categories)
+    try {
+      merged += await this._mergeHabitLifecycles(tables, serverTime, bulk)
+    } catch (error) {
+      return { ok: false, merged, error: 'habit_lifecycle_merge_failed', diagnostics: {
+        ...diagnostics, merge: { errors: [this._localErrorCategory(error)] },
+        cursor: { previous: lastServerVersion, next: lastServerVersion, advanced: false },
+      } }
+    }
     if (bulk) {
       const result = await this._mergeBulkTables(bulk, tables, serverTime, context)
       merged += result.merged
@@ -791,6 +857,24 @@ export class SyncWorker {
       this._lastBulkFailure = { fingerprint, version }; diagnostics.merge.retry_at = retryAt
     } else if (bulk && mergeErrors.length === 0) { this._bulkFailureGate.succeed(); this._lastBulkFailure = null }
     const mergeSucceeded = mergeErrors.length === 0 && conflicts.length === 0
+    if (mergeSucceeded && ledgerSnapshot) {
+      try {
+        const replace = (this._db as any).replaceServerLedgerSnapshot
+        if (typeof replace !== 'function') throw new Error('ledger_snapshot_unsupported')
+        const before = this._db.getLedgerSummary?.()
+        const result = replace.call(this._db, ledgerSnapshot, Number(resp.data.to_version ?? lastServerVersion))
+        walletChanged = Number(before?.balance) !== Number(ledgerSnapshot.summary?.balance)
+        diagnostics.ledger_snapshot = { applied: true, removed: result.removed, count: ledgerSnapshot.integrity?.count, epoch: ledgerSnapshot.epoch }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'ledger_snapshot_failed'
+        diagnostics.ledger_snapshot = { applied: false, error: message, error_category: this._localErrorCategory(error) }
+        diagnostics.cursor = { previous: lastServerVersion, next: lastServerVersion, advanced: false }
+        this._logSync('warn', { event: 'ledger_snapshot_apply_failed', sync_run_id: context.syncRunId,
+          error_category: diagnostics.ledger_snapshot.error_category, error_message: message,
+          previous: lastServerVersion, to: resp.data.to_version, advanced: false })
+        return { ok: false, merged, diagnostics, error: 'ledger_snapshot_failed' }
+      }
+    }
     const expectation = context.ledgerExpectation
     const expectedRows = ledgerSnapshot?.rows ?? tables.reward_ledger ?? []
     const expectedLedgerConfirmed = !expectation || Boolean((expectedRows as any[]).some(row =>
@@ -852,7 +936,16 @@ export class SyncWorker {
     if (syncState.ticktick_to_server_synced_at) {
       this._db.setConfig('ticktick_to_server_synced_at', syncState.ticktick_to_server_synced_at)
     }
-    this._emitSyncEvents(walletChanged)
+    const providerRefresh = diagnostics.provider_refresh as Record<string, any> | undefined
+    this._emitSyncEvents(walletChanged, {
+      scope: diagnostics.scope || context.scope || 'core',
+      provider: providerRefresh ? 'ticktick' : 'core',
+      request_id: providerRefresh?.request_id || diagnostics.request_id || context.syncRunId,
+      complete: mergeSucceeded && (!providerRefresh || providerRefresh.complete === true),
+      status: providerRefresh?.status || (mergeSucceeded ? 'success' : 'error'),
+      errors: providerRefresh?.errors || diagnostics.errors || mergeErrors,
+      retry_at: providerRefresh?.retry_at || diagnostics.retry_at,
+    })
     if (mergeErrors.length > 0) {
       const firstFailure = bulkFailures[0]
       this._logSync('warn', { event: 'pull_merge_failed', sync_run_id: context.syncRunId,
@@ -867,13 +960,13 @@ export class SyncWorker {
     if (conflicts.length > 0) {
       return { ok: false, merged, diagnostics, error: 'local_outbox_conflict' }
     }
-    if (refresh && diagnostics && diagnostics.ok === false) {
+    if (refresh && (diagnostics.ok === false || providerRefresh?.ok === false || providerRefresh?.complete === false)) {
       console.warn('[SyncWorker] provider refresh failed', {
         sync_run_id: context.syncRunId,
         merged,
         diagnostics,
       })
-      return { ok: false, merged, diagnostics, error: diagnostics.errors?.[0] || 'ticktick_refresh_failed' }
+      return { ok: false, merged, diagnostics, error: providerRefresh?.errors?.[0] || diagnostics.errors?.[0] || 'ticktick_refresh_failed' }
     }
     if (resp.data.has_more === true) {
       const page = Number(context.page || 1)
@@ -952,10 +1045,20 @@ export class SyncWorker {
     return this.requestSync(reason, refresh, completeContext)
   }
 
+  private _scheduleOutboxRetry(): void {
+    if (!this._running || this._pausedForReset || this._retryTimer) return
+    const delay = Math.min(30_000, 1000 * 2 ** Math.min(this._retryCount++, 5))
+    this._retryTimer = setTimeout(() => {
+      this._retryTimer = null
+      void this.requestSync('outbox-retry').catch(() => {})
+    }, delay)
+  }
+
   private async _flushNow(refresh = false, context: SyncRunContext = {}): Promise<SyncRunResult> {
     if (this._pausedForReset) return { ok: true, merged: 0 }
     const pushed = await this._flush(context)
     if (!pushed.ok) {
+      this._scheduleOutboxRetry()
       const pulled = await this._pullAndMergeResult(refresh, context)
       return {
         ...pulled,
@@ -971,12 +1074,22 @@ export class SyncWorker {
             operation_results: pushed.operationResults || [],
           },
         },
-        error: pulled.ok ? pulled.error : (pulled.error || pushed.error || 'sync_failed'),
+        ok: false,
+        error: pulled.error || pushed.error || 'sync_failed',
       }
     }
     const pulled = await this.pullAndMergeResult(refresh, context)
+    const pending = (this._db as any)?.getPendingOutbox?.(1, this._syncScope(context))?.length ?? 0
+    if (pending > 0) this._scheduleOutboxRetry()
+    else if (pulled.ok) {
+      this._retryCount = 0
+      if (this._retryTimer) clearTimeout(this._retryTimer)
+      this._retryTimer = null
+    }
     return {
       ...pulled,
+      ok: pulled.ok && pending === 0,
+      error: pulled.error || (pending > 0 ? 'outbox_pending' : undefined),
       diagnostics: {
         ...(pulled.diagnostics || {}),
         provider_requested: Boolean(pulled.diagnostics?.provider_requested || pushed.diagnostics?.provider_requested),
@@ -997,15 +1110,38 @@ export class SyncWorker {
     return null
   }
 
+  private async _mergeHabitLifecycles(tables: Record<string, any[]>, time: string, bulk?: AndroidBulkCapability): Promise<number> {
+    const query = (sql: string, params: any[] = []) => bulk ? bulk.query(sql, params) : (this._db as any).allRaw(sql, params)
+    if (!bulk && typeof (this._db as any).allRaw !== 'function') return 0
+    const ordinary: any[] = []; let applied = 0
+    for (const row of tables.habits ?? []) {
+      const columns = this._mergeTableColumns('habits', bulk)
+      const upsert = this._bulkOperation('habits', row, time, null, columns || new Set(Object.keys(row)))
+      const plan = planHabitLifecycle(query, row, upsert ? { ...upsert, params: upsert.params ?? [] } : null, time)
+      if (plan === undefined) { ordinary.push(row); continue }
+      if (plan === null) continue
+      if (bulk) await bulk.transaction(plan)
+      else (this._db as any).runInTransaction(() => plan.forEach(op => this._db!.runRaw(op.sql, op.params)))
+      applied++
+    }
+    tables.habits = ordinary
+    tables.habit_checkins = (tables.habit_checkins ?? []).filter(row => !row.habit_id ||
+      !query('SELECT 1 FROM habit_tombstones WHERE habit_id=?', [String(row.habit_id)]).length)
+    return applied
+  }
+
   private _mergeTableStages(tables: Record<string, any[]>): Array<{ table: string; rows: any[] }> {
     const orderedTables = ['categories', ...SYNC_TABLES.filter(table => table !== 'categories')]
     const parentIndex = orderedTables.indexOf('habits')
     const deleted = (row: any) => String(row._sync_operation || row.operation || '') === 'delete'
     const phase = (table: string, wantDeleted: boolean) => ({ table, rows: (tables[table] ?? []).filter(row => deleted(row) === wantDeleted) })
+    const learningTables = ['learning_objectives', 'learning_krs', 'learning_tasks']
+    const normal = (table: string) => ({ table, rows: learningTables.includes(table) ? phase(table, false).rows : (tables[table] ?? []) })
     return [
-      ...orderedTables.slice(0, parentIndex).map(table => ({ table, rows: tables[table] ?? [] })),
+      ...orderedTables.slice(0, parentIndex).map(normal),
       phase('habit_checkins', true), phase('habits', true), phase('habits', false), phase('habit_checkins', false),
-      ...orderedTables.slice(parentIndex + 2).map(table => ({ table, rows: tables[table] ?? [] })),
+      ...orderedTables.slice(parentIndex + 2).map(normal),
+      ...learningTables.slice().reverse().map(table => phase(table, true)),
     ].filter(({ rows }) => rows.length > 0)
   }
 
@@ -1284,10 +1420,10 @@ export class SyncWorker {
     if (name && w?.dispatchEvent && w?.CustomEvent) w.dispatchEvent(new w.CustomEvent(name))
   }
 
-  private _emitSyncEvents(walletChanged: boolean): void {
+  private _emitSyncEvents(walletChanged: boolean, detail: Record<string, any>): void {
     const w = (globalThis as any).window
     if (!w || typeof w.dispatchEvent !== 'function' || typeof w.CustomEvent !== 'function') return
-    w.dispatchEvent(new w.CustomEvent('sync-pull-complete'))
+    w.dispatchEvent(new w.CustomEvent('sync-pull-complete', { detail }))
     if (walletChanged) {
       w.dispatchEvent(new w.CustomEvent('balance-updated'))
       w.dispatchEvent(new w.CustomEvent('local-shortcut-trigger', { detail: 'balance-updated' }))

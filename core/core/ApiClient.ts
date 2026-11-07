@@ -46,6 +46,11 @@ export interface CurrentTimerState {
   last_heartbeat_at: string
   updated_at: string
   server_time: string
+  summary_state?: 'none' | 'pending' | 'resolved' | 'skipped'
+  summary_owner_device_id?: string | null
+  summary_revision?: number
+  completed_session_id?: string | null
+  summary_updated_at?: string | null
 }
 export interface CurrentTimerOutcome {
   code: CurrentTimerOutcomeCode
@@ -58,7 +63,8 @@ export interface CurrentTimerOutcome {
   operation?: CurrentTimerOperation
   completedSessionId?: string
 }
-export type CurrentTimerOperation = 'start' | 'switch' | 'note' | 'pause' | 'resume' | 'stop'
+export type CurrentTimerOperation = 'start' | 'switch' | 'handoff' | 'note' | 'pause' | 'resume' | 'stop'
+  | 'request_summary' | 'resolve_summary' | 'skip_summary' | 'takeover_summary'
 export interface CurrentTimerCommandRequest {
   session_id?: string
   device_id: string
@@ -71,6 +77,7 @@ export interface CurrentTimerCommandRequest {
   timer_mode?: 'countup' | 'countdown'
   duration_ms?: number
   session_summary?: string
+  summary_revision?: number
 }
 export type TickTickTaskOperation = 'create' | 'update' | 'delete' | 'reconcile'
 export interface TickTickTaskCommand {
@@ -83,6 +90,7 @@ export interface TickTickTaskCommandResult { request_id: string; status: 'pendin
 export type HabitCheckinStatus = 0 | 1 | 2
 export interface HabitCheckinCommand { habit_id: string; date: string; desired_status: HabitCheckinStatus; idempotency_key: string }
 export interface HabitCheckinCommandResult { idempotency_key: string; status: 'pending' | 'provider_confirmed' | 'confirmed' | 'retryable_failed' | 'failed'; error_code?: string }
+export interface HabitJournalResult { id: string; habit_id: string; date: string; note: string }
 export type TimerLeaseSnapshot = CurrentTimerState
 export type TimerLeaseOutcome = CurrentTimerOutcome
 
@@ -148,6 +156,10 @@ export class ApiClient {
 
   async retryHabitCheckin(idempotencyKey: string): Promise<ApiResponse<HabitCheckinCommandResult>> {
     return this.post<HabitCheckinCommandResult>(`/api/habits/checkin-commands/${encodeURIComponent(idempotencyKey)}/retry`, {}, SYNC_CONFIG.timeout.refresh, idempotencyKey)
+  }
+
+  async saveHabitJournal(habitId: string, date: string, note: string): Promise<ApiResponse<HabitJournalResult>> {
+    return this.put<HabitJournalResult>(`/api/habits/${encodeURIComponent(habitId)}/checkins/${encodeURIComponent(date)}/journal`, { note })
   }
 
   private buildUrl(path: string, params?: Record<string, string>): string {
@@ -291,6 +303,7 @@ export class ApiClient {
       timer_mode: request.timer_mode,
       duration_ms: request.duration_ms,
       session_summary: request.session_summary,
+      summary_revision: request.summary_revision,
     }
     return this.mapCurrentTimerResponse(
       await this.currentTimerRequest('POST', `/api/timer/current/${operation}`, body, timeout),

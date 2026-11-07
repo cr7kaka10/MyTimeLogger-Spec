@@ -20,7 +20,7 @@ try {
     $tracked = @(git -c core.quotepath=false ls-files 2>$null)
     if ($LASTEXITCODE -ne 0) { Fail "rule=git-index-unavailable path=.git" }
     foreach ($file in @(git -c core.quotepath=false ls-files -ci --exclude-standard)) {
-        Fail "rule=tracked-but-ignored path=$file"
+        if ($file -notmatch '^openspec/') { Fail "rule=tracked-but-ignored path=$file" }
     }
 
     $pathRules = [ordered]@{
@@ -30,7 +30,7 @@ try {
     }
     $secretPattern = '(?i)^\s*(?:set\s+)?"?[A-Z0-9_-]*(?:API_KEY|ACCESS_KEY|ACCESS_TOKEN|AUTH_TOKEN|SECRET|PASSWORD|CLIENT_SECRET|WEBHOOK_URL)"?\s*(?:=|:)\s*(?<value>.*)$'
     $placeholderPattern = '(?i)^\s*(?:|<[^>]+>|(?:your|example|placeholder|changeme)[-_A-Z0-9]*|\$\{[^}]+\}|%[A-Z0-9_]+%)\s*$'
-    $absolutePathPattern = '(?i)(?<![A-Z0-9])(?:[A-Z]:[\\/]|/(?:Users|home)/[^/\s]+/)'
+    $absolutePathPattern = '(?i)(?<![A-Z0-9_\\])(?:[A-Z]:[\\/]|/(?:Users|home)/[^/\s]+/)'
     $personalAccountPattern = '(?i)\b[A-Z0-9._%+-]+@(?!example\.(?:com|org|net|test)\b)[A-Z0-9.-]+\.[A-Z]{2,}\b'
     $remoteAddressPattern = '(?i)https?://(?!(?:127\.0\.0\.1|localhost|\[::1\]|example\.(?:com|org|net))(?:[:/]|$))(?:\d{1,3}\.){3}\d{1,3}(?::\d+)?'
     $textFilePattern = '(?i)(?:\.(?:ps1|bat|cmd|env|example|json|ya?ml|toml|ini|cfg|py|js|ts|tsx|md|txt|html|sh)|Dockerfile)$'

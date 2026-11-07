@@ -36,6 +36,13 @@ const formatSleepTransportError = (error: any, fallback: string): string => {
   return message || fallback
 }
 
+export const splitSleepAnalysisError = (raw: unknown): { summary: string; details: string } => {
+  const value = String(raw || '未知错误').replace(/^睡眠OCR全部候选失败：/, '')
+  const marker = value.indexOf('[{')
+  const summary = (marker >= 0 ? value.slice(0, marker) : value).replace(/[。\s]+$/, '')
+  return { summary: summary || '睡眠分析失败', details: marker >= 0 ? value.slice(marker) : '' }
+}
+
 export interface UseSleepReturn {
   sleepData: SleepData | null
   sleepHistory: SleepData[]
@@ -49,6 +56,7 @@ export interface UseSleepReturn {
   isAnalyzing: boolean
   statusMessage: string
   uploadMessage: string
+  errorDetails: string
 }
 
 export const saveSleepDiaryAndSync = async (
@@ -59,6 +67,12 @@ export const saveSleepDiaryAndSync = async (
   requestSync: (changeId: string, options: SyncNowOptions) => Promise<SyncChangeResult> = syncChangeNow,
 ): Promise<{ state: 'confirmed' | 'delivered' | 'pending' | 'rejected'; reason?: string; changeId: string }> => {
   const { changeId } = db.saveSleepDiary(date, type, text)
+  if (type === 'evening') {
+    const bridge = (window as any).MTLEveningDiary
+    if (text.trim()) bridge?.saved?.(date)
+    else bridge?.refresh?.()
+    window.dispatchEvent(new Event('mtl:evening-diary-updated'))
+  }
   try {
     const result = await requestSync(changeId, {
       reason: `sleep-${type}-diary-save`,
@@ -98,6 +112,7 @@ export const useSleep = (): UseSleepReturn => {
   const [isAnalyzing, setIsAnalyzing] = useState(false)
   const [statusMessage, setStatusMessage] = useState('')
   const [uploadMessage, setUploadMessage] = useState('')
+  const [errorDetails, setErrorDetails] = useState('')
   const [pendingDiary, setPendingDiary] = useState<{
     date: string; type: 'morning' | 'evening'; exists: boolean; changeId: string
   } | null>(null)
@@ -117,6 +132,7 @@ export const useSleep = (): UseSleepReturn => {
   useEffect(() => {
     let current = true
     setUploadMessage('')
+    setErrorDetails('')
     getDatabase().then(db => {
       if (!current) return
       const data = db.getSleepData(selectedDate)
@@ -182,6 +198,7 @@ export const useSleep = (): UseSleepReturn => {
           const result = job.result || job.sleep_data || {}
           const resultDate = result.date || result.sleep_date || date
           db.saveSleepData(resultDate, result)
+          window.dispatchEvent(new Event('mtl:evening-diary-updated'))
           await syncAfterDateSwitch('sleep', resultDate).catch(error => console.warn('[useSleep] report completion sync failed:', error))
           setIsAnalyzing(false)
           setStatusMessage('')
@@ -189,8 +206,9 @@ export const useSleep = (): UseSleepReturn => {
         } else if (job.status === 'error') {
           clearInterval(interval)
           setIsAnalyzing(false)
-          setStatusMessage(`分析失败: ${job.error || '未知错误'}`)
-          alert(`分析失败: ${job.error || '未知错误'}`)
+          const failure = splitSleepAnalysisError(job.error)
+          setStatusMessage(`分析失败：${failure.summary}`)
+          setErrorDetails(failure.details)
         } else {
           setStatusMessage(`分析进度: ${job.status === 'running' ? '分析中' : '排队中'}...`)
         }
@@ -219,6 +237,7 @@ export const useSleep = (): UseSleepReturn => {
       setIsAnalyzing(true)
       setStatusMessage('正在上传图片...')
       setUploadMessage('')
+      setErrorDetails('')
 
       try {
         const uploadUrl = `${baseUrl.replace(/\/$/, '')}/upload?analyze=false&date=${encodeURIComponent(selectedDate)}`
@@ -260,6 +279,7 @@ export const useSleep = (): UseSleepReturn => {
 
     setIsAnalyzing(true)
     setUploadMessage('')
+    setErrorDetails('')
     setStatusMessage(statusText)
     try {
       const res = await platformFetch(`${baseUrl.replace(/\/$/, '')}/generate_report`, {
@@ -317,7 +337,8 @@ export const useSleep = (): UseSleepReturn => {
       isAnalyzing,
       statusMessage,
       uploadMessage,
+      errorDetails,
     }),
-    [sleepData, sleepHistory, selectedDate, changeSelectedDate, saveDiary, pickImage, runAnalysis, runFullAnalysis, forceRefresh, isAnalyzing, statusMessage, uploadMessage],
+    [sleepData, sleepHistory, selectedDate, changeSelectedDate, saveDiary, pickImage, runAnalysis, runFullAnalysis, forceRefresh, isAnalyzing, statusMessage, uploadMessage, errorDetails],
   )
 }

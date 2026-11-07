@@ -16,15 +16,14 @@ class RewardConfigService:
 
     TASK_DEFAULT = 0.1
     EXERCISE_DEFAULT = 1.0
-    DIFFICULTY_DEFAULTS = {"trivial": 0.5, "easy": 1.0, "medium": 2.5, "hard": 5.0}
+    HABIT_DEFAULT = 1.0
 
     @classmethod
     def defaults(cls, item_type: str, *, difficulty: str | None = None, reward: float | None = None) -> tuple[float, float]:
         if item_type == "task":
             return cls.TASK_DEFAULT, cls.TASK_DEFAULT
         if item_type == "habit":
-            amount = cls.DIFFICULTY_DEFAULTS.get(str(difficulty or "easy"), cls.DIFFICULTY_DEFAULTS["easy"])
-            return amount, amount
+            return cls.HABIT_DEFAULT, cls.HABIT_DEFAULT
         if item_type == "learning":
             amount = cls.EXERCISE_DEFAULT if reward is None else float(reward)
             return amount, amount
@@ -49,7 +48,7 @@ class RewardConfigService:
         created = 0
         sources = (
             ("task", "SELECT id FROM server_tasks WHERE user_id=?", lambda row: {}),
-            ("habit", "SELECT id,difficulty FROM server_habits WHERE user_id=?", lambda row: {"difficulty": row["difficulty"]}),
+            ("habit", "SELECT id FROM server_habits WHERE user_id=?", lambda row: {}),
             ("learning", "SELECT id,reward FROM server_learning_tasks WHERE user_id=?", lambda row: {"reward": row["reward"]}),
             ("exercise", "SELECT id FROM server_exercise_plan_items WHERE user_id=?", lambda row: {}),
         )

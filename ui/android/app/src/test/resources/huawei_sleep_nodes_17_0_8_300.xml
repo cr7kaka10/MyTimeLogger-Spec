@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<fixtures package="com.huawei.health" versionName="17.0.8.300" versionCode="1700008300" width="1220" height="2712" orientation="portrait">
+  <screen stage="OPEN_SLEEP" activity="com.huawei.health.MainActivity" unstable="card order and bounds"><node resource-id="com.huawei.health:id/function_set_items_title" text="睡眠"/><clickable resource-id="com.huawei.health:id/function_set_card_view"/></screen>
+  <screen stage="OPEN_MORE" activity="com.huawei.ui.main.stories.fitness.activity.coresleep.KnitSleepDetailActivity" unstable="date text and health values"><anchor resource-id="com.huawei.health:id/fitness_detail_time_date_tv"/><node resource-id="com.huawei.health:id/hwappbarpattern_ok_icon" content-desc="更多选项"/></screen>
+  <screen stage="CHOOSE_SHARE" activity="com.huawei.ui.main.stories.fitness.activity.coresleep.KnitSleepDetailActivity" unstable="popup bounds"><node resource-id="com.huawei.health:id/list_popup_window_item_text" text="分享"/></screen>
+  <screen stage="SAVE_LOCAL" activity="com.huawei.pluginsocialshare.activity.SharePopupActivity" unstable="preview image and share target order"><node resource-id="com.huawei.health:id/share_tv" text="保存"/><clickable resource-id="com.huawei.health:id/share_save_to_local_layout"/></screen>
+</fixtures>

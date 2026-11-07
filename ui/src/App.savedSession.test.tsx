@@ -13,6 +13,7 @@ assert(source.includes('if (session.authenticated) setAuthenticated(true)'), 'sa
 assert(source.includes('session.clearToken'), 'only a confirmed invalid saved session may request token clearing')
 assert(source.includes('settings.clearActiveSession().then(() => setAuthenticated(false))'), 'App must wait for secure token clearing before returning to login')
 assert(source.includes("window.addEventListener('mtl:auth-challenge', challenge)"), 'sync authentication failures must trigger a challenge instead of immediate logout')
+assert(source.includes('environment !== settings.activeEnvironment') && source.includes('settings.markEnvironmentUnauthorized'), '401 only invalidates its active environment profile')
 assert(source.includes('settings.verifyActiveSession().then(result =>'), 'Android must confirm a challenge through the identity endpoint')
 assert(settingsSource.includes('/auth/logout'), 'manual Android sign-out must revoke the server session')
 assert(settingsSource.includes('writeActiveAccountStorageKey') && settingsSource.includes('clearActiveAccountStorageKey'), 'Android must recover the account profile after login and remove only its pointer on logout')

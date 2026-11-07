@@ -5,6 +5,7 @@ import { createRoot } from 'react-dom/client'
 
 import { TimerPage } from './components/Timer/TimerPage'
 import { TimeBookPage } from './components/TimeBook/TimeBookPage'
+import type { DailySummaryNavigationIntent } from './components/TimeBook/TimeBookDailySummary'
 import { HabitsPage } from './components/Habits/HabitsPage'
 import { GoalsPage } from './components/Goals/GoalsPage'
 import { RewardsPage } from './components/Rewards/RewardsPage'
@@ -16,7 +17,8 @@ import { BackpackPage } from './components/Backpack/BackpackPage'
 import { ExercisePage } from './pages/ExercisePage'
 import { LearningPage } from './components/Learning/LearningPage'
 import { LoginPage } from './components/Auth/LoginPage'
-import { getRawDb, setCoreActionSyncRequester, syncNow } from './db'
+import { getDatabase, getRawDb, setCoreActionSyncRequester, syncNow } from './db'
+import { formatBeijingDate } from '@core/BeijingTime'
 
 import { useGoals } from './hooks/useGoals'
 import { useHabits } from './hooks/useHabits'
@@ -35,6 +37,8 @@ import { CategoryManager } from './components/Categories/CategoryManager'
 import { ManagementPlanSheet } from './components/ManagementPlan/ManagementPlanSheet'
 import type { MindmapNavigation, MindmapRewardReturnContext } from './components/ManagementPlan/ManagementPlanMindmap'
 import { CoinExplosion } from './components/common/CoinExplosion'
+import { MealWheelSheet } from './components/MealWheel/MealWheelSheet'
+import { MealWheelSettings } from './components/MealWheel/MealWheelSettings'
 import { detectPlatformRuntime, getElectronApi } from './platform'
 import { resolveSavedSession, type SavedSessionVerification } from './auth/sessionState'
 import { BootstrapGate } from './bootstrap'
@@ -43,17 +47,21 @@ import { createBackNavigationService, runBackNavigation } from './platform/backN
 import { createNotificationNavigator } from './platform/notificationNavigation'
 import { getNotificationRuntime } from './platform/notificationRuntime'
 import { platformFetch } from './platform/fetch'
+import { attachDailyWidget } from './platform/dailyWidget'
 import type { HabitSection, MainTab } from './types'
 import type { ManagementPlanDraft } from './hooks/useManagementPlan'
 import { mindmapRewardFingerprint, type ManagementPlanMindmap } from './hooks/useManagementPlanMindmap'
 import { configureBehaviorAudit, flushBehaviorEvents, recordBehavior } from './utils/behaviorAudit'
 import { createUserActionSyncScheduler } from './utils/userActionSync'
+import { markAndroidStartup } from './utils/startupTrace'
 
 const STATUS_SWITCH_DEDUPE_MS = 300
 
 const AppSession = ({ initialAuthenticated, onAccountActivated }: { initialAuthenticated: boolean; onAccountActivated: () => void }) => {
   const [activeTab, setActiveTab] = useState<MainTab>('timer')
   const [showLedger, setShowLedger] = useState(false)
+  const [showMealWheel, setShowMealWheel] = useState(false)
+  const [showMealWheelSettings, setShowMealWheelSettings] = useState(false)
   const [showCategoryManager, setShowCategoryManager] = useState(false)
   const [showManagementPlan, setShowManagementPlan] = useState(false)
   const [managementPlanMode, setManagementPlanMode] = useState<'draft' | 'history'>('draft')
@@ -61,6 +69,11 @@ const AppSession = ({ initialAuthenticated, onAccountActivated }: { initialAuthe
   const [managementPlanDraft, setManagementPlanDraft] = useState<ManagementPlanDraft | null>(null)
   const [mindmapReturnContext, setMindmapReturnContext] = useState<MindmapRewardReturnContext | null>(null)
   const [timerAiFocusRequest, setTimerAiFocusRequest] = useState(0)
+  const [eveningDiaryFocusRequest, setEveningDiaryFocusRequest] = useState(0)
+  const [showEveningDiaryPrompt, setShowEveningDiaryPrompt] = useState(false)
+  const [eveningDiaryReady, setEveningDiaryReady] = useState(false)
+  const [beijingToday, setBeijingToday] = useState(() => formatBeijingDate())
+  const [sleepFocusIntent, setSleepFocusIntent] = useState<DailySummaryNavigationIntent | null>(null)
   const handleTimerAiFocusHandled = useCallback(() => setTimerAiFocusRequest(0), [])
   const [explosionPos, setExplosionPos] = useState<{ x: number; y: number } | null>(null)
   const [authenticated, setAuthenticated] = useState(initialAuthenticated)
@@ -78,15 +91,45 @@ const AppSession = ({ initialAuthenticated, onAccountActivated }: { initialAuthe
   const timer = useTimer()
   const settings = useSettings()
   const timeBook = useTimeBook(activeTab === 'timebook', { serverUrl: settings.selectedEnvironmentProfile.serverUrl, authToken: settings.selectedEnvironmentProfile.authToken })
+  const checklist = useChecklist()
   const habits = useHabits()
+  useEffect(() => attachDailyWidget(authenticated && !!settings.selectedEnvironmentProfile.verifiedUserId),
+    [authenticated, settings.selectedEnvironmentProfile.verifiedUserId,
+      settings.selectedEnvironmentProfile.serverUrl])
   const goals = useGoals()
   const rewards = useRewards()
   const sleep = useSleep()
+  useEffect(() => {
+    const timer = window.setInterval(() => setBeijingToday(formatBeijingDate()), 60_000)
+    return () => window.clearInterval(timer)
+  }, [])
+  useEffect(() => {
+    if (!eveningDiaryReady) { setShowEveningDiaryPrompt(false); return }
+    setShowEveningDiaryPrompt(true)
+    const timer = window.setInterval(() => setShowEveningDiaryPrompt(true), 300_000)
+    return () => window.clearInterval(timer)
+  }, [eveningDiaryReady])
+  useEffect(() => {
+    if (detectPlatformRuntime() !== 'capacitor-android' || !authenticated) { setEveningDiaryReady(false); return }
+    let active = true
+    const read = () => {
+      void getDatabase().then(db => {
+        const diary = db.getDiaryForDate(beijingToday)
+        if (active) setEveningDiaryReady(Number(diary?.report_status || 0) >= 2 && diary?.full_report_state === 'generated' && !diary?.evening_diary?.trim())
+      }).catch(() => { if (active) setEveningDiaryReady(false) })
+    }
+    const refresh = () => { (window as any).MTLEveningDiary?.refresh(); read() }
+    window.addEventListener('sync-pull-complete', refresh)
+    window.addEventListener('mtl:evening-diary-updated', refresh)
+    const timer = window.setInterval(read, 30_000)
+    refresh()
+    return () => { active = false; window.clearInterval(timer); window.removeEventListener('sync-pull-complete', refresh); window.removeEventListener('mtl:evening-diary-updated', refresh) }
+  }, [authenticated, beijingToday, settings.selectedEnvironmentProfile.verifiedUserId])
   const backpack = useBackpack()
   const ledgerHook = useLedger()
 
   const handleNavigate = useCallback((tab: MainTab) => {
-    if (tab === 'timebook') timeBook.resetToToday()
+    if (tab === 'timebook' || tab === 'timer') timeBook.resetToToday()
     userActionSyncRef.current?.request()
     setActiveTab(current => { if (current !== tab) { previousTabRef.current = current; recordBehavior('navigation.tab_opened', { tab }) }; return tab })
   }, [timeBook.resetToToday])
@@ -129,7 +172,7 @@ const AppSession = ({ initialAuthenticated, onAccountActivated }: { initialAuthe
       if (!target) return
       const dialog = target.closest('[role="dialog"]') as HTMLElement | null
       const surface = dialog?.getAttribute('aria-label')?.includes('管理方案') ? 'management_plan' : activeTab
-      recordBehavior('control.activated', { surface, control: target.getAttribute('aria-label') || target.textContent?.trim().slice(0, 80) || target.tagName.toLowerCase() })
+      recordBehavior('control.activated', { surface, control: target.getAttribute('aria-label') || target.id || target.tagName.toLowerCase() })
     }
     const onInput = (event: Event) => {
       const target = event.target as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement | null
@@ -145,19 +188,30 @@ const AppSession = ({ initialAuthenticated, onAccountActivated }: { initialAuthe
 
   useEffect(() => {
     const navigate = (event: Event) => {
-      const page = window as typeof window & { __mtlPendingNavigation?: { route: string, focusAi: boolean } }
+      const page = window as typeof window & { __mtlPendingNavigation?: { route: string, focusAi: boolean, focusEvening?: boolean } }
       const detail = page.__mtlPendingNavigation ?? (event as CustomEvent).detail
       delete page.__mtlPendingNavigation
       if (detail === 'timer' || detail?.route === 'timer') {
         handleNavigate('timer')
         if (detail?.focusAi) setTimerAiFocusRequest(current => current + 1)
+        if (detail?.focusEvening) {
+          setEveningDiaryFocusRequest(current => current + 1)
+          void syncNow({ reason: 'evening-diary-notification' }).catch(() => {})
+        }
+      } else if (detail?.route === 'checklist') {
+        handleNavigate('checklist')
+      } else if (detail?.route === 'exercise') {
+        handleNavigate('exercise')
+      } else if (detail?.route === 'sleep') {
+        sleep.setSelectedDate(formatBeijingDate())
+        handleNavigate('sleep')
       }
     }
     window.addEventListener('mtl:navigate', navigate)
-    const pending = (window as typeof window & { __mtlPendingNavigation?: { route: string, focusAi: boolean } }).__mtlPendingNavigation
+    const pending = (window as typeof window & { __mtlPendingNavigation?: { route: string, focusAi: boolean, focusEvening?: boolean } }).__mtlPendingNavigation
     if (pending) navigate(new CustomEvent('mtl:navigate', { detail: pending }))
     return () => window.removeEventListener('mtl:navigate', navigate)
-  }, [handleNavigate])
+  }, [handleNavigate, sleep.setSelectedDate])
 
   useEffect(() => {
     authenticatedRef.current = authenticated
@@ -166,8 +220,11 @@ const AppSession = ({ initialAuthenticated, onAccountActivated }: { initialAuthe
 
   useEffect(() => {
     let remove = () => {}; let closed = false
-    void getNotificationRuntime()?.notifications.subscribe(route => notificationNavigatorRef.current.open(route)).then(unsubscribe => { if (closed) unsubscribe(); else remove = unsubscribe }).catch(() => {})
-    const expire = () => {
+    void getNotificationRuntime()?.notifications.subscribe(route => { const result = notificationNavigatorRef.current.open(route); recordBehavior('notification.open', { notification_type: route, result }); return result }).then(unsubscribe => { if (closed) unsubscribe(); else remove = unsubscribe }).catch(() => {})
+    const expire = (event: Event) => {
+      const environment = (event as CustomEvent<{ environment?: typeof settings.activeEnvironment }>).detail?.environment
+      if (environment && environment !== settings.activeEnvironment) return
+      settings.markEnvironmentUnauthorized(environment || settings.activeEnvironment)
       if (detectPlatformRuntime() !== 'capacitor-android') { setAuthenticated(false); return }
       void settings.clearActiveSession().then(() => setAuthenticated(false)).catch(() => {})
     }
@@ -181,9 +238,11 @@ const AppSession = ({ initialAuthenticated, onAccountActivated }: { initialAuthe
     window.addEventListener('mtl:auth-expired', expire)
     window.addEventListener('mtl:auth-challenge', challenge)
     return () => { closed = true; remove(); window.removeEventListener('mtl:auth-expired', expire); window.removeEventListener('mtl:auth-challenge', challenge) }
-  }, [settings.clearActiveSession, settings.verifyActiveSession])
+  }, [settings.activeEnvironment, settings.clearActiveSession, settings.markEnvironmentUnauthorized, settings.verifyActiveSession])
 
   useEffect(() => createBackNavigationService().subscribe(() => runBackNavigation(() => {
+    if (showMealWheelSettings) { setShowMealWheelSettings(false); return true }
+    if (showMealWheel) { setShowMealWheel(false); return true }
     if (showOnboarding) { setShowOnboarding(false); return true }
     if (showLedger) { setShowLedger(false); return true }
     if (showCategoryManager) { setShowCategoryManager(false); return true }
@@ -194,7 +253,8 @@ const AppSession = ({ initialAuthenticated, onAccountActivated }: { initialAuthe
     if (!previous) return false
     previousTabRef.current = null; recordBehavior('navigation.back', { tab: previous }); setActiveTab(previous)
     return true
-  })), [showCategoryManager, showLedger, showManagementPlan, showOnboarding])
+  })), [showCategoryManager, showLedger, showMealWheel, showMealWheelSettings, showManagementPlan, showOnboarding])
+  useEffect(() => { if (activeTab !== 'settings') setShowMealWheelSettings(false) }, [activeTab])
 
   const handleStartLearningFocus = useCallback(async (categoryId: number | null, taskTitle: string): Promise<TaskFocusResult> => {
     const requestedCategory = timer.categories.find(category => category.id === categoryId)
@@ -271,8 +331,22 @@ const AppSession = ({ initialAuthenticated, onAccountActivated }: { initialAuthe
     sleep.setSelectedDate(date)
     setActiveTab('sleep')
   }, [sleep])
+  const handleSummaryNavigate = useCallback((intent: DailySummaryNavigationIntent) => {
+    if (intent.tab === 'sleep') {
+      sleep.setSelectedDate(intent.date)
+      setSleepFocusIntent(intent.target ? intent : null)
+      setActiveTab('sleep')
+      return
+    }
+    if (intent.tab === 'checklist') habits.setSelectedDate(intent.date)
+    handleNavigate(intent.tab)
+  }, [handleNavigate, habits.setSelectedDate, sleep.setSelectedDate])
 
   const handleOpenSleepFromSettings = useCallback(() => handleNavigate('sleep'), [handleNavigate])
+  const handleSleepReportReady = useCallback(() => {
+    sleep.setSelectedDate(new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(new Date()))
+    handleNavigate('sleep')
+  }, [handleNavigate, sleep.setSelectedDate])
   const handleOpenCategoryManager = useCallback(() => setShowCategoryManager(true), [])
   const handleCloseCategoryManager = useCallback(() => setShowCategoryManager(false), [])
 
@@ -344,26 +418,30 @@ const AppSession = ({ initialAuthenticated, onAccountActivated }: { initialAuthe
     if (activeTab === 'backpack') return <BackpackPage {...backpack} />
     if (activeTab === 'exercise') return <ExercisePage theme={settings.theme} onToggleTheme={settings.toggleTheme} onStartFocus={handleStartExerciseFocus} />
     if (activeTab === 'learning') return <LearningPage onNavigate={handleNavigate} onStartFocus={handleStartLearningFocus} runtime={{ serverUrl: settings.selectedEnvironmentProfile.serverUrl, authToken: settings.selectedEnvironmentProfile.authToken }} />
-    if (activeTab === 'timer') return <TimerPage {...timer} theme={settings.theme} onToggleTheme={settings.toggleTheme} onNavigate={handleNavigate} onOpenLedger={() => setShowLedger(true)} onOpenSettings={() => handleNavigate('settings')} runtime={{ serverUrl: settings.selectedEnvironmentProfile.serverUrl, authToken: settings.selectedEnvironmentProfile.authToken }} onRecordFlashCard={timeBook.recordFlashCard} focusAiRequest={timerAiFocusRequest} onFocusAiHandled={handleTimerAiFocusHandled} />
-    if (activeTab === 'timebook') return <TimeBookPage {...timeBook} onNavigate={handleNavigate} onNavigateToSleep={handleNavigateToSleep} />
+    if (activeTab === 'timer') return <TimerPage {...timer} homeSlogan={settings.settings.home_slogan} theme={settings.theme} onToggleTheme={settings.toggleTheme} onNavigate={handleNavigate} onOpenLedger={() => setShowLedger(true)} onOpenSettings={() => handleNavigate('settings')} runtime={{ serverUrl: settings.selectedEnvironmentProfile.serverUrl, authToken: settings.selectedEnvironmentProfile.authToken }} onRecordFlashCard={timeBook.recordFlashCard} diary={timeBook.diary} onSaveDiary={timeBook.saveDiary} onOpenLockedDiary={() => handleNavigateToSleep(timeBook.selectedDate)} focusAiRequest={timerAiFocusRequest} onFocusAiHandled={handleTimerAiFocusHandled} openEveningDiaryRequest={eveningDiaryFocusRequest} />
+    if (activeTab === 'timebook') return <TimeBookPage {...timeBook} checklistTasks={checklist.tasks} onNavigate={handleNavigate} onSummaryNavigate={handleSummaryNavigate} />
       if (activeTab === 'sleep') return (
         <SleepPage {...sleep}
+          onAutomationDone={sleep.setSelectedDate}
           onPickImage={sleep.pickImage}
           onSleepAnalysis={sleep.runAnalysis}
           onFullAnalysis={sleep.runFullAnalysis}
           onForceRefresh={sleep.forceRefresh}
+          focusIntent={sleepFocusIntent?.target ? { date: sleepFocusIntent.date, target: sleepFocusIntent.target, nonce: sleepFocusIntent.nonce } : null}
+          onFocusHandled={nonce => setSleepFocusIntent(current => current?.nonce === nonce ? null : current)}
         />
       )
     if (activeTab === 'settings') return (
       showCategoryManager
         ? <CategoryManager onClose={handleCloseCategoryManager} />
-        : <SettingsPage {...settings} onOpenSleep={handleOpenSleepFromSettings} onOpenCategoryManager={handleOpenCategoryManager} onSignedOut={() => setAuthenticated(false)} />
+        : <SettingsPage {...settings} onOpenSleep={handleOpenSleepFromSettings} onSleepReportReady={handleSleepReportReady} onOpenCategoryManager={handleOpenCategoryManager} onOpenMealWheelSettings={() => setShowMealWheelSettings(true)} onSignedOut={() => setAuthenticated(false)} />
     )
     if (activeTab === 'goals') return <GoalsPage {...goals} balance={timer.balance} activeSection="goals" onSectionChange={handleHabitSectionChange} categories={timeBook.categories} />
     if (activeTab === 'rewards') return <RewardsPage {...rewards} activeSection="rewards" onSectionChange={handleHabitSectionChange} ledgerHook={ledgerHook} />
     if (activeTab === 'checklist') return (
       <UnifiedChecklistPage
         habits={habits}
+        verifiedUserId={settings.selectedEnvironmentProfile.verifiedUserId}
         timeBook={timeBook}
         timer={timer}
         onNavigate={handleNavigate}
@@ -374,12 +452,13 @@ const AppSession = ({ initialAuthenticated, onAccountActivated }: { initialAuthe
     return (
       <UnifiedChecklistPage
         habits={habits}
+        verifiedUserId={settings.selectedEnvironmentProfile.verifiedUserId}
         timeBook={timeBook}
         timer={timer}
         onNavigate={handleNavigate}
       />
     )
-    }, [activeTab, goals, habits, backpack, ledgerHook, showCategoryManager, handleHabitSectionChange, handleNavigate, handleNavigateToSleep, handleStartExerciseFocus, handleStartLearningFocus, rewards, settings, sleep, timeBook, timer, handleOpenSleepFromSettings, handleOpenCategoryManager, handleCloseCategoryManager, openManagementPlan, openManagementPlanDraft, timerAiFocusRequest])
+    }, [activeTab, goals, habits, checklist.tasks, backpack, ledgerHook, showCategoryManager, handleHabitSectionChange, handleNavigate, handleNavigateToSleep, handleSummaryNavigate, handleStartExerciseFocus, handleStartLearningFocus, rewards, settings, sleep, sleepFocusIntent, timeBook, timer, handleOpenSleepFromSettings, handleOpenCategoryManager, handleCloseCategoryManager, openManagementPlan, openManagementPlanDraft, timerAiFocusRequest])
 
   const hasSavedToken = Boolean(settings.selectedEnvironmentProfile.authToken)
   const waitingForSavedToken = hasSavedToken && settings.connectionStatus === 'checking'
@@ -393,8 +472,19 @@ const AppSession = ({ initialAuthenticated, onAccountActivated }: { initialAuthe
     if (session.authenticated) setAuthenticated(true)
     else if (session.clearToken) void settings.clearActiveSession().then(() => setAuthenticated(false)).catch(() => {})
   }, [settings.clearActiveSession, settings.connectionStatus, settings.selectedEnvironmentProfile.authToken])
-  const needsLogin = !authenticated
   const restoringAndroidProfile = detectPlatformRuntime() === 'capacitor-android' && !settings.profileReady
+  const savedSession = restoringAndroidProfile ? false : detectPlatformRuntime() === 'capacitor-android' &&
+    resolveSavedSession(settings.selectedEnvironmentProfile.authToken,
+      settings.connectionStatus === 'unauthorized' ? 'unauthorized' : 'checking').authenticated
+  const needsLogin = !authenticated && !savedSession
+  const firstHomePaint = useRef(false)
+  useEffect(() => {
+    if (needsLogin || restoringAndroidProfile || firstHomePaint.current) return
+    const frame = requestAnimationFrame(() => setTimeout(() => {
+      firstHomePaint.current = true; markAndroidStartup('home-interactive')
+    }, 0))
+    return () => cancelAnimationFrame(frame)
+  }, [needsLogin, restoringAndroidProfile])
   const onboardingKey = `mtl.familyOnboardingSeen.${settings.activeEnvironment}.${settings.selectedEnvironmentProfile.username || 'user'}`
   const completeOnboarding = useCallback(() => {
     window.localStorage.setItem(onboardingKey, '1')
@@ -417,7 +507,7 @@ const AppSession = ({ initialAuthenticated, onAccountActivated }: { initialAuthe
       }}
     />
   ) : (
-    <MainLayout activeTab={activeTab} onTabChange={handleNavigate} balance={timer.balance} theme={settings.theme} onToggleTheme={settings.toggleTheme} onOpenLedger={() => setShowLedger(true)} onOpenManagementPlanHistory={openManagementPlanHistory}>
+    <MainLayout activeTab={activeTab} onTabChange={handleNavigate} balance={timer.balance} theme={settings.theme} onToggleTheme={settings.toggleTheme} onOpenLedger={() => setShowLedger(true)} onOpenMealWheel={() => setShowMealWheel(true)} onOpenManagementPlanHistory={openManagementPlanHistory}>
       {page}
 
       {/* 全局待领取奖励横幅 */}
@@ -440,7 +530,10 @@ const AppSession = ({ initialAuthenticated, onAccountActivated }: { initialAuthe
       )}
 
       {showLedger && <LedgerSheet {...ledgerHook} onClose={() => setShowLedger(false)} />}
-      <ManagementPlanSheet open={showManagementPlan} mode={managementPlanMode} runtime={{ serverUrl: settings.selectedEnvironmentProfile.serverUrl, authToken: settings.selectedEnvironmentProfile.authToken }} initialRequest={managementPlanRequest} initialDraft={managementPlanDraft} onNavigate={handleMindmapNavigate} onClose={() => setShowManagementPlan(false)} />
+      {showEveningDiaryPrompt && <div role="dialog" aria-label="晚间日记提醒" className="fixed inset-0 z-[70] flex items-center justify-center bg-black/45 px-5"><div className="w-full max-w-sm rounded-2xl bg-white p-5 shadow-xl dark:bg-slate-900"><h2 className="text-lg font-bold">🌙 全天报告已生成</h2><p className="mt-2 text-sm">晚间日记还没写，现在记录一下吧。</p><div className="mt-5 flex gap-3"><button type="button" className="h-11 flex-1 rounded-xl bg-slate-100 dark:bg-slate-800" onClick={() => setShowEveningDiaryPrompt(false)}>稍后提醒</button><button type="button" className="h-11 flex-1 rounded-xl bg-blue-600 font-semibold text-white" onClick={() => { setShowEveningDiaryPrompt(false); setEveningDiaryFocusRequest(value => value + 1); handleNavigate('timer') }}>写晚间日记</button></div></div></div>}
+      {showMealWheel && <MealWheelSheet onClose={() => setShowMealWheel(false)} />}
+      {showMealWheelSettings && <MealWheelSettings onClose={() => setShowMealWheelSettings(false)} />}
+      <ManagementPlanSheet open={showManagementPlan} mode={managementPlanMode} goals={goals.goals} runtime={{ serverUrl: settings.selectedEnvironmentProfile.serverUrl, authToken: settings.selectedEnvironmentProfile.authToken }} initialRequest={managementPlanRequest} initialDraft={managementPlanDraft} onNavigate={handleMindmapNavigate} onClose={() => setShowManagementPlan(false)} />
       {explosionPos && <CoinExplosion x={explosionPos.x} y={explosionPos.y} onComplete={() => setExplosionPos(null)} />}
       {showOnboarding && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4 backdrop-blur-sm">

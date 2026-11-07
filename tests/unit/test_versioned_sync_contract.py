@@ -8,6 +8,7 @@ import pytest
 
 from server.db_wrapper import ServerDBWrapper
 from server.domain.sample_data_initialization_service import SampleDataInitializationService
+from server.domain.diet_habit_migration_service import DietHabitMigrationService
 from server.models.server_schema import ensure_server_schema
 from server.store import ServerSleepStore
 from server.sync_hub import SyncHub
@@ -15,6 +16,23 @@ import server.server as server_module
 
 
 ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+
+
+def test_meal_wheel_config_round_trip_is_account_scoped(tmp_path):
+    db_path = tmp_path / "meal_wheel_sync.db"
+    _, hub = _build_hub(db_path)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("INSERT INTO users (id, username, password_hash, created_at) VALUES (2, 'other', 'p', '2026-11-06 12:00:00')")
+    value = json.dumps({"schemaVersion": 1, "revision": "rev-1", "updatedAt": "2026-11-06 12:00:00",
+                        "items": [{"id": "a", "name": "面条", "weight": 1}, {"id": "b", "name": "米饭", "weight": 3}]}, ensure_ascii=False)
+    result = asyncio.run(hub.handle_push([{"change_id": "meal-1", "table": "system_config", "operation": "upsert",
+                                          "payload": {"key": "meal_wheel_v1", "value": value, "value_type": "string",
+                                                      "description": "选餐转盘配置", "updated_at": "2026-11-06 12:00:00"}}], user_id=1))
+    assert result["accepted"] == 1
+    first = asyncio.run(hub.handle_pull_by_version(0, user_id=1, limit=100))
+    other = asyncio.run(hub.handle_pull_by_version(0, user_id=2, limit=100))
+    assert any(row["key"] == "meal_wheel_v1" and row["value"] == value for row in first["tables"]["system_config"])
+    assert not any(row.get("key") == "meal_wheel_v1" for row in other["tables"].get("system_config", []))
 
 
 def _read(path: str) -> str:
@@ -825,6 +843,39 @@ def test_exercise_checkin_push_persists_server_item_score(tmp_path):
             "WHERE user_id=1 AND date='2026-07-14' AND plan_version='v1' AND item_key='ex-2026-07-14-g-0'"
         ).fetchone()
     assert row == (40.0, 40.0, "completed")
+
+
+def test_exercise_v6_sync_rejects_old_version_and_settles_single_training_domain(tmp_path, monkeypatch):
+    db_path = tmp_path / "exercise_v6_push.db"
+    db, hub = _build_hub(db_path)
+    seed = SampleDataInitializationService(str(db_path))
+    seed.ensure_user_sample_data(1)
+    monkeypatch.setattr(server_module, "store", ServerSleepStore(str(db_path)))
+    monkeypatch.setattr(server_module, "sync_hub", hub)
+    today = datetime.now(timezone(timedelta(hours=8))).date()
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        migration = DietHabitMigrationService(lambda *args: None)
+        migration.switch_date(conn, 1, datetime.now(timezone(timedelta(hours=8))) - timedelta(days=2))
+        next_tuesday = today + timedelta(days=(1 - today.weekday()) % 7 or 7)
+        migration.ensure_day(conn, 1, next_tuesday.isoformat(), datetime.now(timezone(timedelta(hours=8))))
+        conn.commit()
+    seed.ensure_v6_for_user(1)
+    with sqlite3.connect(db_path) as conn:
+        cutoff = datetime.fromisoformat(conn.execute("SELECT value FROM server_system_config WHERE user_id=1 AND key='exercise_v6_effective_date'").fetchone()[0]).date()
+    date = (cutoff + timedelta(days=1)).isoformat()
+    old = asyncio.run(hub.handle_push([{"change_id": "v6-old-client", "table": "exercise_checkins", "operation": "upsert", "payload": {
+        "id": "v6-old-check", "date": date, "plan_version": "v5", "item_key": f"ex-{date}-g-0", "status": 1,
+    }}], user_id=1))
+    assert old["operation_results"][0]["reason"] == "exercise_plan_version_not_active_for_date"
+    fresh = asyncio.run(hub.handle_push([{"change_id": "v6-fresh-client", "table": "exercise_checkins", "operation": "upsert", "payload": {
+        "id": "v6-fresh-check", "date": date, "plan_version": "v6", "item_key": f"ex-{date}-g-0", "status": 1,
+    }}], user_id=1))
+    assert fresh["accepted"] == 1
+    with sqlite3.connect(db_path) as conn:
+        snapshot = json.loads(conn.execute("SELECT score_snapshot FROM server_exercise_settlements WHERE user_id=1 AND business_date=? AND plan_version='v6'", (date,)).fetchone()[0])
+        assert snapshot["cats"] == {"运动训练": {"s": 5.0, "m": 100.0}}
+        assert conn.execute("SELECT COUNT(*) FROM server_exercise_settlements WHERE user_id=1 AND business_date=? AND plan_version='v5'", (date,)).fetchone()[0] == 0
 
 
 def test_exercise_schedule_checkin_push_persists_combined_item_score(tmp_path):

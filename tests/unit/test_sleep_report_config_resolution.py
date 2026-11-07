@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from server.analyzer import SleepAnalyzer
+import server.server as server_module
 from server.server import _model_candidates
 
 
@@ -20,6 +21,40 @@ spec.loader.exec_module(report_module)
 def test_vision_candidates_use_primary_then_explicit_backups_and_legacy_compatibility():
     cfg = {"vision_base_url": "main-url", "vision_api_key": "main-key", "vision_model": "main", "backup_base_url": "legacy-url", "backup_api_key": "legacy-key", "backup_model": "legacy", "vision_backup_2_base_url": "backup2-url", "vision_backup_2_api_key": "backup2-key", "vision_backup_2_model": "backup2"}
     assert [(item["slot"], item["model"]) for item in _model_candidates(cfg, "vision")] == [("主模型", "main"), ("备用模型 1", "legacy"), ("备用模型 2", "backup2")]
+
+
+def test_user_ai_config_keeps_explicit_vision_backups(monkeypatch):
+    cfg = {
+        "vision_base_url": "main-url", "vision_api_key": "main-key", "vision_model": "main",
+        "vision_backup_1_base_url": "k-url", "vision_backup_1_api_key": "k-key", "vision_backup_1_model": "kimi",
+        "vision_backup_2_base_url": "p-url", "vision_backup_2_api_key": "p-key", "vision_backup_2_model": "paddle",
+        "text_base_url": "text-url", "text_api_key": "text-key", "text_model": "text",
+    }
+    monkeypatch.setattr(server_module, "_load_user_provider_config", lambda *_: cfg)
+
+    resolved = server_module.build_ai_cfg_for_user(1)
+
+    assert [item["model"] for item in _model_candidates(resolved, "vision")] == ["main", "kimi", "paddle"]
+
+
+def _valid_sleep_data(**overrides):
+    data = {"sleep_date": "2026-10-03", "sleep_score": 79, "total_sleep_min": 330,
+            "deep_sleep_min": 60, "light_sleep_min": 210, "rem_sleep_min": 60,
+            "deep_sleep_ratio": 18, "sleep_start": "02:12", "sleep_end": "08:23",
+            "official_advice": "睡眠时长不足，长期睡眠不足容易导致白天疲劳，建议保持规律作息。"}
+    data.update(overrides)
+    return data
+
+
+@pytest.mark.parametrize("light,valid", [(210, True), (209, False), (211, False), ("错误", False)])
+def test_sleep_stage_equality_is_strict(light, valid):
+    assert SleepAnalyzer.validate_data(_valid_sleep_data(light_sleep_min=light))[0] is valid
+
+
+def test_20261003_bad_ocr_sample_is_rejected():
+    valid, reason = SleepAnalyzer.validate_data(_valid_sleep_data(light_sleep_min=193))
+    assert valid is False
+    assert "330" in reason and "313" in reason
 
 
 def _stub_report_pipeline(monkeypatch):

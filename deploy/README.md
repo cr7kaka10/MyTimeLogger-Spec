@@ -1,5 +1,17 @@
 # MyTimeLogger 测试环境部署指南
 
+## 一键迁移测试服务端
+
+新机先安装 Docker、cron 并开放 SSH 22 与服务端口 8000；确保新机没有业务数据。双击 `deploy-test.bat` 后选 **[6] 一键迁移服务器**，只输入新服务器地址。脚本从当前 `config.local.env` 读取旧机地址，在新机准备当前服务端镜像，停写旧机并生成新的 SQLite 一致性快照，随后迁移数据库、附件、报告和 S3 备份能力。
+
+在 Windows PowerShell 运行。首次连接旧机和新机时各输入一次 SSH 密码；脚本把专用公钥装到对应服务器，后续连接使用本机 `.ssh/mtl-migration-ed25519` 密钥。输错密码会指出对应服务器并在停机前停止：
+
+```powershell
+.\deploy\migrate-server.ps1 -NewHost 'your-new-server.example.com'
+```
+
+脚本先检查目标机器；已有业务数据则拒绝覆盖，已部署但没有业务数据的同名容器可安全接管。旧机停写后生成最终快照，传输前后核对 SQLite 完整性与 SHA256、附件/报告逐文件哈希；新机启动后验证 `/ping`、核心表数量及一次 S3 备份上传。全部通过才更新本机部署目标。失败时尝试停止新容器、恢复旧容器，保留本机 `桌面\mtl-migration\cutover-时间戳-*` 快照与原配置；若新机残留已传入的数据，须核实后清理才可重试，脚本不会覆盖。成功提示出现后，在 PC/Android 登录页改为 `http://新服务器地址:8000`；切换后如需回滚，应先停写新机并回迁新机最新数据。
+
 ## 前置要求
 
 | 工具 | 用途 | 安装 |
@@ -7,6 +19,7 @@
 | **Node.js** 20 LTS | UI 构建 + Electron 打包 | https://nodejs.org/ |
 | **Docker Desktop** | 服务端镜像构建 | https://www.docker.com/products/docker-desktop/ |
 | **OpenSSH** | 连接测试服务器 | Windows 10+ 自带 |
+| **Python 3** | 迁移时校验 SQLite、按原始字节传输文件 | https://www.python.org/ |
 
 ## 快速开始
 

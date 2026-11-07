@@ -1,0 +1,75 @@
+package com.mytimelogger.app;
+import android.Manifest;import android.app.*;import android.content.*;import android.content.pm.PackageManager;import android.database.Cursor;import android.net.Uri;import android.os.*;import android.provider.MediaStore;import android.provider.Settings;import android.webkit.JavascriptInterface;
+import androidx.core.app.*;import androidx.core.content.ContextCompat;import org.json.*;import java.net.URI;import java.text.SimpleDateFormat;import java.util.*;
+
+public final class SleepAutomationBridge {
+    public static final String JAVASCRIPT_NAME="MTLSleepAutomation";
+    interface Actions { String status(); boolean enable(); void disable(); boolean test(); boolean retry(); default boolean generateReport(){return false;} default boolean oneClick(){return false;} default String exportCapture(){return "unavailable";} boolean previewCapture(); void cancel(); boolean configure(String url,String token,String userId); boolean authorize(String permission); void clearConfiguration(); }
+    static final class DefaultActions implements Actions {
+        final Context c,launchContext; final SleepAutomationSecretStore secrets;
+        DefaultActions(Context context){launchContext=context;c=context.getApplicationContext();secrets=new SleepAutomationSecretStore(c);}
+        boolean accessibility(){return SleepAutomationAccessibility.isEnabled(c);}
+        String captureBlocked(){
+            KeyguardManager lock=(KeyguardManager)c.getSystemService(Context.KEYGUARD_SERVICE);
+            return captureBlockReason(accessibility(),NotificationManagerCompat.from(c).areNotificationsEnabled(),
+                Build.VERSION.SDK_INT<33||ContextCompat.checkSelfPermission(c,Manifest.permission.READ_MEDIA_IMAGES)==PackageManager.PERMISSION_GRANTED,
+                lock==null||!lock.isDeviceLocked());
+        }
+        String version(){try{return c.getPackageManager().getPackageInfo("com.huawei.health",0).versionName;}catch(Exception e){return "missing";}}
+        public String status(){try{boolean media=Build.VERSION.SDK_INT<33||ContextCompat.checkSelfPermission(c,Manifest.permission.READ_MEDIA_IMAGES)==PackageManager.PERMISSION_GRANTED;PowerManager power=(PowerManager)c.getSystemService(Context.POWER_SERVICE);JSONObject permissions=new JSONObject().put("accessibility",accessibility()).put("notifications",NotificationManagerCompat.from(c).areNotificationsEnabled()).put("media",media).put("battery",power.isIgnoringBatteryOptimizations(c.getPackageName()));JSONArray history=new JSONArray();SleepAutomationStateStore store=new SleepAutomationStateStore(c);List<SleepAutomationSnapshot> rows=store.history();for(int i=0;i<Math.min(7,rows.size());i++){SleepAutomationSnapshot s=rows.get(i);history.put(new JSONObject().put("date",s.sleepDate).put("stage",s.stage).put("result","SUCCESS".equals(s.stage)?"success":"FAILED".equals(s.stage)?"failure":"running").put("reason",s.reason));}SharedPreferences p=c.getSharedPreferences(SleepAutomationRescheduleReceiver.PREFS,Context.MODE_PRIVATE);long next=p.getLong(SleepAutomationRescheduleReceiver.NEXT,0),retry=store.nextRetryAt();SimpleDateFormat f=new SimpleDateFormat("yyyy-MM-dd HH:mm",Locale.CHINA);f.setTimeZone(SleepAutomationScheduler.BEIJING);JSONObject out=new JSONObject().put("buildId",SleepAutomationRunnerService.AUTOMATION_REVISION).put("enabled",p.getBoolean(SleepAutomationRescheduleReceiver.ENABLED,false)).put("configured",secrets.read()!=null).put("permissions",permissions).put("huaweiVersion",version()).put("history",history).put("lastStartSource",store.lastStartSource()).put("nextRunAt",next>0?f.format(new Date(next)):"").put("nextRetryAt",retry>0?f.format(new Date(retry)):"");HuaweiSleepAutomationService.Snapshot a=HuaweiSleepAutomationService.snapshot();out.put("captureStep",a.step==null?"":a.step).put("captureWindow",a.window==null?"":a.window);if(rows.size()>0){SleepAutomationSnapshot current=rows.get(0);out.put("stage",current.stage).put("phase",current.mode==null?"":current.mode).put("sleepDate",current.sleepDate).put("updatedAt",current.updatedAt).put("reason",current.reason).put("mediaSelected",current.mediaUri!=null&&!current.mediaUri.isEmpty()).put("requestIdPresent",current.requestId!=null&&!current.requestId.isEmpty());}return out.toString();}catch(Exception e){return "{\"enabled\":false,\"error\":\"native_error\"}";}}
+        public boolean enable(){long now=System.currentTimeMillis(),next=SleepAutomationScheduler.nextWindowStart(now);SleepAutomationRescheduleReceiver.setEnabled(c,true);c.getSharedPreferences(SleepAutomationRescheduleReceiver.PREFS,Context.MODE_PRIVATE).edit().putLong(SleepAutomationRescheduleReceiver.NEXT,next).apply();SleepAutomationAlarmReceiver.scheduleNext(c,now);return true;}
+        public void disable(){cancel();SleepAutomationRescheduleReceiver.setEnabled(c,false);AlarmManager a=(AlarmManager)c.getSystemService(Context.ALARM_SERVICE);a.cancel(SleepAutomationAlarmReceiver.pending(c));a.cancel(SleepAutomationRunnerService.retryPending(c));}
+        public boolean test(){if(!captureBlocked().isEmpty())return false;try{ContextCompat.startForegroundService(c,new Intent(c,SleepAutomationRunnerService.class).setAction(SleepAutomationRunnerService.CAPTURE_ONLY_ACTION).putExtra(SleepAutomationRunnerService.EXTRA_STAGE,"PENDING"));return true;}catch(Exception e){return false;}}
+        public boolean retry(){try{ContextCompat.startForegroundService(c,new Intent(c,SleepAutomationRunnerService.class).setAction(SleepAutomationRunnerService.TEST_ACTION).putExtra(SleepAutomationRunnerService.EXTRA_STAGE,"PENDING"));return true;}catch(Exception e){return false;}}
+        public boolean generateReport(){SleepCaptureProbeStore.Snapshot probe=new SleepCaptureProbeStore(c).load();if(!SleepAutomationRunnerService.isTodaySavedProbe(probe,today()))return false;try(android.content.res.AssetFileDescriptor fd=c.getContentResolver().openAssetFileDescriptor(Uri.parse(probe.uri),"r")){if(fd==null||fd.getLength()<=0)return false;ContextCompat.startForegroundService(c,new Intent(c,SleepAutomationRunnerService.class).setAction(SleepAutomationRunnerService.GENERATE_REPORT_ACTION));return true;}catch(Exception e){return false;}}
+        public boolean oneClick(){if(!captureBlocked().isEmpty())return false;try{ContextCompat.startForegroundService(c,new Intent(c,SleepAutomationRunnerService.class).setAction(SleepAutomationRunnerService.ONE_CLICK_ACTION));return true;}catch(Exception e){return false;}}
+        private String today(){SimpleDateFormat f=new SimpleDateFormat("yyyy-MM-dd",Locale.ROOT);f.setTimeZone(SleepAutomationScheduler.BEIJING);return f.format(new Date());}
+        public boolean previewCapture(){
+            SleepCaptureProbeStore probes=new SleepCaptureProbeStore(c);SleepCaptureProbeStore.Snapshot probe=probes.load();if(probe==null||!"SAVED".equals(probe.stage)||probe.uri.isEmpty())return false;
+            try(android.content.res.AssetFileDescriptor file=c.getContentResolver().openAssetFileDescriptor(Uri.parse(probe.uri),"r")){
+                if(file==null||file.getLength()==0){probes.finish(probe,"FAILED","media_unreadable","",0,0,0);return false;}
+                Intent view=new Intent(c,SleepCapturePreviewActivity.class);
+                open(view);return true;
+            }catch(Exception e){probes.finish(probe,"FAILED","media_unreadable","",0,0,0);return false;}
+        }
+        public String exportCapture(){return SleepCaptureGalleryExporter.export(c,new SleepCaptureProbeStore(c).load(),today());}
+        public void cancel(){c.stopService(new Intent(c,SleepAutomationRunnerService.class));HuaweiSleepAutomationService.cancel();}
+        public boolean configure(String u,String t,String userId){boolean debug=(c.getApplicationInfo().flags&android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE)!=0;if(t==null||t.isEmpty()||!serverUrlAllowed(u,debug))return false;if(!SleepAutomationStateStore.activateOwner(c,u,userId))return false;secrets.save(u,t);return secrets.read()!=null;}
+        private void open(Intent i){if(!(launchContext instanceof Activity))i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);launchContext.startActivity(i);}
+        public boolean authorize(String key){try{if("accessibility".equals(key)){open(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS));return true;}if("notifications".equals(key)){if(Build.VERSION.SDK_INT>=33&&launchContext instanceof Activity)ActivityCompat.requestPermissions((Activity)launchContext,new String[]{Manifest.permission.POST_NOTIFICATIONS},842);else open(new Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE,c.getPackageName()));return true;}if("media".equals(key)){if(Build.VERSION.SDK_INT>=33&&launchContext instanceof Activity)ActivityCompat.requestPermissions((Activity)launchContext,new String[]{Manifest.permission.READ_MEDIA_IMAGES},843);else open(new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,Uri.parse("package:"+c.getPackageName())));return true;}if("battery".equals(key)){open(new Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,Uri.parse("package:"+c.getPackageName())));return true;}return false;}catch(Exception e){return false;}}
+        public void clearConfiguration(){secrets.clear();}
+    }
+    static boolean serverUrlAllowed(String raw,boolean debug){try{URI u=URI.create(raw);String scheme=u.getScheme(),host=u.getHost();if(host==null||u.getUserInfo()!=null)return false;if("https".equalsIgnoreCase(scheme))return true;if(!"http".equalsIgnoreCase(scheme))return false;return debug||privateHttpHost(host);}catch(Exception ignored){return false;}}
+    static String captureBlockReason(boolean accessibility,boolean notifications,boolean media,boolean unlocked){
+        if(!accessibility)return "accessibility_required";
+        if(!notifications)return "notifications_required";
+        if(!media)return "media_permission_required";
+        return unlocked?"":"device_locked";
+    }
+    private static boolean privateHttpHost(String host){String h=host.toLowerCase(Locale.ROOT);return "localhost".equals(h)||"127.0.0.1".equals(h)||"::1".equals(h)||h.startsWith("10.")||h.startsWith("192.168.")||h.matches("172\\.(1[6-9]|2[0-9]|3[01])\\..+");}
+    private final Actions actions;private final Context context;
+    SleepAutomationBridge(Context c){actions=new DefaultActions(c);context=c.getApplicationContext();}
+    SleepAutomationBridge(Actions a){actions=a;context=null;}
+    private String statusWithCapture(){
+        if(context!=null)SleepAutomationAlarmReceiver.reconcile(context,System.currentTimeMillis());
+        String raw=actions.status();if(context==null)return raw;
+        try{JSONObject out=new JSONObject(raw);SleepCaptureProbeStore.Snapshot probe=new SleepCaptureProbeStore(context).load();
+            if(probe!=null){SimpleDateFormat f=new SimpleDateFormat("yyyy-MM-dd HH:mm:ss",Locale.CHINA);f.setTimeZone(SleepAutomationScheduler.BEIJING);
+                JSONObject capture=new JSONObject().put("runId",probe.runId).put("date",probe.date).put("stage",probe.stage).put("reason",probe.reason).put("startedAt",probe.startedAt).put("savedAt",probe.savedAt>0?f.format(new Date(probe.savedAt)):"").put("width",probe.width).put("height",probe.height);
+                if("SAVED".equals(probe.stage)){
+                    SimpleDateFormat day=new SimpleDateFormat("yyyy-MM-dd",Locale.ROOT);day.setTimeZone(SleepAutomationScheduler.BEIJING);
+                    if(!probe.date.equals(day.format(new Date()))) capture.put("stage","STALE").put("reason","previous_day_capture");
+                    else try(android.content.res.AssetFileDescriptor fd=context.getContentResolver().openAssetFileDescriptor(Uri.parse(probe.uri),"r")){
+                        if(fd==null||fd.getLength()==0) capture.put("stage","FAILED").put("reason","media_unreadable");
+                        else try(Cursor cursor=context.getContentResolver().query(Uri.parse(probe.uri),new String[]{MediaStore.Images.Media.DISPLAY_NAME,MediaStore.Images.Media.RELATIVE_PATH},null,null,null)){
+                            if(cursor!=null&&cursor.moveToFirst()) capture.put("fileName",cursor.getString(0)).put("album",cursor.getString(1));
+                        }
+                    }catch(Exception e){capture.put("stage","FAILED").put("reason","media_unreadable");}
+                }
+                out.put("captureTest",capture);}
+            out.put("captureBlockedReason",((DefaultActions)actions).captureBlocked());
+            return out.toString();
+        }catch(Exception e){return raw;}
+    }
+    @JavascriptInterface public String status(){return statusWithCapture();}@JavascriptInterface public boolean enable(){return actions.enable();}@JavascriptInterface public void disable(){actions.disable();}@JavascriptInterface public boolean test(){return actions.test();}@JavascriptInterface public boolean retry(){return actions.retry();}@JavascriptInterface public boolean generateReport(){return actions.generateReport();}@JavascriptInterface public boolean oneClick(){return actions.oneClick();}@JavascriptInterface public boolean previewCapture(){return actions.previewCapture();}@JavascriptInterface public String exportCapture(){return actions.exportCapture();}@JavascriptInterface public void cancel(){actions.cancel();}@JavascriptInterface public boolean configure(String u,String t,String userId){return actions.configure(u,t,userId);}@JavascriptInterface public boolean authorize(String p){return actions.authorize(p);}@JavascriptInterface public void clearConfiguration(){actions.clearConfiguration();}
+}

@@ -38,6 +38,39 @@ def _login_headers(client, username="sleep_user"):
     return {"Authorization": f"Bearer {resp.json()['token']}"}
 
 
+def test_compensation_purchase_api_requires_login_and_reuses_request(client_with_db):
+    client, store = client_with_db
+    assert client.post("/api/rewards/buy/unknown", json={}).status_code == 401
+    headers = _login_headers(client, "compensation-api-isolated")
+    reward = next(item for item in client.get("/api/rewards", headers=headers).json()["rewards"]
+                  if item["redemption_mode"] == "compensation_credit")
+    body = {"amount": 200, "note": "面试当天无法运动", "request_id": "00000000-0000-4000-8000-000000000001"}
+    endpoint = f"/api/rewards/buy/{reward['id']}"
+    assert client.post(endpoint, json=body, headers=headers).status_code == 200
+    assert client.post(endpoint, json=body, headers=headers).status_code == 200
+    assert client.post(endpoint, json={**body, "amount": 201}, headers=headers).status_code == 409
+    with store._connect() as conn:
+        rows = conn.execute("SELECT amount,description FROM server_reward_ledger WHERE source_type='store_compensation_credit'").fetchall()
+        assert len(rows) == 1 and rows[0]["amount"] == 200
+        assert "面试当天无法运动" in rows[0]["description"]
+
+
+def test_morning_motivation_week_is_authenticated_and_account_scoped(client_with_db, monkeypatch):
+    client, _ = client_with_db
+    assert client.get("/api/morning-motivation/week").status_code == 401
+    first = _login_headers(client, "motivation_one")
+    second = _login_headers(client, "motivation_two")
+    monkeypatch.setattr(server_module, "_load_user_provider_config", lambda user_id, key: {"text_model": f"账号{user_id}"})
+    monkeypatch.setattr(server_module, "generate_week", lambda cfg: [f"{cfg['text_model']}今天先完成第{i}件小事，让行动开始。" for i in range(7)])
+    one = client.get("/api/morning-motivation/week", headers=first)
+    two = client.get("/api/morning-motivation/week", headers=second)
+    assert one.status_code == two.status_code == 200
+    assert one.json()["version"] == "morning-motivation-v1"
+    assert len(one.json()["items"]) == 7
+    assert one.json()["items"][0]["date"] == server_module._beijing_today()
+    assert one.json()["items"][0]["message"] != two.json()["items"][0]["message"]
+
+
 def _seed_ai_config(db_path, user_id=1):
     conn = sqlite3.connect(db_path)
     try:
@@ -55,6 +88,15 @@ def _seed_ai_config(db_path, user_id=1):
         conn.commit()
     finally:
         conn.close()
+
+
+def _valid_sleep_data(date_str, score=80):
+    return {
+        "date": date_str, "sleep_score": score, "total_sleep_min": 420,
+        "deep_sleep_min": 80, "light_sleep_min": 260, "rem_sleep_min": 80,
+        "deep_sleep_ratio": 19, "sleep_start": "23:00", "sleep_end": "06:00",
+        "official_advice": "睡眠结构正常，建议保持规律作息。",
+    }
 
 
 def test_stale_sleep_upload_images_are_cleaned_without_removing_archives(tmp_path, monkeypatch):
@@ -93,7 +135,7 @@ def test_sleep_upload_temp_images_can_be_cleaned_immediately(tmp_path, monkeypat
 def test_full_sleep_report_uses_fixed_part2_numbering_and_unified_tone(tmp_path, monkeypatch):
     report_module = _load_full_report_module()
     report_path = tmp_path / "report.md"
-    monkeypatch.setattr(report_module, "generate_report_filename", lambda date_str: str(report_path))
+    monkeypatch.setattr(report_module, "generate_report_filename", lambda date_str, user_id=None: str(report_path))
 
     data = {
         "date": "2026-07-01",
@@ -134,7 +176,7 @@ def test_full_sleep_report_uses_fixed_part2_numbering_and_unified_tone(tmp_path,
 def test_full_sleep_report_uses_fixed_section_template_and_improvement_points(tmp_path, monkeypatch):
     report_module = _load_full_report_module()
     report_path = tmp_path / "report.md"
-    monkeypatch.setattr(report_module, "generate_report_filename", lambda date_str: str(report_path))
+    monkeypatch.setattr(report_module, "generate_report_filename", lambda date_str, user_id=None: str(report_path))
 
     data = {
         "date": "2026-07-01",
@@ -179,7 +221,7 @@ def test_full_sleep_report_uses_fixed_section_template_and_improvement_points(tm
 def test_sleep_trend_merges_current_target_date_and_highlights_changes(tmp_path, monkeypatch):
     report_module = _load_full_report_module()
     report_path = tmp_path / "trend_report.md"
-    monkeypatch.setattr(report_module, "generate_report_filename", lambda date_str: str(report_path))
+    monkeypatch.setattr(report_module, "generate_report_filename", lambda date_str, user_id=None: str(report_path))
 
     history = [
         {"date": "2026-06-25", "sleep_score": 81, "total_sleep_min": 418, "sleep_cycles": 4.66},
@@ -241,7 +283,7 @@ def test_sleep_trend_merges_current_target_date_and_highlights_changes(tmp_path,
 def test_sleep_report_requires_official_huawei_advice(tmp_path, monkeypatch):
     report_module = _load_full_report_module()
     report_path = tmp_path / "missing_advice.md"
-    monkeypatch.setattr(report_module, "generate_report_filename", lambda date_str: str(report_path))
+    monkeypatch.setattr(report_module, "generate_report_filename", lambda date_str, user_id=None: str(report_path))
 
     data = {
         "date": "2026-07-04",
@@ -265,7 +307,7 @@ def test_sleep_report_requires_official_huawei_advice(tmp_path, monkeypatch):
 def test_sleep_report_renders_multiline_official_huawei_advice(tmp_path, monkeypatch):
     report_module = _load_full_report_module()
     report_path = tmp_path / "official_advice.md"
-    monkeypatch.setattr(report_module, "generate_report_filename", lambda date_str: str(report_path))
+    monkeypatch.setattr(report_module, "generate_report_filename", lambda date_str, user_id=None: str(report_path))
 
     data = {
         "date": "2026-07-04",
@@ -284,7 +326,7 @@ def test_sleep_report_renders_multiline_official_huawei_advice(tmp_path, monkeyp
     report_module.generate_full_report_file(data, {"insights": [], "recommendations": []}, "2026-07-04", include_time_analysis=False)
     content = report_path.read_text(encoding="utf-8")
 
-    assert "### 1.4 华为健康建议" in content
+    assert "### 1.5 华为健康建议" in content
     assert "> 睡眠质量待改善。睡眠时长严重不足，为 4 小时 19 分钟。长期睡眠不足可能使免疫力下降，导致容易感冒或肠胃问题。" in content
     assert "> 建议睡前洗热水澡，可促进血液循环、舒缓心情，改善睡眠质量。" in content
 
@@ -485,6 +527,38 @@ def test_auth_second_registration_and_incomplete_seed_recovery(client_with_db):
     assert marker is not None
 
 
+def test_backpack_response_carries_authoritative_identity_and_version(client_with_db):
+    client, _ = client_with_db
+    headers = _login_headers(client, "backpack_owner")
+    response = client.get("/api/rewards/backpack", headers=headers)
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["userId"] == 1 and isinstance(payload["dataVersion"], int)
+    assert payload["generatedAt"].endswith("+08:00") and payload["serverBuild"]
+
+
+def test_backpack_api_composes_one_item_from_cross_version_fragments(client_with_db):
+    client, store = client_with_db
+    headers = _login_headers(client, "fragment_pool_owner")
+    reward_id = store.create_reward(
+        1, "跨版本解锁卡", price=0, redemption_mode="task", fulfillment_mode="fragment",
+        fragment_target_count=2, inventory_mode="monthly", inventory_limit=10,
+    )
+    with store._transact() as conn:
+        for index, version in enumerate((4, 5)):
+            conn.execute("""INSERT INTO server_reward_fragments
+                (id,user_id,reward_id,source_type,source_id,completion_event_key,rule_version,
+                 fragment_measure_mode,progress_units,consumed_units,issued_at,expires_at,status,created_at,updated_at)
+                VALUES(?,1,?,'habit',?,?,?,'count',1,0,'2026-10-05','2026-11-01','active','2026-10-05','2026-10-05')""",
+                (f'api-fragment-{index}', reward_id, f'h{index}', f'event:{index}', version))
+    first = client.get("/api/rewards/backpack", headers=headers)
+    second = client.get("/api/rewards/backpack", headers=headers)
+    assert first.status_code == second.status_code == 200
+    assert not [item for item in first.json()["fragments"] if item["reward_id"] == reward_id]
+    assert len([item for item in first.json()["backpack"] if item["reward_id"] == reward_id]) == 1
+    assert len([item for item in second.json()["backpack"] if item["reward_id"] == reward_id]) == 1
+
+
 def test_auth_and_categories_sessions(client_with_db, monkeypatch):
     client, test_store = client_with_db
 
@@ -610,7 +684,11 @@ def test_auth_and_categories_sessions(client_with_db, monkeypatch):
     # Check backpack
     resp = client.get("/api/rewards/backpack", headers=headers)
     assert resp.status_code == 200
-    backpack = resp.json()["backpack"]
+    backpack_payload = resp.json()
+    assert backpack_payload["userId"] == 1
+    assert isinstance(backpack_payload["dataVersion"], int)
+    assert backpack_payload["generatedAt"].endswith("+08:00") and backpack_payload["serverBuild"]
+    backpack = backpack_payload["backpack"]
     assert len(backpack) == 1
     assert backpack[0]["title"] == "看电影"
 
@@ -778,6 +856,7 @@ def test_goal_reward_backpack_commands_are_versioned_idempotent_and_account_scop
     assert len([item for item in backpack if item["title"] == "任务解锁"]) == 1
     assert client.post(f"/api/rewards/use_item/{unlocked['id']}", headers=headers).status_code == 200
     assert client.post(f"/api/rewards/use_item/{unlocked['id']}", headers=headers).status_code == 200
+
     used = next(item for item in client.get("/api/rewards/backpack", headers=headers).json()["backpack"] if item["id"] == unlocked["id"])
     assert used["is_used"] is True and used["used_at"]
 
@@ -832,6 +911,25 @@ def test_goal_reward_backpack_commands_are_versioned_idempotent_and_account_scop
     }).status_code == 400
 
 
+def test_custom_weekday_goal_api_roundtrips_and_rejects_invalid_days(client_with_db, monkeypatch):
+    client, _store = client_with_db
+    headers = _login_headers(client, "custom_weekday_owner")
+    monkeypatch.setattr("server.store.now_str", lambda: "2026-09-02 09:00:00")
+    payload = {"title": "每周目标", "metric": "duration", "target_value": 270, "period": "custom_weekdays", "weekdays": [2, 3, 4, 5, 6, 7], "reward_coins": 3, "penalty_coins": 2}
+    created = client.post("/api/goals", headers=headers, json=payload)
+    assert created.status_code == 200
+    goal_id = created.json()["goal_id"]
+    goal = next(item for item in client.get("/api/goals", headers=headers).json()["goals"] if item["id"] == goal_id)
+    assert goal["weekdays"] == [2, 3, 4, 5, 6, 7]
+    assert goal["weekdays_effective_from"] == "2026-09-02"
+    updated = client.put(f"/api/goals/{goal_id}", headers=headers, json={**payload, "weekdays": [1, 2, 3]})
+    assert updated.status_code == 200
+    changed = next(item for item in client.get("/api/goals", headers=headers).json()["goals"] if item["id"] == goal_id)
+    assert changed["weekdays"] == [1, 2, 3]
+    assert client.post("/api/goals", headers=headers, json={**payload, "weekdays": []}).status_code == 400
+    assert client.post("/api/goals", headers=headers, json={**payload, "weekdays": [8]}).status_code == 400
+
+
 def test_sleep_serves_mobile_sleep_page_and_root_is_not_sleep_entry(client_with_db):
     client, _ = client_with_db
 
@@ -871,6 +969,8 @@ def test_sleep_serves_mobile_sleep_page_and_root_is_not_sleep_entry(client_with_
 
 def test_exercise_page_and_server_checkin_flow(client_with_db, monkeypatch):
     client, store = client_with_db
+    monkeypatch.setattr(server_module.SampleDataInitializationService, "_ensure_v6", lambda *args: None)
+    monkeypatch.setattr(server_module, "_ensure_exercise_v6_for_user", lambda _user: None)
     fixed_now = datetime(2026, 7, 10, 8, 0, 0, tzinfo=server_module.timezone(server_module.timedelta(hours=8)))
     monkeypatch.setattr(server_module, "_beijing_now", lambda: fixed_now)
     headers = _login_headers(client, "exercise_page_user")
@@ -1181,14 +1281,14 @@ def test_body_metric_deadline_lock_allows_data_backfill_without_reopening_checki
     assert backfill.json()["daily_log"]["weight"] == 80 and backfill.json()["daily_log"]["body_fat_rate"] == 20
     monkeypatch.setattr(sync_hub_module, "_cst_today", lambda: date)
     ok, rejected = server_module.sync_hub.upsert("exercise_daily_logs", {"id": "offline-daily", "date": date, "plan_version": "deadline-v1", "weight": 81, "body_fat_rate": 21, "completed_items": 99, "total_items": 99, "score_snapshot": "{\"total\":100}"}, 1)
-    assert ok and not rejected
+    assert not ok and rejected[0]["reason"] == "body_metrics_server_wins"
     with store._connect() as conn:
         daily = conn.execute("SELECT weight,body_fat_rate,completed_items,total_items,score_snapshot FROM server_exercise_daily_logs WHERE user_id=1 AND date=? AND plan_version='deadline-v1'", (date,)).fetchone()
         penalty_count = conn.execute("SELECT COUNT(*) FROM server_reward_ledger WHERE user_id=1 AND source_type='body_metric_deadline_penalty'", ()).fetchone()[0]
-    assert tuple(daily) == (81, 21, 0, 0, None) and penalty_count == 1
+    assert tuple(daily) == (80, 20, 0, 0, None) and penalty_count == 1
     refreshed = client.get(f"/api/exercise/state?date={date}&plan_version=deadline-v1", headers=headers).json()
     refreshed_lock = refreshed["checkins"][0]
-    assert refreshed["weight"] == 81 and refreshed["body_fat_rate"] == 21 and refreshed["body_metric_locked"] is True
+    assert refreshed["weight"] == 80 and refreshed["body_fat_rate"] == 20 and refreshed["body_metric_locked"] is True
     assert refreshed_lock["status"] == -1 and refreshed_lock["deadline_penalty_source_id"] == f"body-metric-deadline:{date}"
     allowed = client.post("/api/exercise/checkin", headers=headers, json={"date": date, "plan_version": "deadline-v1", "item_key": f"sc-{date}-1", "item_name": "普通项目", "status": 1})
     assert allowed.status_code == 200
@@ -1196,8 +1296,166 @@ def test_body_metric_deadline_lock_allows_data_backfill_without_reopening_checki
     assert not ok and rejected[0]["reason"] == "body_metrics_deadline_locked"
 
 
-def test_exercise_checkin_persists_completed_time(client_with_db):
+def test_v5_diet_outbox_accepts_current_actions_and_skips_historical_pending(client_with_db, monkeypatch):
     client, store = client_with_db
+    _login_headers(client, "v5_diet_outbox_user")
+    now = datetime(2026, 10, 28, 10, 0, tzinfo=server_module.timezone(server_module.timedelta(hours=8)))
+    monkeypatch.setattr(server_module, "_beijing_now", lambda: now)
+    monkeypatch.setattr(sync_hub_module, "_cst_today", lambda: "2026-10-28")
+    with store._transact() as conn:
+        conn.execute("INSERT OR REPLACE INTO server_exercise_policy_metadata VALUES('v5_quality_restored','2026-10-28','2026-10-27')")
+        conn.execute("INSERT OR REPLACE INTO server_exercise_policy_metadata VALUES('v5_meal_timing','2026-10-26','2026-10-25')")
+        server_module._exercise_authoritative("v5").ensure_diet_rows(conn, 1, "2026-10-28", now)
+    operations = [
+        {"table": "exercise_diet_checkins", "change_id": f"v5-{key}", "operation": "upsert",
+         "base_version": "0",
+         "payload": {"id": f"local-{key}", "date": "2026-10-28", "plan_version": "v5",
+                     "rule_key": key, "status": status, "occurred_at": now.isoformat()}}
+        for key, status in (("no_snacks", "completed"), ("no_refined_staples", "failed"))
+    ]
+    operations.append({"table": "exercise_diet_checkins", "change_id": "v5-old-pending", "operation": "upsert",
+                       "payload": {"id": "old-local", "date": "2026-10-25", "plan_version": "v5",
+                                   "rule_key": "controlled_staple_and_no_sugary_drink", "status": "pending"}})
+    result = asyncio.run(server_module.sync_hub.handle_push(operations, user_id=1))
+    assert [row["status"] for row in result["operation_results"]] == ["accepted", "accepted", "skipped"]
+    repeated = asyncio.run(server_module.sync_hub.handle_push(operations[:2], user_id=1))
+    assert [row["status"] for row in repeated["operation_results"]] == ["duplicate", "duplicate"]
+    late = asyncio.run(server_module.sync_hub.handle_push([{**operations[0], "change_id": "v5-late",
+        "payload": {**operations[0]["payload"], "date": "2026-10-25", "id": "old-completed"}}], user_id=1))
+    assert late["operation_results"][0]["status"] == "rejected"
+    with store._connect() as conn:
+        assert [tuple(row) for row in conn.execute("SELECT rule_key,status FROM server_exercise_diet_checkins WHERE user_id=1 AND date='2026-10-28' AND rule_key IN ('no_snacks','no_refined_staples') ORDER BY rule_key")] == [("no_refined_staples", "failed"), ("no_snacks", "completed")]
+
+
+def test_v5_late_offline_meal_sync_repairs_auto_penalty(client_with_db, monkeypatch):
+    client, store = client_with_db
+    _login_headers(client, "late_meal_sync_user")
+    date = "2026-10-28"
+    now = datetime(2026, 10, 28, 14, tzinfo=server_module.timezone(server_module.timedelta(hours=8)))
+    monkeypatch.setattr(server_module, "_beijing_now", lambda: now)
+    monkeypatch.setattr(sync_hub_module, "_cst_today", lambda: date)
+    with store._transact() as conn:
+        conn.execute("INSERT OR REPLACE INTO server_exercise_policy_metadata VALUES('v5_meal_timing','2026-10-26','2026-10-25')")
+        server_module._exercise_authoritative("v5").close_diet(conn, 1, date,
+            datetime(2026, 10, 28, 13, 32, tzinfo=server_module.timezone(server_module.timedelta(hours=8))))
+    def push(change_id, occurred, recorded):
+        return asyncio.run(server_module.sync_hub.handle_push([{"table": "exercise_diet_checkins", "change_id": change_id,
+            "base_version": "0", "operation": "upsert", "payload": {"id": "diet:" + date + ":v5:lunch_on_time",
+            "date": date, "plan_version": "v5", "rule_key": "lunch_on_time", "status": "completed",
+            "occurred_at": occurred, "updated_at": recorded}}], user_id=1))["operation_results"][0]
+    invalid = push("late-invalid", f"{date} 13:31:10", f"{date} 13:31:10")
+    assert invalid["status"] == "rejected" and invalid["reason"] == "diet_deadline_passed"
+    assert push("late-valid", f"{date} 13:30:00", f"{date} 13:30:00")["status"] == "accepted"
+    with store._connect() as conn:
+        assert conn.execute("SELECT status FROM server_exercise_diet_checkins WHERE user_id=1 AND date=? AND rule_key='lunch_on_time'", (date,)).fetchone()[0] == "completed"
+        assert conn.execute("SELECT 1 FROM server_reward_ledger WHERE user_id=1 AND id=?", (f"exercise-diet-penalty:1:{date}:v5:lunch_on_time",)).fetchone() is None
+
+
+def test_habit_journal_prompt_survives_legacy_client_push(client_with_db):
+    client, store = client_with_db
+    _login_headers(client, "journal_preference_user")
+
+    def push(change_id, payload):
+        return asyncio.run(server_module.sync_hub.handle_push([{
+            "table": "habits", "change_id": change_id, "operation": "upsert", "payload": payload,
+        }], user_id=1, sync_scope="checklist"))["operation_results"][0]
+
+    base = {"id": "local_journal", "name": "本地习惯", "source": "local", "is_active": 0,
+            "created_at": "2026-10-31 10:00:00", "updated_at": "2026-10-31 10:00:00"}
+    assert push("journal-new", {**base, "journal_prompt_enabled": 0})["status"] == "accepted"
+    with store._connect() as conn:
+        assert conn.execute("SELECT journal_prompt_enabled FROM server_habits WHERE user_id=1 AND id='local_journal'").fetchone()[0] == 0
+    assert push("journal-old-client", {**base, "updated_at": "2026-10-31 10:01:00"})["status"] == "accepted"
+    with store._connect() as conn:
+        row = conn.execute("SELECT journal_prompt_enabled FROM server_habits WHERE user_id=1 AND id='local_journal'").fetchone()
+    assert row[0] == 0
+
+
+def test_provider_habit_accepts_only_journal_prompt(client_with_db):
+    client, store = client_with_db
+    _login_headers(client, "provider_journal_user")
+    with store._connect() as conn:
+        conn.execute("INSERT INTO server_habits (id,user_id,name,source,created_at,updated_at) VALUES ('provider-1',1,'服务端名称','ticktick','2026-10-31','2026-10-31')")
+        conn.commit()
+    result = asyncio.run(server_module.sync_hub.handle_push([{
+        "table": "habits", "change_id": "provider-journal", "operation": "upsert",
+        "payload": {"id": "provider-1", "source": "ticktick", "journal_prompt_enabled": 0},
+    }], user_id=1, sync_scope="checklist"))["operation_results"][0]
+    assert result["status"] == "accepted"
+    with store._connect() as conn:
+        row = conn.execute("SELECT name,journal_prompt_enabled FROM server_habits WHERE user_id=1 AND id='provider-1'").fetchone()
+    assert tuple(row) == ("服务端名称", 0)
+
+
+def test_body_metrics_recovery_and_server_wins(client_with_db, monkeypatch):
+    client, store = client_with_db
+    _login_headers(client, "body_recovery_user")
+    monkeypatch.setattr(sync_hub_module, "_cst_today", lambda: "2026-10-28")
+    def push(change_id, date, weight, fat, baseline=None, operation="upsert"):
+        return asyncio.run(server_module.sync_hub.handle_push([{
+            "table": "exercise_daily_logs", "change_id": change_id, "operation": operation,
+            "base_version": baseline, "payload": {"id": "local-" + change_id, "date": date,
+                "plan_version": "v5", "exercise_type": "daily", "weight": weight, "body_fat_rate": fat}
+        }], user_id=1))["operation_results"][0]
+    first = push("first", "2026-10-27", 99, 30.5, "0")
+    assert first["status"] == "accepted"
+    with store._connect() as conn:
+        row = conn.execute("SELECT weight,body_fat_rate,score_snapshot FROM server_exercise_daily_logs WHERE user_id=1 AND date='2026-10-27' AND plan_version='v5'").fetchone()
+    assert tuple(row) == (99, 30.5, None)
+    stale = push("stale", "2026-10-27", 98, 29, "0")
+    assert stale["status"] == "server_wins" and stale["canonical_record"]["weight"] == 99
+    old_client = push("old-client", "2026-10-27", 97, 28, "2026-10-27 08:00:00")
+    assert old_client["status"] == "server_wins" and old_client["canonical_record"]["body_fat_rate"] == 30.5
+    probe = push("probe", "2026-10-27", 98, 29, None, "probe")
+    assert probe["status"] == "server_wins" and probe["canonical_record"]["weight"] == 99
+    other_account = asyncio.run(server_module.sync_hub.handle_push([{
+        "table": "exercise_daily_logs", "change_id": "cross-account-probe", "operation": "probe",
+        "payload": {"id": "local-cross", "date": "2026-10-27", "plan_version": "v5", "exercise_type": "daily"}
+    }], user_id=2))["operation_results"][0]
+    assert other_account["status"] == "authority_missing" and "canonical_record" not in other_account
+    absent = push("absent", "2026-10-26", 98, 29, None, "probe")
+    assert absent["status"] == "authority_missing"
+    assert push("empty", "2026-10-26", None, None, "0")["status"] == "accepted"
+    assert push("fill", "2026-10-26", 90, 28, "0")["status"] == "accepted"
+    mixed = asyncio.run(server_module.sync_hub.handle_push([
+        {"table": "exercise_daily_logs", "change_id": "mixed-conflict", "operation": "upsert", "base_version": "0",
+         "payload": {"id": "mixed-conflict", "date": "2026-10-27", "plan_version": "v5", "exercise_type": "daily", "weight": 98}},
+        {"table": "exercise_daily_logs", "change_id": "mixed-fresh", "operation": "upsert", "base_version": "0",
+         "payload": {"id": "mixed-fresh", "date": "2026-10-28", "plan_version": "v5", "exercise_type": "daily", "weight": 91}},
+    ], user_id=1))
+    assert [item["status"] for item in mixed["operation_results"]] == ["server_wins", "accepted"]
+    outside = push("outside", "2026-10-20", 99, 30.5)
+    assert outside["status"] == "rejected" and outside["reason"] == "body_metrics_recovery_window_expired"
+
+
+def test_isolated_phone_to_pc_body_metric_http_sync(client_with_db, monkeypatch):
+    client, store = client_with_db
+    headers = _login_headers(client, "isolated_body_http_user")
+    monkeypatch.setattr(sync_hub_module, "_cst_today", lambda: "2026-10-28")
+    phone_change = {"table": "exercise_daily_logs", "change_id": "phone-99-30.5", "operation": "upsert",
+        "base_version": "0", "payload": {"id": "phone-local-1", "date": "2026-10-28",
+            "plan_version": "v5", "exercise_type": "daily", "weight": 99, "body_fat_rate": 30.5}}
+    assert phone_change["payload"]["weight"] == 99  # phone-local outbox, not yet server-confirmed
+    confirmed = client.post("/api/sync/push", headers=headers, json={"operations": [phone_change], "sync_scope": "core"})
+    assert confirmed.status_code == 200
+    assert confirmed.json()["operation_results"][0]["status"] == "accepted"
+    with store._connect() as conn:
+        server_value = conn.execute("SELECT weight,body_fat_rate FROM server_exercise_daily_logs WHERE user_id=1 AND date='2026-10-28' AND plan_version='v5'").fetchone()
+    assert tuple(server_value) == (99, 30.5)
+    pc_pull = client.get("/api/sync/pull?since_version=0&sync_scope=core", headers=headers)
+    assert pc_pull.status_code == 200
+    pc_rows = pc_pull.json()["tables"]["exercise_daily_logs"]
+    assert any(row["weight"] == 99 and row["body_fat_rate"] == 30.5 for row in pc_rows)
+    conflict = client.post("/api/sync/push", headers=headers, json={"operations": [{**phone_change,
+        "change_id": "pc-stale-body", "payload": {**phone_change["payload"], "id": "pc-local-1", "weight": 98}}]})
+    assert conflict.json()["operation_results"][0]["status"] == "server_wins"
+    assert conflict.json()["operation_results"][0]["canonical_record"]["weight"] == 99
+
+
+def test_exercise_checkin_persists_completed_time(client_with_db, monkeypatch):
+    client, store = client_with_db
+    monkeypatch.setattr(server_module.SampleDataInitializationService, "_ensure_v6", lambda *args: None)
+    monkeypatch.setattr(server_module, "_ensure_exercise_v6_for_user", lambda _user: None)
     headers = _login_headers(client, "exercise_checkin_time_user")
     today = server_module._beijing_today()
     resp = client.post(
@@ -1226,6 +1484,34 @@ def test_exercise_checkin_persists_completed_time(client_with_db):
             "SELECT COUNT(*) FROM server_reward_ledger WHERE user_id=? AND source_type='exercise_checkin'", (1,)
         ).fetchone()[0]
     assert reward_count == 0
+
+
+def test_login_exposes_v6_and_six_diet_habits_without_opening_exercise(client_with_db):
+    client, store = client_with_db
+    headers = _login_headers(client, "exercise_v6_visible_user")
+    with store._connect() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM server_habits WHERE user_id=1 AND source='system' AND id LIKE 'diet-v5:%'").fetchone()[0] == 6
+        assert conn.execute("SELECT COUNT(*) FROM server_habit_windows WHERE user_id=1 AND habit_id LIKE 'diet-v5:%'").fetchone()[0] == 6
+        assert conn.execute("SELECT COUNT(*) FROM server_exercise_plan_versions WHERE user_id=1 AND version='v6'").fetchone()[0] == 1
+    today = server_module._beijing_today()
+    state = client.get(f"/api/exercise/state?date={today}", headers=headers)
+    assert state.status_code == 200
+    assert state.json()["plan_version"] == "v6"
+    assert state.json()["plan_definition"]["diet"] == []
+    assert len([row for row in client.get("/api/habits", headers=headers).json()["habits"] if str(row["id"]).startswith("diet-v5:")]) == 6
+
+
+def test_widget_journal_prompt_preference_updates_authoritative_habit(client_with_db):
+    client, store = client_with_db
+    headers = _login_headers(client, "widget_prompt_user")
+    habit_id = client.post("/api/habits", headers=headers, json={"name": "写日记", "icon": "📝"}).json()["habit_id"]
+    endpoint = f"/api/habits/{habit_id}/journal-prompt"
+    assert client.put(endpoint, headers=headers, json={"enabled": False}).json()["enabled"] is False
+    assert client.put(endpoint, headers=headers, json={"enabled": False}).status_code == 200
+    with store._connect() as conn:
+        assert conn.execute("SELECT journal_prompt_enabled FROM server_habits WHERE user_id=1 AND id=?", (habit_id,)).fetchone()[0] == 0
+    assert client.put(endpoint, headers=headers, json={"enabled": "false"}).status_code == 422
+    assert client.put("/api/habits/diet-v5:no_snacks/journal-prompt", headers=headers, json={"enabled": True}).status_code == 404
 
 
 def test_server_sample_data_initialization_is_idempotent_after_login(client_with_db):
@@ -2127,7 +2413,7 @@ def test_run_analysis_reuses_existing_done_job_after_sleep_date(monkeypatch, tmp
     class FakeResult:
         status = "done"
         date = "2026-06-25"
-        sleep_data = {"date": "2026-06-25", "sleep_score": 77}
+        sleep_data = _valid_sleep_data("2026-06-25", 77)
         analysis_report = "new report should not be used"
         report_path = None
         error = None
@@ -2141,7 +2427,7 @@ def test_run_analysis_reuses_existing_done_job_after_sleep_date(monkeypatch, tmp
 
         def analyze(self):
             FakeAnalyzer.calls += 1
-            cached = self.pre_report_callback("2026-06-25", {"date": "2026-06-25", "sleep_score": 77})
+            cached = self.pre_report_callback("2026-06-25", _valid_sleep_data("2026-06-25", 77))
             if cached:
                 return type("CachedResult", (), {
                     "status": "done",
@@ -2161,7 +2447,7 @@ def test_run_analysis_reuses_existing_done_job_after_sleep_date(monkeypatch, tmp
     try:
         monkeypatch.setattr(server_module, "SleepAnalyzer", FakeAnalyzer)
         store.create_job("existing-date-job", "old.jpg", user_id=1, date="2026-06-25")
-        store.mark_done("existing-date-job", "2026-06-25", {"date": "2026-06-25", "sleep_score": 81}, "old report")
+        store.mark_done("existing-date-job", "2026-06-25", _valid_sleep_data("2026-06-25", 81), "old report")
         store.create_job("current-upload-job", "new.jpg", user_id=1, image_hash="different-hash")
 
         server_module._run_analysis("current-upload-job", "new.jpg", user_id=1, full=False, force_refresh=False)
@@ -2196,7 +2482,7 @@ def test_run_analysis_archives_by_recognized_sleep_date(monkeypatch, tmp_db_path
     class FakeResult:
         status = "done"
         date = "2026-05-12"
-        sleep_data = {"date": "2026-05-12", "sleep_score": 71}
+        sleep_data = _valid_sleep_data("2026-05-12", 71)
         analysis_report = ""
         report_path = None
         error = None
@@ -2692,7 +2978,7 @@ def test_db_wrapper_huawei_sleep_save_writes_version_log(client_with_db):
     wrapper = ServerDBWrapper()
     wrapper.log_path = store.db_path
 
-    assert wrapper.save_huawei_sleep_data("2026-07-06", {"sleep_score": 90}) is True
+    assert wrapper.save_huawei_sleep_data(1, "2026-07-06", {"sleep_score": 90}) is True
 
     conn = store._connect()
     try:

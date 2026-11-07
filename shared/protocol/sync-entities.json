@@ -48,6 +48,9 @@
       "direction": "bidirectional",
       "outbox": true,
       "deletePolicy": "no_delete",
+      "serverDeletePolicy": "provider_confirmed_hard_delete_with_durable_tombstone",
+      "clientDeletePolicy": "local_logical_archive_only",
+      "lifecycleVersionField": "lifecycle_version",
       "serverFields": ["user_id", "server_version"]
     },
     {
@@ -63,6 +66,30 @@
       "serverFields": ["user_id", "server_version"]
     },
     {
+      "name": "habit_day_ignores",
+      "clientTable": "habit_day_ignores",
+      "serverTable": "server_habit_day_ignores",
+      "primaryKey": "id",
+      "naturalKeys": ["habit_id", "date"],
+      "ownership": "server_owned",
+      "direction": "pull_only",
+      "outbox": false,
+      "deletePolicy": "no_delete",
+      "serverFields": ["user_id", "server_version"]
+    },
+    {
+      "name": "habit_windows",
+      "clientTable": "habit_windows",
+      "serverTable": "server_habit_windows",
+      "primaryKey": "id",
+      "naturalKeys": ["habit_id", "effective_from"],
+      "ownership": "server_owned",
+      "direction": "pull_only",
+      "outbox": false,
+      "deletePolicy": "no_delete",
+      "serverFields": ["user_id", "server_version"]
+    },
+    {
       "name": "goals",
       "clientTable": "goals",
       "serverTable": "server_goals",
@@ -72,7 +99,7 @@
       "direction": "pull_only",
       "outbox": false,
       "deletePolicy": "no_delete",
-      "projectionFields": ["morning_diary_reward_status", "morning_diary_reward_amount", "morning_diary_reward_reason", "morning_diary_reward_rule_version", "evening_diary_reward_status", "evening_diary_reward_amount", "evening_diary_reward_reason", "evening_diary_reward_rule_version"],
+      "projectionFields": ["morning_diary_reward_status", "morning_diary_reward_amount", "morning_diary_reward_reason", "morning_diary_reward_rule_version", "evening_diary_reward_status", "evening_diary_reward_amount", "evening_diary_reward_reason", "evening_diary_reward_rule_version", "weekdays", "weekdays_effective_from"],
       "serverFields": ["user_id", "server_version"]
     },
     {

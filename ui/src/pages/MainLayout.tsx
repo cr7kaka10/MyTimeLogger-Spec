@@ -17,10 +17,11 @@ interface MainLayoutProps {
   theme: 'light' | 'dark'
   onToggleTheme: () => void
   onOpenLedger: () => void
+  onOpenMealWheel: () => void
   onOpenManagementPlanHistory?: () => void
 }
 
-export const MainLayout = memo(({ activeTab, onTabChange, children, balance, theme, onToggleTheme, onOpenLedger, onOpenManagementPlanHistory }: MainLayoutProps) => {
+export const MainLayout = memo(({ activeTab, onTabChange, children, balance, theme, onToggleTheme, onOpenLedger, onOpenMealWheel, onOpenManagementPlanHistory }: MainLayoutProps) => {
   const desktopCapabilities = getElectronCapabilities()
   const noDrag = { WebkitAppRegion: 'no-drag' } as any
   const handleMinimize = () => {
@@ -66,7 +67,7 @@ export const MainLayout = memo(({ activeTab, onTabChange, children, balance, the
           <div className="flex items-center gap-1" style={noDrag}>
             {activeTab !== 'settings' && (
               <>
-                <PageQuickActions compact activeTab={activeTab} balance={balance} theme={theme} onToggleTheme={onToggleTheme} onNavigate={onTabChange} onOpenLedger={onOpenLedger} onOpenManagementPlanHistory={onOpenManagementPlanHistory} />
+                <PageQuickActions compact activeTab={activeTab} balance={balance} theme={theme} onToggleTheme={onToggleTheme} onNavigate={onTabChange} onOpenLedger={onOpenLedger} onOpenMealWheel={onOpenMealWheel} onOpenManagementPlanHistory={onOpenManagementPlanHistory} />
                 <span className="mx-1 h-4 w-px bg-gray-200 dark:bg-gray-700" aria-hidden="true" />
               </>
             )}
@@ -95,12 +96,12 @@ export const MainLayout = memo(({ activeTab, onTabChange, children, balance, the
       )}
 
       {!isElectron() && activeTab !== 'settings' && (
-        <div className="z-50 flex shrink-0 justify-end px-5" style={{ paddingTop: mobileQuickActionsTopPadding }}>
-          <PageQuickActions compact activeTab={activeTab} balance={balance} theme={theme} onToggleTheme={onToggleTheme} onNavigate={onTabChange} onOpenLedger={onOpenLedger} onOpenManagementPlanHistory={onOpenManagementPlanHistory} />
+        <div className="z-50 flex shrink-0 justify-end overflow-x-auto px-2" style={{ paddingTop: mobileQuickActionsTopPadding }}>
+          <PageQuickActions compact activeTab={activeTab} balance={balance} theme={theme} onToggleTheme={onToggleTheme} onNavigate={onTabChange} onOpenLedger={onOpenLedger} onOpenMealWheel={onOpenMealWheel} onOpenManagementPlanHistory={onOpenManagementPlanHistory} />
         </div>
       )}
 
-      <main className="min-h-0 min-w-0 flex-1 overflow-y-auto pb-[calc(4rem+env(safe-area-inset-bottom,0px))]">
+      <main className={`min-h-0 min-w-0 flex-1 ${activeTab === 'timer' ? 'overflow-hidden' : 'overflow-y-auto'}`}>
         {children}
       </main>
       <TabBar activeTab={activeTab} onChange={onTabChange} />

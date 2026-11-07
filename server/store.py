@@ -3,6 +3,7 @@
 
 import json
 import logging
+import math
 import os
 import sqlite3
 import uuid
@@ -13,6 +14,7 @@ logger = logging.getLogger(__name__)
 
 
 try:
+    from .habit_write_policy import local_habit_write
     from .atm_versioning import save_versioned_atm_data
     from .security_utils import hash_bearer_token
     from .sync_sql_allowlist import SYNC_TABLES, SERVER_TABLES, client_table_for_server, ensure_server_table, server_table_for
@@ -22,9 +24,12 @@ try:
     from .domain.reward_config_service import RewardConfigService
     from .domain.reward_settlement_service import RewardSettlementService
     from .domain.reward_wallet_service import RewardWalletService
+    from .domain.reward_period import period_end
+    from .domain.reward_fragment_provenance import RewardFragmentProvenance
     from .domain.sleep_reward_service import SleepRewardService
     from .statistics_start_date import get_user_statistics_start_date, is_statistics_date_eligible
 except (ImportError, ValueError):
+    from habit_write_policy import local_habit_write
     from atm_versioning import save_versioned_atm_data
     from security_utils import hash_bearer_token
     from sync_sql_allowlist import SYNC_TABLES, SERVER_TABLES, client_table_for_server, ensure_server_table, server_table_for
@@ -34,12 +39,22 @@ except (ImportError, ValueError):
     from domain.reward_config_service import RewardConfigService
     from domain.reward_settlement_service import RewardSettlementService
     from domain.reward_wallet_service import RewardWalletService
+    from domain.reward_period import period_end
+    from domain.reward_fragment_provenance import RewardFragmentProvenance
     from domain.sleep_reward_service import SleepRewardService
     from statistics_start_date import get_user_statistics_start_date, is_statistics_date_eligible
 
 
 DONE_STATUSES = {"done"}
 UNSET = object()
+COMPENSATION_DESCRIPTION = (
+    "补偿金币仅限以下四种情况，其他情况禁用：\n"
+    "1. 找工作直接相关事项造成的当天金币损失。\n"
+    "2. 外部不可抗力造成的当天金币损失。\n"
+    "3. 初始化后一次性补偿 200 启动金币。\n"
+    "4. 副业实际赚到钱后，按实际收入金额等额补偿金币。\n"
+    "5. 例如：当天参加面试，导致运动健身或睡眠指标未达标而扣金币，可补偿相应损失。"
+)
 
 
 import hashlib
@@ -92,6 +107,8 @@ class ServerSleepStore:
     def __init__(self, db_path=None):
         self.db_path = resolve_server_db_path(db_path)
         self._initialize()
+        self._migrate_reward_fragment_measure_modes()
+        self._migrate_reward_fragment_provenance()
         # 调用链路：server.py 路由/SyncHub -> ServerSleepStore 旧门面 -> domain service -> SQLite。
         # 这些 service 先承接金币、钱包、习惯取消等高风险业务，剩余 CRUD 后续再逐步迁移。
         self.reward_wallet_service = RewardWalletService(
@@ -100,6 +117,7 @@ class ServerSleepStore:
         self.reward_settlement_service = RewardSettlementService(
             self._transact, now_str, self.reward_wallet_service, self._record_server_change
         )
+        self._migrate_reward_period_expiry()
         self.reward_rule_service = RewardRuleService(now_str, self.get_item_reward)
         self.sleep_reward_service = SleepRewardService(
             self._transact, now_str, self.reward_wallet_service, self._record_server_change,
@@ -110,6 +128,72 @@ class ServerSleepStore:
             self._transact, now_str, self.reward_wallet_service, self.reward_settlement_service,
             self.reward_rule_service, self._record_server_change,
         )
+
+    def _migrate_reward_fragment_measure_modes(self):
+        """把 active 碎片商品配置收敛为 count；历史碎片事实留给重放审计。"""
+        with self._connect() as conn:
+            user_ids = [row[0] for row in conn.execute("SELECT id FROM users")]
+        for user_id in user_ids:
+            with self._transact() as conn:
+                rows = conn.execute(
+                    """SELECT r.id,r.fragment_measure_mode FROM server_rewards r
+                       WHERE r.user_id=? AND r.fulfillment_mode='fragment'""", (user_id,),
+                ).fetchall()
+                for row in rows:
+                    bindings = conn.execute(
+                        """SELECT id FROM server_reward_source_bindings
+                           WHERE user_id=? AND reward_id=?
+                             AND (drop_mode<>'fixed' OR drop_min_units IS NOT NULL OR drop_max_units IS NOT NULL)""",
+                        (user_id, row["id"]),
+                    ).fetchall()
+                    if row["fragment_measure_mode"] == "count" and not bindings:
+                        continue
+                    stamp = now_str()
+                    conn.execute(
+                        """UPDATE server_rewards SET fragment_measure_mode='count',
+                           fragment_rule_version=fragment_rule_version+1,updated_at=? WHERE id=? AND user_id=?""",
+                        (stamp, row["id"], user_id),
+                    )
+                    conn.execute("""UPDATE server_reward_source_bindings
+                        SET drop_mode='fixed',drop_min_units=NULL,drop_max_units=NULL,updated_at=?
+                        WHERE user_id=? AND reward_id=?""", (stamp, user_id, row["id"]))
+
+    def _migrate_reward_fragment_provenance(self):
+        with self._connect() as conn:
+            user_ids = [row[0] for row in conn.execute("SELECT id FROM users")]
+        for user_id in user_ids:
+            with self._transact() as conn:
+                RewardFragmentProvenance.migrate_user(conn, user_id, now_str())
+
+    def _migrate_reward_period_expiry(self):
+        """为历史周期碎片和完整商品补齐不可变自然周期边界。"""
+        with self._connect() as conn:
+            user_ids = [row[0] for row in conn.execute("SELECT id FROM users")]
+        for user_id in user_ids:
+            with self._transact() as conn:
+                stamp = now_str()
+                fragments = conn.execute(
+                    """SELECT f.id,f.issued_at,f.expires_at,f.status,r.inventory_mode FROM server_reward_fragments f
+                       JOIN server_rewards r ON r.id=f.reward_id AND r.user_id=f.user_id
+                       WHERE f.user_id=? AND r.inventory_mode IN ('daily','weekly','monthly')""", (user_id,),
+                ).fetchall()
+                for row in fragments:
+                    expires = period_end(row["issued_at"], row["inventory_mode"])
+                    status = "expired" if row["status"] == "active" and expires <= stamp else row["status"]
+                    if row["expires_at"] != expires or row["status"] != status:
+                        conn.execute("UPDATE server_reward_fragments SET expires_at=?,status=?,updated_at=? WHERE id=?", (expires, status, stamp, row["id"]))
+                ledgers = conn.execute(
+                    """SELECT l.id,l.target_date,l.expires_at,r.inventory_mode FROM server_reward_ledger l
+                       JOIN server_rewards r ON r.user_id=l.user_id AND (l.source_id=CAST(r.id AS TEXT)
+                         OR l.source_id LIKE CAST(r.id AS TEXT)||':%' OR l.source_id LIKE 'unlock:'||CAST(r.id AS TEXT)||':%')
+                       WHERE l.user_id=? AND l.source_type='reward_buy'
+                         AND r.inventory_mode IN ('daily','weekly','monthly')""", (user_id,),
+                ).fetchall()
+                for row in ledgers:
+                    if not row["expires_at"]:
+                        expires = period_end(row["target_date"], row["inventory_mode"])
+                        conn.execute("UPDATE server_reward_ledger SET expires_at=?,updated_at=? WHERE id=?", (expires, stamp, row["id"]))
+                self.reward_wallet_service.expire_backpack_items_in_txn(conn, user_id)
 
     def _connect(self):
         conn = sqlite3.connect(self.db_path, timeout=30.0)
@@ -514,6 +598,19 @@ class ServerSleepStore:
         finally:
             conn.close()
 
+    def get_failed_job_by_date(self, date, user_id):
+        """供同日重新分析复用原图；绝不跨用户或把失败任务当完成报告。"""
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                "SELECT * FROM server_sleep_jobs WHERE date=? AND user_id=? "
+                "AND status='error' AND image_path IS NOT NULL ORDER BY updated_at DESC LIMIT 1",
+                (date, user_id),
+            ).fetchone()
+            return self._row_to_dict(row) if row else None
+        finally:
+            conn.close()
+
     def get_done_job_by_image_hash(self, image_hash, user_id):
         """
         按同用户同图片 hash 查询最近完成 job。只返回 done，避免复用失败或运行中结果。
@@ -860,7 +957,7 @@ class ServerSleepStore:
             # 获取该用户当前最大的 sort_order
             row = conn.execute("SELECT MAX(sort_order) FROM server_categories WHERE user_id = ?", (user_id,)).fetchone()
             next_order = (row[0] or 0) + 1
-            
+
             cursor = conn.execute(
                 "INSERT INTO server_categories (user_id, name, group_name, icon, color, sort_order) VALUES (?, ?, ?, ?, ?, ?)",
                 (user_id, name, group_name, icon, color, next_order)
@@ -1061,12 +1158,15 @@ class ServerSleepStore:
     def create_habit(self, user_id, name, icon=None, difficulty='medium', repeat_rule=None):
         conn = self._connect()
         try:
-            habit_id = uuid.uuid4().hex
+            habit_id = 'local_' + uuid.uuid4().hex
+            local_habit_write(conn, user_id, {'id': habit_id, 'name': name, 'difficulty': difficulty}, now_str())
             cursor = conn.execute(
-                "INSERT INTO server_habits (id, user_id, name, icon, difficulty, repeat_rule, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (habit_id, user_id, name, icon, difficulty, repeat_rule, now_str(), now_str())
+                "INSERT INTO server_habits (id, user_id, name, icon, difficulty, repeat_rule, source, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 'local', ?, ?)",
+                (habit_id, user_id, name.strip(), icon, difficulty, repeat_rule, now_str(), now_str())
             )
             RewardConfigService().ensure_item(conn, user_id, "habit", habit_id, difficulty=difficulty)
+            row = dict(conn.execute("SELECT * FROM server_habits WHERE user_id=? AND id=?", (user_id, habit_id)).fetchone())
+            self._record_server_change(conn, user_id, 'server_habits', habit_id, 'upsert', row)
             conn.commit()
             return habit_id
         except sqlite3.IntegrityError:
@@ -1077,9 +1177,17 @@ class ServerSleepStore:
     def update_habit(self, user_id, habit_id, name=None, icon=None, difficulty=None, is_active=None, repeat_rule=None):
         conn = self._connect()
         try:
+            conn.execute('BEGIN IMMEDIATE')
             row = conn.execute("SELECT 1 FROM server_habits WHERE id=? AND user_id=?", (habit_id, user_id)).fetchone()
             if not row:
                 return False
+
+            values = {key: value for key, value in dict(name=name, icon=icon, difficulty=difficulty,
+                      is_active=is_active, repeat_rule=repeat_rule).items() if value is not None}
+            values = local_habit_write(conn, user_id, {'id': habit_id, **values}, now_str())
+            name = values['name']
+            if is_active == 1:
+                conn.execute("UPDATE server_habits SET archived_at=?,archive_reason='local_user' WHERE user_id=? AND id=?", (now_str(), user_id, habit_id))
 
             fields = []
             params = []
@@ -1112,6 +1220,31 @@ class ServerSleepStore:
         finally:
             conn.close()
 
+
+    def set_habit_window(self, user_id, habit_id, start_minute, end_minute):
+        if (start_minute is None) != (end_minute is None):
+            raise ValueError("invalid_habit_window")
+        if start_minute is not None and (type(start_minute) is not int or type(end_minute) is not int
+                or not 0 <= start_minute < end_minute <= 1440):
+            raise ValueError("invalid_habit_window")
+        stamp = now_str()
+        effective_from = (date.fromisoformat(stamp[:10]) + timedelta(days=1)).isoformat()
+        record_id = f"habit-window:{user_id}:{habit_id}:{effective_from}"
+        with self._transact() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            habit = conn.execute("SELECT 1 FROM server_habits WHERE user_id=? AND id=? AND is_active=0 AND source='local'",
+                                 (user_id, habit_id)).fetchone()
+            if not habit:
+                return None
+            prior = conn.execute("SELECT start_minute,end_minute FROM server_habit_windows WHERE user_id=? AND habit_id=? AND effective_from=?",
+                                 (user_id, habit_id, effective_from)).fetchone()
+            if not prior or (prior["start_minute"], prior["end_minute"]) != (start_minute, end_minute):
+                conn.execute("""INSERT INTO server_habit_windows(id,user_id,habit_id,effective_from,start_minute,end_minute,created_at,updated_at)
+                    VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(user_id,habit_id,effective_from)
+                    DO UPDATE SET start_minute=excluded.start_minute,end_minute=excluded.end_minute,updated_at=excluded.updated_at""",
+                    (record_id, user_id, habit_id, effective_from, start_minute, end_minute, stamp, stamp))
+                self._record_server_change(conn, user_id, "server_habit_windows", record_id, "upsert", {"id": record_id})
+        return {"habit_id": habit_id, "effective_from": effective_from, "start_minute": start_minute, "end_minute": end_minute}
 
     def list_today_checkins(self, user_id, date_str):
         conn = self._connect()
@@ -1146,6 +1279,10 @@ class ServerSleepStore:
                 bindings.setdefault(binding["goal_id"], []).append(binding["category_id"])
             for goal in goals:
                 goal["category_ids"] = bindings.get(goal["id"], [goal["category_id"]] if goal["category_id"] is not None else [])
+                try:
+                    goal["weekdays"] = json.loads(goal["weekdays"]) if goal.get("weekdays") else []
+                except (TypeError, ValueError):
+                    goal["weekdays"] = []
             return goals
         finally:
             conn.close()
@@ -1191,7 +1328,7 @@ class ServerSleepStore:
             )
             self._record_server_change(conn, user_id, "server_goal_category_bindings", binding_id, "upsert", {"id": binding_id})
 
-    def create_goal(self, user_id, title, category_id, metric, target_value, period, reward_coins, reward_id=None, operator='>=', penalty_coins=None, category_ids=None):
+    def create_goal(self, user_id, title, category_id, metric, target_value, period, reward_coins, reward_id=None, operator='>=', penalty_coins=None, category_ids=None, weekdays=None):
         with self._transact() as conn:
             if penalty_coins is None:
                 penalty_coins = reward_coins
@@ -1205,10 +1342,13 @@ class ServerSleepStore:
             conn.execute(
                 """
                 INSERT INTO server_goals
-                (id, user_id, title, category_id, metric, target_value, period, operator, reward_coins, reward_id, penalty_coins, is_active, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+                (id, user_id, title, category_id, metric, target_value, period, weekdays, weekdays_effective_from, operator, reward_coins, reward_id, penalty_coins, is_active, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
                 """,
-                (goal_id, user_id, title, category_id, metric, target_value, period, operator, reward_coins, None, penalty_coins, now_ts, now_ts)
+                (goal_id, user_id, title, category_id, metric, target_value, period,
+                 json.dumps(weekdays or []) if period == "custom_weekdays" else None,
+                 now_ts[:10] if period == "custom_weekdays" else None,
+                 operator, reward_coins, None, penalty_coins, now_ts, now_ts)
             )
             self._record_server_change(conn, user_id, "server_goals", goal_id, "upsert", {"id": goal_id})
             self._replace_goal_category_bindings_in_txn(conn, user_id, goal_id, selected_category_ids, now_ts)
@@ -1224,12 +1364,27 @@ class ServerSleepStore:
     def update_goal(self, user_id, goal_id, **kwargs):
         category_ids = kwargs.pop("category_ids", UNSET)
         kwargs.pop("reward_id", None)
-        allowed = {"title", "category_id", "metric", "target_value", "period", "operator", "reward_coins", "penalty_coins"}
+        allowed = {"title", "category_id", "metric", "target_value", "period", "weekdays", "operator", "reward_coins", "penalty_coins"}
         kwargs = {key: value for key, value in kwargs.items() if key in allowed}
         with self._transact() as conn:
-            row = conn.execute("SELECT 1 FROM server_goals WHERE id=? AND user_id=?", (goal_id, user_id)).fetchone()
+            row = conn.execute("SELECT period, weekdays FROM server_goals WHERE id=? AND user_id=?", (goal_id, user_id)).fetchone()
             if not row:
                 return False
+            if isinstance(kwargs.get("weekdays"), (list, tuple)):
+                kwargs["weekdays"] = json.dumps(kwargs["weekdays"])
+            if "period" in kwargs or "weekdays" in kwargs:
+                try:
+                    previous_days = json.loads(row["weekdays"] or "[]")
+                except (TypeError, ValueError):
+                    previous_days = []
+                next_days = kwargs.get("weekdays", row["weekdays"])
+                try:
+                    if isinstance(next_days, str):
+                        next_days = json.loads(next_days or "[]")
+                except (TypeError, ValueError):
+                    next_days = []
+                if kwargs.get("period", row["period"]) != row["period"] or next_days != previous_days:
+                    kwargs["weekdays_effective_from"] = now_str()[:10]
             if category_ids is not UNSET:
                 selected_category_ids = self._validate_goal_category_ids_in_txn(conn, user_id, category_ids)
                 kwargs["category_id"] = selected_category_ids[0] if selected_category_ids else None
@@ -1274,8 +1429,10 @@ class ServerSleepStore:
                 yield current, end
                 current = next_month
 
-    def _remove_goal_claim_in_txn(self, conn, user_id, claim_id):
+    def _remove_goal_claim_in_txn(self, conn, user_id, claim_id, goal_id=None):
         """撤销同一目标周期的奖励、入包及其使用流水，供历史会话更正后重建。"""
+        if goal_id is not None:
+            self.reward_settlement_service.revoke_fragments_for_event_in_txn(conn, user_id, "goal", goal_id, claim_id)
         purchases = [row["id"] for row in conn.execute(
             "SELECT id FROM server_reward_ledger WHERE user_id=? AND source_type='reward_buy' AND source_id LIKE ?",
             (user_id, f"%:goal:{claim_id}"),
@@ -1321,6 +1478,7 @@ class ServerSleepStore:
                 reward_coins = g['reward_coins']
                 penalty_coins = g['penalty_coins'] if g['penalty_coins'] is not None else reward_coins
                 created_at_goal = g['created_at'] or '2000-01-01 00:00:00'
+                schedule_effective_from = g['weekdays_effective_from'] or ''
 
                 def _issue_goal(claim_id, is_met, val, target_val, operator_str, date_str, fail_if_not_met=False):
                     if not is_statistics_date_eligible(str(date_str)[:10], statistics_start):
@@ -1342,6 +1500,7 @@ class ServerSleepStore:
                         return
 
                     bound_rewards = []
+                    has_item_binding = False
                     if is_met:
                         bound_rewards = conn.execute(
                             """SELECT id FROM server_rewards
@@ -1350,8 +1509,11 @@ class ServerSleepStore:
                                ORDER BY id""",
                             (user_id, g_id),
                         ).fetchall()
+                        has_item_binding = bool(conn.execute(
+                            "SELECT 1 FROM server_reward_source_bindings b JOIN server_rewards r ON r.id=b.reward_id AND r.user_id=b.user_id AND r.is_active=1 WHERE b.user_id=? AND b.source_type='goal' AND b.source_id=? LIMIT 1",
+                            (user_id, g_id)).fetchone())
 
-                    if amount != 0 or bound_rewards:
+                    if amount != 0 or bound_rewards or has_item_binding:
                         r_id = uuid.uuid4().hex
                         conn.execute(
                             """
@@ -1369,6 +1531,10 @@ class ServerSleepStore:
                                 f"目标自动解锁兑换: {title}", date_str, ledger_id,
                             )
                             settled_details.append({"claim_id": claim_id, "ledger_id": ledger_id, "description": compat_desc, "amount": 0.0})
+                        if has_item_binding:
+                            self.reward_settlement_service.grant_task_unlocks_in_txn(
+                                conn, user_id, "goal", g_id, claim_id, title, date_str)
+                            settled_details.append({"claim_id": claim_id, "item_binding": True, "amount": 0.0})
                     if amount != 0:
                         source_type = "goal_reward" if amount >= 0 else "goal_penalty"
                         ledger_id = self.reward_settlement_service.settle_in_txn(
@@ -1402,6 +1568,8 @@ class ServerSleepStore:
                     for s in sessions:
                         if s["start_time"] < created_at_goal:
                             continue
+                        if schedule_effective_from and s["end_time"][:10] < schedule_effective_from:
+                            continue
                         is_met = (s["net_duration_minutes"] >= target) if operator == '>=' else (s["net_duration_minutes"] <= target)
                         _issue_goal(
                             f"goal_{g_id}_session_{s['id']}",
@@ -1409,10 +1577,20 @@ class ServerSleepStore:
                             fail_if_not_met=True
                         )
 
-                elif period in {'daily', 'weekly', 'monthly'}:
-                    effective_start = max(created_at_goal[:10], last_reset_str[:10])
-                    for start, end in self._completed_goal_windows(period, effective_start, today):
+                elif period in {'daily', 'custom_weekdays', 'weekly', 'monthly'}:
+                    effective_start = max(created_at_goal[:10], last_reset_str[:10], schedule_effective_from or created_at_goal[:10])
+                    settlement_period = 'daily' if period == 'custom_weekdays' else period
+                    try:
+                        weekdays = json.loads(g['weekdays'] or '[]') if period == 'custom_weekdays' else []
+                    except (TypeError, ValueError):
+                        weekdays = []
+                    weekdays = {day for day in weekdays if type(day) is int and 1 <= day <= 7}
+                    if period == 'custom_weekdays' and not weekdays:
+                        continue
+                    for start, end in self._completed_goal_windows(settlement_period, effective_start, today):
                         start_str, end_str = start.isoformat(), end.isoformat()
+                        if period == 'custom_weekdays' and start.isoweekday() not in weekdays:
+                            continue
                         if start_str < statistics_start:
                             continue
                         # 日目标归属当日，周/月目标归属完整周期的最后一天。
@@ -1431,11 +1609,11 @@ class ServerSleepStore:
 
                         is_met = (val >= target) if operator == '>=' else (val <= target)
                         claim_id = (
-                            f"goal_{g_id}_{end_str.replace('-', '')}" if period == "daily"
+                            f"goal_{g_id}_{end_str.replace('-', '')}" if period in {"daily", "custom_weekdays"}
                             else f"goal_{g_id}_{start.strftime('%Y%m%d')}_{end.strftime('%Y%m%d')}"
                         )
                         if rebuild_dates and any(start_str <= value <= end_str for value in rebuild_dates):
-                            self._remove_goal_claim_in_txn(conn, user_id, claim_id)
+                            self._remove_goal_claim_in_txn(conn, user_id, claim_id, g_id)
                         _issue_goal(claim_id, is_met, val, target, operator, period_end_date, fail_if_not_met=True)
 
             return settled_details
@@ -1485,9 +1663,12 @@ class ServerSleepStore:
     def list_rewards(self, user_id):
         self.auto_unlock_rewards(user_id)
         self._ensure_custom_spend_templates(user_id)
+        self._ensure_compensation_template(user_id)
         conn = self._connect()
         try:
-            rows = conn.execute("SELECT * FROM server_rewards WHERE user_id=? AND is_active=1 ORDER BY id ASC", (user_id,)).fetchall()
+            rows = conn.execute("""SELECT r.*,(SELECT COUNT(*) FROM server_reward_source_bindings b
+                WHERE b.user_id=r.user_id AND b.reward_id=r.id AND (b.drop_min_units IS NOT NULL OR b.drop_max_units IS NOT NULL)) legacy_percent_binding_count
+                FROM server_rewards r WHERE r.user_id=? AND r.is_active=1 ORDER BY r.id ASC""", (user_id,)).fetchall()
             return [dict(r) for r in rows]
         finally:
             conn.close()
@@ -1513,6 +1694,27 @@ class ServerSleepStore:
                     (reward_id, user_id, title, icon, stamp, stamp),
                 )
                 self._record_server_change(conn, user_id, "server_rewards", reward_id, "upsert", {"id": reward_id})
+
+    def _ensure_compensation_template(self, user_id):
+        reward_id = f"compensation-credit:{user_id}"
+        with self._transact() as conn:
+            stamp = now_str()
+            inserted = conn.execute(
+                """INSERT OR IGNORE INTO server_rewards
+                (id,user_id,title,icon,price,redemption_mode,description,inventory_mode,
+                 unlock_required_count,is_active,created_at,updated_at)
+                VALUES (?,?, '补偿金币','🪙',0,'compensation_credit',?,'unlimited',1,1,?,?)""",
+                (reward_id, user_id, COMPENSATION_DESCRIPTION, stamp, stamp),
+            )
+            if inserted.rowcount:
+                self._record_server_change(conn, user_id, "server_rewards", reward_id, "upsert", {"id": reward_id})
+            else:
+                updated = conn.execute(
+                    "UPDATE server_rewards SET description=?,updated_at=? WHERE id=? AND user_id=? AND redemption_mode='compensation_credit' AND description<>?",
+                    (COMPENSATION_DESCRIPTION, stamp, reward_id, user_id, COMPENSATION_DESCRIPTION),
+                )
+                if updated.rowcount:
+                    self._record_server_change(conn, user_id, "server_rewards", reward_id, "upsert", {"id": reward_id})
 
     def _resolve_unlock_source(self, conn, user_id, unlock_source_type=None, unlock_source_id=None, unlock_task_id=None, allow_legacy_exercise=False):
         source = str(unlock_source_id or "")
@@ -1540,7 +1742,7 @@ class ServerSleepStore:
             ).fetchone()
         elif source_type == "habit":
             row = conn.execute(
-                "SELECT name AS title FROM server_habits WHERE id=? AND user_id=? AND is_active=0",
+                "SELECT name AS title FROM server_habits WHERE id=? AND user_id=? AND is_active=0 AND source='local'",
                 (source, user_id),
             ).fetchone()
         elif source_type == "learning_task":
@@ -1566,10 +1768,8 @@ class ServerSleepStore:
     @staticmethod
     def _validate_reward_rules(inventory_mode="unlimited", inventory_limit=None, unlock_source_type=None, unlock_required_count=1):
         mode = str(inventory_mode or "unlimited")
-        if mode == "weekly":
-            raise ValueError("每周库存已取消，请选不限量、每天或每月")
-        if mode not in {"unlimited", "daily", "monthly"}:
-            raise ValueError("库存周期只能选不限量、每天或每月")
+        if mode not in {"unlimited", "daily", "weekly", "monthly"}:
+            raise ValueError("库存周期只能选不限量、每天、每周或每月")
         if mode == "unlimited":
             inventory_limit = None
         else:
@@ -1603,6 +1803,7 @@ class ServerSleepStore:
     def bind_reward_source(self, user_id, reward_id, source_type, source_id, drop_mode="fixed", drop_min_units=None, drop_max_units=None):
         """在来源侧建立完成奖励商品绑定；一个商品可绑定任意多个来源。"""
         with self._transact() as conn:
+            conn.execute("BEGIN IMMEDIATE")
             source = self._resolve_unlock_source(conn, user_id, source_type, source_id)
             reward = conn.execute("SELECT * FROM server_rewards WHERE id=? AND user_id=? AND is_active=1", (reward_id, user_id)).fetchone()
             if not reward:
@@ -1611,13 +1812,8 @@ class ServerSleepStore:
                 raise ValueError("只有完成奖励型商品可以绑定到任务、习惯或学习目标")
             if str(reward["fulfillment_mode"] or "immediate") != "fragment":
                 raise ValueError("完成奖励型商品必须使用碎片合成")
-            if drop_mode not in {"fixed", "random"}:
-                raise ValueError("掉落规则无效")
-            if drop_min_units is not None:
-                drop_min_units = int(drop_min_units)
-                drop_max_units = int(drop_max_units if drop_max_units is not None else drop_min_units)
-                if drop_min_units < 1 or drop_max_units < drop_min_units or drop_max_units > 100:
-                    raise ValueError("掉落进度必须在 1–100 之间")
+            # 兼容旧客户端参数，但服务端权威规则始终是一事件一枚。
+            drop_mode, drop_min_units, drop_max_units = "fixed", None, None
             binding_id = f"reward-source:{reward_id}:{source['type']}:{source['id']}"
             stamp = now_str()
             conn.execute(
@@ -1627,11 +1823,19 @@ class ServerSleepStore:
                    drop_mode=excluded.drop_mode,drop_min_units=excluded.drop_min_units,drop_max_units=excluded.drop_max_units,updated_at=excluded.updated_at""",
                 (binding_id, user_id, reward_id, source["type"], source["id"], drop_mode, drop_min_units, drop_max_units, stamp, stamp),
             )
+            if reward["fragment_measure_mode"] != "count":
+                conn.execute(
+                    """UPDATE server_rewards SET fragment_measure_mode='count',
+                       fragment_rule_version=fragment_rule_version+1,updated_at=? WHERE id=? AND user_id=?""",
+                    (stamp, reward_id, user_id),
+                )
+                self._record_server_change(conn, user_id, "server_rewards", reward_id, "upsert", {"id": reward_id})
             self._record_server_change(conn, user_id, "server_reward_source_bindings", binding_id, "upsert", {"id": binding_id})
             return binding_id
 
     def unbind_reward_source(self, user_id, reward_id, source_type, source_id):
         with self._transact() as conn:
+            conn.execute("BEGIN IMMEDIATE")
             source = self._resolve_unlock_source(conn, user_id, source_type, source_id)
             row = conn.execute(
                 "SELECT id FROM server_reward_source_bindings WHERE user_id=? AND reward_id=? AND source_type=? AND source_id=?",
@@ -1708,11 +1912,13 @@ class ServerSleepStore:
             self._record_server_change(conn, user_id, "server_rewards", reward_id, "upsert", {"id": reward_id})
             return reward_id
 
-    def update_reward(self, user_id, reward_id, title=None, icon=None, price=None, description=None, is_active=None, unlock_task_id=UNSET, unlock_task_title=UNSET, unlock_source_type=UNSET, unlock_source_id=UNSET, inventory_mode=UNSET, inventory_limit=UNSET, unlock_required_count=UNSET, redemption_mode=UNSET, fulfillment_mode=UNSET, fragment_target_count=UNSET):
+    def update_reward(self, user_id, reward_id, title=None, icon=None, price=None, description=None, is_active=None, unlock_task_id=UNSET, unlock_task_title=UNSET, unlock_source_type=UNSET, unlock_source_id=UNSET, inventory_mode=UNSET, inventory_limit=UNSET, unlock_required_count=UNSET, redemption_mode=UNSET, fulfillment_mode=UNSET, fragment_target_count=UNSET, convert_fragment_to_count=UNSET):
         with self._transact() as conn:
             row = conn.execute("SELECT * FROM server_rewards WHERE id=? AND user_id=?", (reward_id, user_id)).fetchone()
             if not row:
                 return False
+            if row["redemption_mode"] == "compensation_credit":
+                raise ValueError("固定补偿商品不能编辑或删除")
 
             fields = []
             params = []
@@ -1762,10 +1968,7 @@ class ServerSleepStore:
                     conn, user_id, row["unlock_source_type"], row["unlock_source_id"], reward_id
                 )
             effective_type = source["type"] if source_changed and source else None if source_changed else row["unlock_source_type"]
-            legacy_weekly = str(row["inventory_mode"] or "") == "weekly"
             requested_mode = row["inventory_mode"] if inventory_mode is UNSET else inventory_mode
-            if str(requested_mode or "") == "weekly" and legacy_weekly:
-                requested_mode = "unlimited"
             requested_limit = row["inventory_limit"] if inventory_limit is UNSET else inventory_limit
             requested_count = 1 if source_changed and source is None else row["unlock_required_count"] if unlock_required_count is UNSET else unlock_required_count
             mode, limit, required = self._validate_reward_rules(requested_mode, requested_limit, effective_type, requested_count)
@@ -1776,13 +1979,29 @@ class ServerSleepStore:
             requested_fulfillment, requested_target = self._validate_fragment_rules(
                 effective_type, requested_fulfillment, requested_target,
             )
-            if inventory_mode is not UNSET or inventory_limit is not UNSET or legacy_weekly:
+            convert_to_count = (
+                requested_fulfillment == "fragment"
+                and convert_fragment_to_count is not UNSET
+                and bool(convert_fragment_to_count)
+            )
+            legacy_bindings = conn.execute("SELECT id FROM server_reward_source_bindings WHERE user_id=? AND reward_id=? AND (drop_mode<>'fixed' OR drop_min_units IS NOT NULL OR drop_max_units IS NOT NULL)", (user_id, reward_id)).fetchall()
+            target_changed = int(requested_target) != int(row["fragment_target_count"] or 1)
+            if requested_fulfillment == "fragment" and legacy_bindings and target_changed and not convert_to_count:
+                raise ValueError("历史百分比碎片修改目标数前必须显式转换为按枚计数")
+            if convert_to_count:
+                stamp = now_str()
+                conn.execute("UPDATE server_reward_source_bindings SET drop_mode='fixed',drop_min_units=NULL,drop_max_units=NULL,updated_at=? WHERE user_id=? AND reward_id=?", (stamp, user_id, reward_id))
+                for binding in legacy_bindings:
+                    self._record_server_change(conn, user_id, "server_reward_source_bindings", binding["id"], "upsert", {"id": binding["id"]})
+                if row["fragment_measure_mode"] != "count":
+                    fields.append("fragment_measure_mode=?");params.append("count")
+            if inventory_mode is not UNSET or inventory_limit is not UNSET:
                 fields.extend(["inventory_mode=?", "inventory_limit=?"])
                 params.extend([mode, limit])
             if unlock_required_count is not UNSET or (source_changed and effective_type != row["unlock_source_type"]):
                 fields.extend(["unlock_required_count=?", "unlock_threshold_started_at=?"])
                 params.extend([required, now_str() if effective_type == "habit" else None])
-            rule_changed = requested_fulfillment != row["fulfillment_mode"] or int(requested_target) != int(row["fragment_target_count"] or 1) or source_changed
+            rule_changed = requested_fulfillment != row["fulfillment_mode"] or target_changed or source_changed or (convert_to_count and (row["fragment_measure_mode"] != "count" or legacy_bindings))
             if fulfillment_mode is not UNSET or fragment_target_count is not UNSET or source_changed:
                 fields.extend(["fulfillment_mode=?", "fragment_target_count=?"])
                 params.extend([requested_fulfillment, requested_target])
@@ -2076,7 +2295,31 @@ class ServerSleepStore:
                         conn, user_id, float(reward["coins"]), "learning_objective_complete", source_id,
                         f"学习目标完成: {objective['title']}", str(occurred_at)[:10], source_id, str(occurred_at),
                     )
-    def buy_reward(self, user_id, reward_id, amount=None, note=None):
+    def _credit_compensation_in_txn(self, conn, user_id, reward, amount, reason, request_key):
+        ledger_id = f"compensation:{user_id}:{request_key}"
+        description = f"补偿金币 · +{amount:g}🪙 · 原因：{reason}"
+        existing = conn.execute(
+            "SELECT amount,description FROM server_reward_ledger WHERE id=? AND user_id=?",
+            (ledger_id, user_id),
+        ).fetchone()
+        if existing:
+            if float(existing["amount"]) != amount or existing["description"] != description:
+                return False, "补偿请求编号与已入账内容冲突"
+            return True, "补偿成功"
+        occurred_at = now_str()
+        source_id = f"{reward['id']}:{request_key}"
+        self.reward_wallet_service.append_ledger_in_txn(
+            conn, user_id, amount, "store_compensation_credit", source_id,
+            description, occurred_at[:10], ledger_id, occurred_at,
+        )
+        self.reward_wallet_service.record_action_event_in_txn(
+            conn, user_id, f"action:{ledger_id}", "compensation_credit", amount,
+            occurred_at, reward["id"], {"ledger_id": ledger_id, "note": reason,
+                "source_type": "store_compensation_credit", "source_id": source_id},
+        )
+        return True, "补偿成功"
+
+    def buy_reward(self, user_id, reward_id, amount=None, note=None, request_id=None):
         # 调用链路：POST /api/rewards/buy/{id} -> store 门面 -> RewardWalletService。
         with self._transact() as conn:
             reward = conn.execute(
@@ -2086,6 +2329,21 @@ class ServerSleepStore:
             if not reward:
                 return False, "未找到该商品"
             mode = reward["redemption_mode"] or "coins"
+            if mode == "compensation_credit":
+                try:
+                    value = float(amount)
+                except (TypeError, ValueError, OverflowError):
+                    return False, "请输入补偿金币金额"
+                if isinstance(amount, bool) or not math.isfinite(value) or value <= 0 or round(value, 2) != value:
+                    return False, "补偿金额必须是至多两位小数的正数"
+                reason = str(note or "").strip()
+                if not 1 <= len(reason) <= 120:
+                    return False, "请填写1至120字的具体补偿原因"
+                try:
+                    request_key = uuid.UUID(str(request_id)).hex
+                except (TypeError, ValueError, AttributeError):
+                    return False, "补偿请求编号无效"
+                return self._credit_compensation_in_txn(conn, user_id, reward, value, reason, request_key)
             if mode == "pending_binding":
                 return False, "该商品暂未绑定任务，暂不能兑换"
             if mode in {"task", "goal"}:
@@ -2219,6 +2477,8 @@ class ServerSleepStore:
             conn.close()
 
     def set_item_reward(self, user_id, item_type, item_id, coins, penalty=None):
+        if item_type == "habit":
+            return self._set_habit_reward(user_id, item_id, coins, penalty)
         conn = self._connect()
         try:
             if penalty is None:
@@ -2236,12 +2496,62 @@ class ServerSleepStore:
             conn.close()
 
 
+    def _set_habit_reward(self, user_id, item_id, coins, penalty):
+        import math
+
+        penalty = coins if penalty is None else penalty
+        for value in (coins, penalty):
+            if type(value) not in (int, float) or not math.isfinite(value) or value < 0:
+                raise ValueError("习惯奖励和惩罚必须是非负有限数字")
+        with self._transact() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            self._resolve_unlock_source(conn, user_id, "habit", item_id)
+            stamp = now_str()
+            conn.execute(
+                """INSERT INTO server_reward_config(user_id,item_type,item_id,coins,penalty,updated_at)
+                   VALUES(?,'habit',?,?,?,?) ON CONFLICT(user_id,item_type,item_id)
+                   DO UPDATE SET coins=excluded.coins,penalty=excluded.penalty,
+                                 updated_at=excluded.updated_at,pushed_at=NULL""",
+                (user_id, str(item_id), coins, penalty, stamp),
+            )
+            row = dict(conn.execute(
+                "SELECT * FROM server_reward_config WHERE user_id=? AND item_type='habit' AND item_id=?",
+                (user_id, str(item_id)),
+            ).fetchone())
+            self._record_server_change(conn, user_id, "server_reward_config", row["id"], "upsert", row)
+        return True
+
     # --- 7. 睡眠数据管理 (Sleep Data) ---
     def get_huawei_sleep_data(self, user_id, date_str):
         conn = self._connect()
         try:
             row = conn.execute("SELECT * FROM server_huawei_sleep_data WHERE user_id=? AND date=?", (user_id, date_str)).fetchone()
             return dict(row) if row else None
+        finally:
+            conn.close()
+
+    def record_valid_sleep_upload(self, user_id, date_str, uploaded_at):
+        """投影首次严格校验通过的图片接收时间；重试和缓存复用不得推迟它。"""
+        conn = self._connect()
+        try:
+            now = now_str()
+            row = conn.execute(
+                "SELECT id,image_uploaded_at FROM server_huawei_sleep_data WHERE user_id=? AND date=?",
+                (user_id, date_str),
+            ).fetchone()
+            earliest = min(filter(None, [row["image_uploaded_at"] if row else None, uploaded_at]), default=uploaded_at)
+            if row:
+                conn.execute("UPDATE server_huawei_sleep_data SET image_uploaded_at=?,updated_at=? WHERE id=?", (earliest, now, row["id"]))
+                record_id = row["id"]
+            else:
+                cursor = conn.execute(
+                    "INSERT INTO server_huawei_sleep_data (user_id,date,image_uploaded_at,source,sync_status,updated_at) VALUES (?,?,?,?,?,?)",
+                    (user_id, date_str, earliest, "screenshot_ocr", "success", now),
+                )
+                record_id = cursor.lastrowid
+            self._record_server_change(conn, user_id, "huawei_sleep_data", record_id, "upsert", {"date": date_str})
+            conn.commit()
+            return earliest
         finally:
             conn.close()
 
@@ -2314,7 +2624,7 @@ class ServerSleepStore:
                   'morning_diary', 'evening_diary',
                   'morning_diary_written_at', 'evening_diary_written_at',
                   'report_status', 'full_report_state', 'tracked_duration_seconds',
-                  'source', 'synced_at', 'sync_status', 'sync_error'
+                  'source', 'synced_at', 'sync_status', 'sync_error', 'image_uploaded_at'
               ]
 
             now = now_str()
@@ -2332,6 +2642,9 @@ class ServerSleepStore:
                 (user_id, date_str),
             ).fetchone()
             if existing:
+                previous = conn.execute("SELECT image_uploaded_at FROM server_huawei_sleep_data WHERE id=?", (existing["id"],)).fetchone()
+                if values_by_field.get("image_uploaded_at") and previous and previous["image_uploaded_at"]:
+                    values_by_field["image_uploaded_at"] = min(previous["image_uploaded_at"], values_by_field["image_uploaded_at"])
                 update_fields = [field for field in fields if values_by_field[field] is not None]
                 assignments = [f"{field}=?" for field in update_fields] + ["updated_at=?"]
                 values = [values_by_field[field] for field in update_fields] + [now, user_id, date_str]

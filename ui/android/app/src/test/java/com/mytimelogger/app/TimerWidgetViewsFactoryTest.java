@@ -28,7 +28,7 @@ public class TimerWidgetViewsFactoryTest {
         assertEquals(20, factory.getCount());
         assertEquals(4, factory.getCount() / TimerWidgetViewsFactory.COLUMN_COUNT);
         assertFalse(WidgetTimerRepository.categorySqlForTest().contains("LIMIT"));
-        assertFalse(factory.isEnabled(0)); assertFalse(factory.isEnabled(1)); assertTrue(factory.isEnabled(2));
+        assertFalse(factory.isEnabled(0)); assertFalse(factory.isEnabled(1)); assertFalse(factory.isEnabled(2));
         assertTrue(factory.isEnabled(15)); assertNull(factory.categoryAt(15));
         assertEquals("副业生产", factory.categoryAt(2).name);
         assertEquals("个人杂事", factory.categoryAt(11).name);

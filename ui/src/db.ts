@@ -79,11 +79,20 @@ export interface SyncChangeResult {
   sync: SyncNowResult
 }
 
-export type SharedSyncState = 'connecting' | 'syncing' | 'synced' | 'offline' | 'failed'
+export type SharedSyncState = 'connecting' | 'syncing' | 'synced' | 'offline' | 'failed' | 'partial'
 export type SharedSyncStatus = { state: SharedSyncState; at: string; error?: string }
 let latestSharedSyncSequence = 0
+const checklistSyncErrors = new Map<string, string>()
 
 export function emitSharedSyncStatus(state: SharedSyncState, error?: string): void {
+  const checklistError = checklistSyncErrors.get(activeAccountStorageKey || '')
+  if (state === 'synced' && checklistError) { state = 'failed'; error = checklistError }
+  const issues = applicationDatabase?.getOutboxIssues?.()
+  if (state === 'synced' && issues?.count > 0) {
+    state = 'partial'; error = `${issues.count} 项 · ${issues.firstError || '待处理'}`
+  } else if (state === 'failed' && issues?.count > 0) {
+    error = `${issues.count} 项 · ${issues.firstError || error || '同步失败'}`
+  }
   const target = globalThis as any
   if (typeof target.dispatchEvent !== 'function' || typeof target.CustomEvent !== 'function') return
   target.dispatchEvent(new target.CustomEvent('mtl:sync-status', { detail: { state, at: formatBeijingDateTime(), error } satisfies SharedSyncStatus }))
@@ -137,22 +146,34 @@ const createSyncRunId = (): string => {
   return `sync-${Date.now()}-${Math.random().toString(16).slice(2)}`
 }
 
-export async function syncAfterDateSwitch(module: DateSwitchSyncModule, date: string): Promise<SyncNowResult> {
+export async function syncAfterDateSwitch(module: DateSwitchSyncModule, date: string, options: { planVersion?: string; force?: boolean } = {}): Promise<SyncNowResult> {
   const state = dateSwitchSyncState[module]
-  const key = `${module}:${date}`
+  const key = `${activeAccountStorageKey}:${module}:${date}:${options.planVersion || ''}`
   const now = Date.now()
-  if (state.promise && state.key === key) return state.promise
-  if (state.key === key && now - state.at < 1500) {
+  if (!options.force && state.promise && state.key === key) return state.promise
+  if (!options.force && module !== 'exercise' && state.key === key && now - state.at < 1500) {
     return { ok: true, merged: 0, diagnostics: { skipped: true, reason: 'date_switch_dedupe' } }
   }
   state.key = key
   state.at = now
-  state.promise = syncNow({
-    reason: module === 'checklist' ? 'checklist-date-switch' : `${module}-date-switch`,
-  }).finally(() => {
-    state.promise = null
+  const promise = (async (): Promise<SyncNowResult> => {
+    if (module === 'exercise' && options.planVersion === 'v5') {
+      await getDatabase()
+      const client = getCurrentTimerClient()
+      if (!client?.get) return { ok: false, merged: 0, error: 'exercise_state_client_not_ready' }
+      const response = await client.get('/api/exercise/state', {
+        date, ...(options.planVersion ? { plan_version: options.planVersion } : {}),
+      })
+      if (!response?.ok || (options.planVersion && response.data?.plan_version !== options.planVersion)) {
+        return { ok: false, merged: 0, error: response?.error || 'exercise_state_fetch_failed' }
+      }
+    }
+    return syncNow({ reason: module === 'checklist' ? 'checklist-date-switch' : `${module}-date-switch` })
+  })().catch(() => ({ ok: false, merged: 0, error: module === 'exercise' ? 'exercise_state_fetch_failed' : 'date_switch_sync_failed' })).finally(() => {
+    if (state.promise === promise) state.promise = null
   })
-  return state.promise
+  state.promise = promise
+  return promise
 }
 
 const requireElectronApi = () => {
@@ -505,6 +526,7 @@ export function flushSync() {
 
 /** 执行指定同步域；公共入口始终使用 core，只有清单专用入口可使用 checklist。 */
 async function runSyncNow(options: SyncNowOptions, scope: 'core' | 'checklist', refresh: boolean): Promise<SyncNowResult> {
+  const accountKey = activeAccountStorageKey || ''
   const syncRunId = createSyncRunId()
   const sharedSyncSequence = ++latestSharedSyncSequence
   const startedAt = Date.now()
@@ -544,7 +566,15 @@ async function runSyncNow(options: SyncNowOptions, scope: 'core' | 'checklist', 
       request_id: normalized.diagnostics?.request_id,
       elapsed_ms: normalized.diagnostics?.client_elapsed_ms,
     })
-    if (sharedSyncSequence === latestSharedSyncSequence) {
+    if (scope === 'checklist' && refresh && accountKey === (activeAccountStorageKey || '')) {
+      const provider = normalized.diagnostics?.provider_refresh || normalized.diagnostics || {}
+      if (!normalized.ok || provider.complete === false || provider.tasks?.complete === false) {
+        checklistSyncErrors.set(accountKey, '清单大同步未完成，请查看清单同步详情')
+      } else if (provider.complete === true || provider.tasks?.complete === true) {
+        checklistSyncErrors.delete(accountKey)
+      }
+    }
+    if (sharedSyncSequence === latestSharedSyncSequence && accountKey === (activeAccountStorageKey || '')) {
       emitSharedSyncStatus(normalized.ok ? 'synced' : 'failed', normalized.error)
     }
     return normalized
@@ -675,19 +705,22 @@ export async function pushChecklistOnly(): Promise<SyncNowResult> {
 }
 
 /** 立即拉取服务端增量并 await 结果，用于刷新按钮 */
-export async function pullSync(): Promise<number> {
+export async function pullSync(options: { reason?: 'server-readback' | 'user-action'; required?: boolean } = {}): Promise<number> {
   emitSharedSyncStatus('syncing')
   if (_syncWorker && typeof _syncWorker.pullAndMergeResult === 'function') {
     try {
-      const result = await _syncWorker.pullAndMergeResult(false, { scope: 'core', reason: 'server-readback' })
+      const result = await _syncWorker.pullAndMergeResult(false, { scope: 'core', reason: options.reason ?? 'server-readback' })
       emitSharedSyncStatus(result.ok ? 'synced' : 'failed', result.error)
+      if (options.required && !result.ok) throw new Error(result.error || 'pull_failed')
       return result.ok ? result.merged : 0
     } catch (error: any) {
       emitSharedSyncStatus('failed', error?.message || 'pull_failed')
+      if (options.required) throw error
       return 0
     }
   }
   emitSharedSyncStatus('failed', 'sync_worker_not_ready')
+  if (options.required) throw new Error('sync_worker_not_ready')
   return 0
 }
 

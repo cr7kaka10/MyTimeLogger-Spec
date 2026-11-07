@@ -8,13 +8,13 @@ const actions = {
   switched: () => { switched++ },
 }
 const run = async () => {
-  await executeTaskFocus(decideTaskFocus('studying', 1, '输入', 2), actions)
-  await executeTaskFocus(decideTaskFocus('studying', 2, '输出', 9), actions)
-  assert(started + retargeted + switched === 0, 'structured blocked must have zero side effects')
+  await executeTaskFocus(decideTaskFocus('studying', 1, '输入', 2, '输出'), actions)
+  await executeTaskFocus(decideTaskFocus('studying', 2, '输出', 9, '工作'), actions)
+  assert(switched === 1 && started + retargeted === 0, 'same-group handoff executes while cross-group stays blocked')
   await executeTaskFocus(decideTaskFocus('studying', 1, '输入', 1), actions)
-  assert(retargeted === 1 && started === 0 && switched === 0, 'same category only retargets')
+  assert(retargeted === 1 && started === 0 && switched === 1, 'same category only retargets')
   await executeTaskFocus(decideTaskFocus('countup_studying', 8, '娱乐', 9), actions)
-  assert(switched === 1, 'normal cross-category uses switch path')
+  assert(switched === 2, 'normal cross-category uses switch path')
   let queue = Promise.resolve()
   const enqueue = (result: ReturnType<typeof decideTaskFocus>) => {
     const job = queue.then(() => executeTaskFocus(result, actions))

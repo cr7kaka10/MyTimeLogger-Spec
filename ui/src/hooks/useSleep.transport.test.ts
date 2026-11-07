@@ -10,9 +10,12 @@ for (const [contract, label] of [
   ["job.status === 'done' || job.status === 'reused'", 'reused terminal status'],
   ["syncAfterDateSwitch('sleep', resultDate)", 'completion settlement refresh'],
   ["detail?.error_code === 'date_mismatch'", 'date mismatch'],
+  ['splitSleepAnalysisError', 'redacted analysis summary'],
+  ['setErrorDetails(failure.details)', 'expandable technical details'],
 ]) if (!hook.includes(contract)) throw new Error(`missing ${label} error contract`)
 
 if (!hook.includes('catch {\n    return fallback')) throw new Error('non-JSON private response body must not reach the alert')
 if (!platform.includes("throw new Error('SLEEP_FILE_READ_FAILED')")) throw new Error('file read failures need a stable safe code')
 if (/alert\([^\n]*(token|file|text)/i.test(hook)) throw new Error('alerts must not include tokens, image data, or private response bodies')
+if (/alert\([^\n]*job\.error/.test(hook)) throw new Error('raw OCR candidate audit must not be shown in an alert')
 console.log('sleep transport error contract passed')

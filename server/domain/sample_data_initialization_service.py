@@ -113,9 +113,11 @@ class SampleDataInitializationService:
         conn.execute("""INSERT INTO server_rewards
             (id,user_id,title,icon,price,redemption_mode,description,inventory_mode,inventory_limit,unlock_required_count,
              fulfillment_mode,fragment_target_count,fragment_rule_version,is_active,created_at,updated_at)
-            VALUES (?,?,'解锁手机','📱',0,'task','多个习惯共享 100% 进度，完整卡每月最多 10 张','monthly',10,1,'fragment',100,1,1,?,?)
+            VALUES (?,?,'解锁手机','📱',0,'task','每次完成获得 1 枚碎片，7 枚合成 1 张卡；每月最多 10 张','monthly',10,1,'fragment',7,1,1,?,?)
             ON CONFLICT(id) DO UPDATE SET title=excluded.title,icon=excluded.icon,price=0,redemption_mode='task',
-            inventory_mode='monthly',inventory_limit=10,fulfillment_mode='fragment',fragment_target_count=100,is_active=1,updated_at=excluded.updated_at""",
+            description=excluded.description,inventory_mode='monthly',inventory_limit=10,
+            fulfillment_mode='fragment',fragment_target_count=7,fragment_measure_mode='count',
+            is_active=1,updated_at=excluded.updated_at""",
             (canonical_id, user_id, now, now))
         sources = {(str(row["id"]), str(row["name"])) for row in habits}
         for row in conn.execute("SELECT source_id FROM server_reward_source_bindings WHERE user_id=? AND reward_id IN (?,?) AND source_type='habit'", (user_id, *legacy_ids)).fetchall():
@@ -125,8 +127,8 @@ class SampleDataInitializationService:
             binding_id = f"reward-source:{canonical_id}:habit:{source_id}"
             conn.execute("""INSERT INTO server_reward_source_bindings
                 (id,user_id,reward_id,source_type,source_id,drop_mode,drop_min_units,drop_max_units,created_at,updated_at)
-                VALUES (?,?,?,'habit',?,'random',10,20,?,?) ON CONFLICT(user_id,reward_id,source_type,source_id)
-                DO UPDATE SET drop_mode='random',drop_min_units=10,drop_max_units=20,updated_at=excluded.updated_at""",
+                VALUES (?,?,?,'habit',?,'fixed',NULL,NULL,?,?) ON CONFLICT(user_id,reward_id,source_type,source_id)
+                DO UPDATE SET drop_mode='fixed',drop_min_units=NULL,drop_max_units=NULL,updated_at=excluded.updated_at""",
                 (binding_id, user_id, canonical_id, source_id, now, now))
             self._write_seed_change(conn, user_id, "server_reward_source_bindings", "reward_source_binding", binding_id, namespace="phone-v1")
         old_bindings = conn.execute("SELECT id FROM server_reward_source_bindings WHERE user_id=? AND reward_id IN (?,?)", (user_id, *legacy_ids)).fetchall()
@@ -287,7 +289,11 @@ class SampleDataInitializationService:
             v2.update(version="v2", sourceName="每日打卡表v2", weekdayScore=[[0,5,"检验"],[1,10,"工作"],[1,1.25,"守时","10:30"],[2,5,"拉伸"],[3,10,"工作"],[3,1.25,"守时","12:20"],[4,10,"工作"],[4,1.25,"守时","15:10"],[5,5,"拉伸"],[6,10,"工作"],[6,1.25,"守时","17:00"]], categoryOrder=["运动","工作","拉伸","检验","守时","活动"], exercisePoints=40)
             definitions["v2"] = v2
         for version, definition in definitions.items():
+            if version == "v6":
+                continue
             self._insert_exercise_plan_definition(conn, user_id, version, definition, now)
+        self._repair_v5_cardio_revision(conn, user_id, definitions.get("v5") or {}, now, "v2")
+        self._repair_v5_cardio_revision(conn, user_id, definitions.get("v5") or {}, now, "v3")
         self._repair_v4_diet_rule_keys(conn, user_id, now)
         self._migrate_exercise_scoring(conn, user_id, definitions, now)
         self._publish_complete_exercise_v2(conn, user_id)
@@ -317,7 +323,93 @@ class SampleDataInitializationService:
         if first_v4_publish:
             self._write_seed_change(conn, user_id, "server_system_config", "system_config", "active_exercise_plan_version", namespace="exercise-v4-complete-v1")
             self._mark(conn, user_id, "exercise_plan_v4", now)
+        first_v5_publish = not conn.execute(
+            "SELECT 1 FROM server_sample_data_initializations WHERE user_id=? AND module='exercise_plan_v5'", (user_id,),
+        ).fetchone()
+        self._publish_complete_exercise(conn, user_id, "v5")
+        if first_v5_publish:
+            previous = conn.execute("SELECT value FROM server_system_config WHERE user_id=? AND key='active_exercise_plan_version'", (user_id,)).fetchone()
+            conn.execute("""INSERT INTO server_system_config(user_id,key,value,value_type,description,updated_at)
+                VALUES (?,'previous_exercise_plan_version',?,'string','V5回滚前训练计划版本',?)
+                ON CONFLICT(user_id,key) DO UPDATE SET value=excluded.value,description=excluded.description,updated_at=excluded.updated_at""",
+                (user_id, previous["value"] if previous else "v4", now))
+            conn.execute("""INSERT INTO server_system_config(user_id,key,value,value_type,description,updated_at)
+                VALUES (?,'active_exercise_plan_version','v5','string','当前训练计划版本',?)
+                ON CONFLICT(user_id,key) DO UPDATE SET value='v5',updated_at=excluded.updated_at""", (user_id, now))
+            self._write_seed_change(conn, user_id, "server_system_config", "system_config", "active_exercise_plan_version", namespace="exercise-v5-complete-v1")
+            self._mark(conn, user_id, "exercise_plan_v5", now)
+        if definitions.get("v6"):
+            self._ensure_v6(conn, user_id, definitions["v6"], now)
         self._mark(conn, user_id, module, now)
+
+    def ensure_v6_for_user(self, user_id: int) -> None:
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            with EXERCISE_PLAN_SAMPLE_DATA_PATH.open("r", encoding="utf-8") as fh:
+                definition = json.load(fh)["v6"]
+            self._ensure_v6(conn, user_id, definition, datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m-%d %H:%M:%S"))
+            conn.commit()
+
+    def _ensure_v6(self, conn: sqlite3.Connection, user_id: int, definition: dict, now: str) -> None:
+        beijing_now = datetime.now(timezone(timedelta(hours=8)))
+        if not self._has_marker(conn, user_id, "exercise_plan_v6_seed"):
+            self._insert_exercise_plan_definition(conn, user_id, "v6", definition, now)
+            self._publish_complete_exercise(conn, user_id, "v6")
+            self._mark(conn, user_id, "exercise_plan_v6_seed", now)
+        day = beijing_now.date().isoformat()
+        has_v5_facts = any(conn.execute(query, (user_id, day)).fetchone() for query in (
+            "SELECT 1 FROM server_exercise_checkins WHERE user_id=? AND date=? AND plan_version='v5' LIMIT 1",
+            "SELECT 1 FROM server_exercise_daily_logs WHERE user_id=? AND date=? AND plan_version='v5' LIMIT 1",
+            "SELECT 1 FROM server_exercise_settlements WHERE user_id=? AND business_date=? AND plan_version='v5' LIMIT 1",
+            "SELECT 1 FROM server_exercise_diet_checkins WHERE user_id=? AND date=? AND plan_version='v5' LIMIT 1",
+            "SELECT 1 FROM server_reward_ledger WHERE user_id=? AND target_date=? AND source_type='exercise_completion_reward' AND source_id LIKE 'exercise-completion:v5:%' LIMIT 1",
+        ))
+        effective_date = (beijing_now.date() + timedelta(days=1 if has_v5_facts else 0)).isoformat()
+        inserted = conn.execute("""INSERT OR IGNORE INTO server_system_config
+            (user_id,key,value,value_type,description,updated_at)
+            VALUES (?,'exercise_v6_effective_date',?,'string','V6北京时间生效日',?)""",
+            (user_id, effective_date, beijing_now.strftime("%Y-%m-%d %H:%M:%S")))
+        if inserted.rowcount:
+            self._write_seed_change(conn, user_id, "server_system_config", "system_config", "exercise_v6_effective_date", namespace="exercise-v6-cutover-v1")
+            self._mark(conn, user_id, "exercise_plan_v6", now)
+
+    def _repair_v5_cardio_revision(self, conn: sqlite3.Connection, user_id: int, definition: dict, now: str,
+                                   revision: str) -> int:
+        module, namespace = f"exercise_plan_v5_cardio_{revision}", f"exercise-v5-cardio-{revision}"
+        if conn.execute("SELECT 1 FROM server_sample_data_initializations WHERE user_id=? AND module=?", (user_id, module)).fetchone():
+            return 0
+        expected = {}
+        for day_key, day in (definition.get("exercisePlan") or {}).items():
+            for variant in ("gym", "rain"):
+                for index, item in enumerate(day.get(variant) or []):
+                    item_id = f"v5-{day_key}-{variant}-{index}"
+                    tags = dict(item)
+                    tags["label"] = day.get("label") or day_key
+                    expected[item_id] = (day_key, variant, index, item.get("s") or "", item.get("name") or "",
+                                         item.get("sets") or "", item.get("intensity") or "",
+                                         json.dumps(tags, ensure_ascii=False), item.get("prog"), day.get("color"))
+        rows = conn.execute("""SELECT id,day_key,variant,sort_order,section,name,sets,intensity,tags_json,progression,color
+            FROM server_exercise_plan_items WHERE user_id=? AND plan_version='v5'""", (user_id,)).fetchall()
+        actual = {row["id"]: row for row in rows}
+        if not expected or set(actual) != set(expected):
+            raise RuntimeError("v5_cardio_revision_incomplete_plan")
+        changed = 0
+        for item_id, values in expected.items():
+            row = actual[item_id]
+            current = tuple(row[key] for key in ("day_key", "variant", "sort_order", "section", "name", "sets",
+                                                  "intensity", "tags_json", "progression", "color"))
+            if current == values:
+                continue
+            if current[:3] != values[:3]:
+                raise RuntimeError(f"v5_cardio_revision_identity_mismatch:{item_id}")
+            conn.execute("""UPDATE server_exercise_plan_items SET section=?,name=?,sets=?,intensity=?,tags_json=?,
+                progression=?,color=?,is_active=1,updated_at=? WHERE user_id=? AND id=?""",
+                         (*values[3:], now, user_id, item_id))
+            self._write_seed_change(conn, user_id, "server_exercise_plan_items", "exercise_plan_item", item_id,
+                                    namespace=namespace)
+            changed += 1
+        self._mark(conn, user_id, module, now)
+        return changed
 
     def _repair_v4_diet_rule_keys(self, conn: sqlite3.Connection, user_id: int, now: str) -> int:
         changed = 0
@@ -334,7 +426,10 @@ class SampleDataInitializationService:
         return changed
 
     def _publish_complete_exercise_v4(self, conn: sqlite3.Connection, user_id: int) -> None:
-        namespace = "exercise-v4-complete-v1"
+        self._publish_complete_exercise(conn, user_id, "v4")
+
+    def _publish_complete_exercise(self, conn: sqlite3.Connection, user_id: int, version: str) -> None:
+        namespace = f"exercise-{version}-complete-v1"
         tables = (
             ("server_exercise_plan_versions", "exercise_plan_version"),
             ("server_exercise_plan_schedule_items", "exercise_plan_schedule_item"),
@@ -345,8 +440,8 @@ class SampleDataInitializationService:
         )
         for table, entity_type in tables:
             select_id = "version AS id" if table.endswith("versions") else "id"
-            where = "version='v4'" if table.endswith("versions") else "plan_version='v4'"
-            for row in conn.execute(f"SELECT {select_id} FROM {table} WHERE user_id=? AND {where} ORDER BY id", (user_id,)):
+            version_column = "version" if table.endswith("versions") else "plan_version"
+            for row in conn.execute(f"SELECT {select_id} FROM {table} WHERE user_id=? AND {version_column}=? ORDER BY id", (user_id, version)):
                 self._write_seed_change(conn, user_id, table, entity_type, row["id"], namespace=namespace)
 
     def _publish_complete_exercise_v2(self, conn: sqlite3.Connection, user_id: int) -> None:
@@ -368,12 +463,14 @@ class SampleDataInitializationService:
         """幂等升级已存在账户的地点项和工作日评分规则。"""
         removed = ("到达图书馆", "离开图书馆", "到达体育公园", "达到体育公园", "离开体育公园", "结束户外锻炼")
         for version, definition in definitions.items():
+            if version == "v6":
+                continue
             conn.execute("UPDATE server_exercise_plan_versions SET exercise_points=?,updated_at=? WHERE user_id=? AND version=?", (int(definition.get("exercisePoints") or 0), now, user_id, version))
             self._write_seed_change(conn, user_id, "server_exercise_plan_versions", "exercise_plan_version", version, namespace="exercise-v2")
             old_items = [row for row in conn.execute(
                 "SELECT id,item FROM server_exercise_plan_schedule_items WHERE user_id=? AND plan_version=?",
                 (user_id, version),
-            ).fetchall() if str(row["item"] or "").strip().split(None, 1)[-1] in removed]
+            ).fetchall() if str(row["item"] or "").strip() and str(row["item"]).strip().split(None, 1)[-1] in removed]
             for row in old_items:
                 conn.execute("DELETE FROM server_exercise_plan_schedule_items WHERE user_id=? AND plan_version=? AND id=?", (user_id, version, row["id"]))
             for row in old_items:
@@ -501,7 +598,7 @@ class SampleDataInitializationService:
         for schedule_type, items in (
             ("weekday", definition.get("weekdaySchedule") or []),
             ("rest", definition.get("restSchedule") or []),
-            ("sunday_extra", [definition.get("sundayExtra") or {}]),
+            ("sunday_extra", [definition.get("sundayExtra") or {}] if version != "v6" else []),
         ):
             for index, item in enumerate(items):
                 conn.execute(

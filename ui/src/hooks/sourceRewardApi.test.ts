@@ -11,4 +11,5 @@ assert(hook.includes('await saveSourceCoins(summary, coins)') && hook.includes('
 assert(!/saveCoins[\s\S]*setSummary\(/.test(hook), 'failed coin saves never overwrite the visible summary optimistically')
 assert(hook.includes("throw new Error('金币奖励必须是非负数字')"), 'invalid coin input stays available for correction')
 assert(/saveSourceCoins[\s\S]*await request\([\s\S]*notifyRewardCatalogUpdated\(\)/.test(api), 'successful coin saves notify every visible source summary after persistence')
+assert(api.includes('protectedPlatformFetch(runtime, path'), 'source reward requests share environment-scoped 401 handling')
 console.log('source reward api contracts passed')

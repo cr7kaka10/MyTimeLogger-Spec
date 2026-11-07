@@ -25,6 +25,16 @@ from contextlib import contextmanager
 from datetime import datetime, timezone, timedelta
 
 try:
+    from .habit_write_policy import local_habit_write
+    from .habit_lifecycle_capabilities import load_habit_contract
+    from .habit_lifecycle_contract import validate_habit_list
+    from .habit_lifecycle_identity import resolve_habit_id
+    from .habit_lifecycle_reconcile import reconcile_missing
+    from .habit_lifecycle_pull import full_snapshot, tombstone_payload, habit_event_payload
+    from .domain.habit_lifecycle_service import observe_habit
+    from .domain.habit_lifecycle_events import publish as publish_habit_event
+    from .domain.provider_habit_retirement import retire_provider_habits
+    from .ticktick_config import begin_habit_round, habit_round_is_current
     from .provider_delta_filter import MissingProviderFingerprintError, classify_provider_records
     from .sync_constants import PULL_LIMIT_DEFAULT, PULL_LIMIT_MAX, TICKTICK_POLL_INTERVAL_SEC
     from .sync_sql_allowlist import SYNC_TABLES, SYNC_TABLE_SET, is_server_owned, primary_key_for, server_table_for
@@ -44,6 +54,16 @@ try:
     from .domain.reward_rebuild_diagnostics import log_event, sanitize
     from .logging_config import traced
 except (ImportError, ValueError):
+    from habit_write_policy import local_habit_write
+    from habit_lifecycle_capabilities import load_habit_contract
+    from habit_lifecycle_contract import validate_habit_list
+    from habit_lifecycle_identity import resolve_habit_id
+    from habit_lifecycle_reconcile import reconcile_missing
+    from habit_lifecycle_pull import full_snapshot, tombstone_payload, habit_event_payload
+    from domain.habit_lifecycle_service import observe_habit
+    from domain.habit_lifecycle_events import publish as publish_habit_event
+    from domain.provider_habit_retirement import retire_provider_habits
+    from ticktick_config import begin_habit_round, habit_round_is_current
     from provider_delta_filter import MissingProviderFingerprintError, classify_provider_records
     from sync_constants import PULL_LIMIT_DEFAULT, PULL_LIMIT_MAX, TICKTICK_POLL_INTERVAL_SEC
     from sync_sql_allowlist import SYNC_TABLES, SYNC_TABLE_SET, is_server_owned, primary_key_for, server_table_for
@@ -96,6 +116,8 @@ TICKTICK_TABLES = {"tasks", "habits", "habit_checkins"}
 # 保留名称以兼容旧诊断/测试导入；当前任务同步不再静默跳过官方项目。
 SKIPPED_TICKTICK_PROJECT_IDS = frozenset()
 TICKTICK_PULL_REQUEST_BUDGET = 20
+TICKTICK_COMPLETED_PAGE_LIMIT = 10
+TICKTICK_STAGING_MAX_AGE_SECONDS = 60
 TICKTICK_DEGRADED_COOLDOWN_SECONDS = 5 * 60
 SYNC_DIRECTION_CONTRACTS = (
     ("client", "client_to_server"),
@@ -126,6 +148,16 @@ def _cst_today() -> str:
     return datetime.now(CST).strftime("%Y-%m-%d")
 
 
+def _exercise_write_version_error(conn: sqlite3.Connection, user_id: int, date: str, version: str) -> str | None:
+    row = conn.execute("SELECT value FROM server_system_config WHERE user_id=? AND key='exercise_v6_effective_date'", (user_id,)).fetchone()
+    cutoff = str(row[0]) if row else None
+    if cutoff and _cst_today() >= cutoff and date < cutoff:
+        return "exercise_history_read_only_after_v6_cutover"
+    if (not cutoff and version == "v6") or (cutoff and version != ("v6" if date >= cutoff else "v5")):
+        return "exercise_plan_version_not_active_for_date"
+    return None
+
+
 def _ticktick_local_habit_id(user_id: int, provider_habit_id: str) -> str:
     raw = str(provider_habit_id or "")
     return raw if raw.startswith("local_") else f"ticktick:{user_id}:{raw}"
@@ -148,6 +180,24 @@ def _task_raw_json(record: dict) -> dict:
         except Exception:
             return {}
     return {}
+
+
+def _merge_provider_task_items(task: dict, existing: dict) -> bool:
+    """Only a complete provider items list may replace the saved checklist."""
+    previous = _task_raw_json(existing).get("items")
+    incoming = task.get("items")
+    valid = isinstance(incoming, list) and all(
+        isinstance(item, dict) and str(item.get("id") or "").strip()
+        and isinstance(item.get("title"), str) and type(item.get("status")) is int
+        for item in incoming
+    )
+    if valid:
+        return incoming != previous
+    if isinstance(previous, list):
+        task["items"] = previous
+    else:
+        task.pop("items", None)
+    return False
 
 
 def _task_project_id(record: dict) -> str:
@@ -222,6 +272,8 @@ class SyncHub:
         completed = 0
         for user_id in user_ids:
             with self._transact() as conn:
+                retire_provider_habits(conn, self.db, user_id, _now())
+            with self._transact() as conn:
                 done = conn.execute("SELECT 1 FROM server_sync_migrations WHERE user_id=? AND migration_key='core-version-backfill-v1'", (user_id,)).fetchone()
             if done:
                 continue
@@ -269,9 +321,9 @@ class SyncHub:
             table_name=table_name, conn=conn,
         )
 
-    def _expire_reward_fragments_for_user(self, user_id: int) -> int:
+    def _reconcile_reward_inventory_for_user(self, user_id: int) -> dict:
         with self._transact() as conn:
-            return len(self._reward_settlement.expire_fragments_for_user_in_txn(conn, user_id))
+            return self._reward_settlement.reconcile_period_inventory_in_txn(conn, user_id)
 
     def get_record(self, table: str, record_id: int | str, user_id: int) -> dict | None:
         try:
@@ -409,6 +461,12 @@ class SyncHub:
         checkins = tables.get("habit_checkins") or []
         if not checkins:
             return 0
+        with self._conn() as guard_conn:
+            deleted = {r['habit_id']: tombstone_payload(r) for r in guard_conn.execute(
+                'SELECT * FROM server_habit_tombstones WHERE user_id=?', (user_id,))}
+        suppressed = {str(r.get('habit_id')) for r in checkins if str(r.get('habit_id')) in deleted}
+        tables['habit_checkins'] = checkins = [r for r in checkins if str(r.get('habit_id')) not in suppressed]
+        tables.setdefault('habits', []).extend(deleted[hid] for hid in suppressed)
         habit_ids = {
             str(row.get("habit_id"))
             for row in checkins
@@ -516,12 +574,13 @@ class SyncHub:
             if owns_conn:
                 conn.close()
 
-    def get_changes_since(self, table: str, since: str | None, user_id: int) -> list[dict]:
+    def get_changes_since(self, table: str, since: str | None, user_id: int, conn=None) -> list[dict]:
         if table in {"management_plans", "management_plan_revisions",
                      "management_plan_bindings", "management_plan_change_log"}:
             return []
+        owns_conn = conn is None
         try:
-            conn = self._conn()
+            conn = conn or self._conn()
             if since:
                 rows = conn.execute(
                     f"SELECT * FROM {server_table_for(table)} WHERE user_id = ? AND updated_at > ? ORDER BY updated_at",
@@ -532,7 +591,8 @@ class SyncHub:
                     f"SELECT * FROM {server_table_for(table)} WHERE user_id = ? ORDER BY updated_at",
                     (user_id,)
                 ).fetchall()
-            conn.close()
+            if owns_conn:
+                conn.close()
 
             # 兼容：客户端期望的是去掉 user_id 列，且表名为 habits 等（不需要 server_ 前缀）
             results = []
@@ -551,6 +611,8 @@ class SyncHub:
                 results.append(d)
             return results
         except Exception as e:
+            if not owns_conn:
+                raise
             logger.error(f"get_changes_since {table} (user={user_id}): {e}")
             return []
 
@@ -665,6 +727,17 @@ class SyncHub:
         except (TypeError, ValueError, json.JSONDecodeError):
             return None
 
+    def _ticktick_last_success_at(self, user_id: int) -> str | None:
+        conn = self._conn()
+        try:
+            row = conn.execute(
+                "SELECT last_synced_at FROM server_sync_state WHERE user_id=? AND system='ticktick' AND direction='ticktick_to_server'",
+                (user_id,),
+            ).fetchone()
+            return row["last_synced_at"] if row else None
+        finally:
+            conn.close()
+
     def _get_sync_state_map(self, user_id: int) -> dict:
         try:
             conn = self._conn()
@@ -713,7 +786,7 @@ class SyncHub:
         filtered["user_id"] = user_id
         if "created_at" in columns and not filtered.get("created_at"):
             filtered["created_at"] = _now()
-        if "updated_at" in columns:
+        if "updated_at" in columns and not (table == "habits" and filtered.get("updated_at")):
             filtered["updated_at"] = _now()
         return filtered, []
 
@@ -726,16 +799,47 @@ class SyncHub:
         """
         RewardWalletService.rebuild_wallet_snapshot_in_txn(conn, user_id, _now)
 
-    def _prepare_exercise_record(self, conn: sqlite3.Connection, table: str, record: dict, user_id: int) -> dict:
+    def _prepare_exercise_record(self, conn: sqlite3.Connection, table: str, record: dict, user_id: int,
+                                 client_recorded_at: str | None = None) -> dict:
         if table == "exercise_diet_checkins":
             target_date = str(record.get("date") or _cst_today())[:10]
             plan_version, rule_key = str(record.get("plan_version") or "v4"), str(record.get("rule_key") or "")
-            # Deadline is a server-owned Beijing-time fact.  Populate it even
-            # for an older client that only sends the natural key and status.
-            record["deadline_at"] = (datetime.strptime(target_date, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d 00:00:00")
-            existing = conn.execute("""SELECT id FROM server_exercise_diet_checkins
+            if plan_version in {"v4", "v5"}:
+                try:
+                    from .domain.exercise_v4_service import is_exercise_rest_day
+                except ImportError:
+                    from domain.exercise_v4_service import is_exercise_rest_day
+                if is_exercise_rest_day(conn, user_id, plan_version, target_date):
+                    raise ValueError("diet_checkin_rest_day")
+            cutoff = datetime.strptime(target_date, "%Y-%m-%d") + timedelta(days=1)
+            meal_windows = {"breakfast_on_time": ((0, 0), (8, 30)), "lunch_on_time": ((12, 0), (13, 31)), "dinner_on_time": ((18, 0), (19, 1))}
+            policy = conn.execute("SELECT effective_date FROM server_exercise_policy_metadata WHERE policy_key='v5_meal_timing'").fetchone() if plan_version in {"v4", "v5"} and rule_key in meal_windows else None
+            new_timed_rule = bool(policy and target_date >= str(policy["effective_date"]))
+            late_evidence = False
+            if new_timed_rule:
+                end = meal_windows[rule_key][1]
+                cutoff = datetime.strptime(target_date, "%Y-%m-%d").replace(hour=end[0], minute=end[1])
+                now = datetime.now(CST)
+                if record.get("status") == "completed":
+                    occurred = datetime.fromisoformat(str(record.get("occurred_at") or now.isoformat()).replace("Z", "+00:00"))
+                    occurred = occurred.replace(tzinfo=CST) if occurred.tzinfo is None else occurred.astimezone(CST)
+                    recorded_text = client_recorded_at
+                    recorded = datetime.fromisoformat(str(recorded_text).replace("Z", "+00:00")) if recorded_text else None
+                    recorded = recorded.replace(tzinfo=CST) if recorded and recorded.tzinfo is None else recorded.astimezone(CST) if recorded else None
+                    late_evidence = bool(recorded and occurred <= recorded < cutoff.replace(tzinfo=CST))
+                    start = datetime.strptime(target_date, "%Y-%m-%d").replace(hour=meal_windows[rule_key][0][0], minute=meal_windows[rule_key][0][1], tzinfo=CST)
+                    if occurred.date().isoformat() != target_date or occurred < start or occurred >= cutoff.replace(tzinfo=CST) or (now >= cutoff.replace(tzinfo=CST) and not late_evidence):
+                        raise ValueError("diet_deadline_passed")
+                if record.get("status") == "failed":
+                    raise ValueError("diet_failure_is_server_owned")
+            # Deadline is a server-owned Beijing-time fact, even for old clients.
+            record["deadline_at"] = cutoff.strftime("%Y-%m-%d %H:%M:%S")
+            existing = conn.execute("""SELECT id,status,failure_reason FROM server_exercise_diet_checkins
                 WHERE user_id=? AND date=? AND plan_version=? AND rule_key=?""",
                 (user_id, target_date, plan_version, rule_key)).fetchone()
+            if existing and existing["status"] == "failed" and record.get("status") == "completed" and not (
+                    existing["failure_reason"] in {"meal_window_passed", "not_completed_before_midnight"} and late_evidence):
+                raise ValueError("diet_failure_is_server_owned")
             record["id"] = existing["id"] if existing else f"diet:{user_id}:{target_date}:{plan_version}:{rule_key}"
             return record
         if table == "exercise_daily_logs":
@@ -801,6 +905,12 @@ class SyncHub:
         try:
             if conn is None:
                 conn = self._conn()
+            if table == 'reward_config' and data.get('item_type') == 'habit':
+                raise ValueError('server_owned_habit_reward_config')
+            if table == 'habits':
+                if not conn.in_transaction:
+                    conn.execute('BEGIN IMMEDIATE')
+                data = local_habit_write(conn, user_id, data, _now())
             if table == "learning_tasks":
                 try:
                     LearningCategoryService.validate_id(conn, user_id, data.get("category_id"))
@@ -809,19 +919,27 @@ class SyncHub:
                         conn.close()
                     return False, [{"table": table, "record_id": data.get("id"), "reason": exc.code}]
             server_table = server_table_for(table)
+            client_recorded_at = data.get("updated_at") if table == "exercise_diet_checkins" else None
             data_copy, rejected = self._filter_sync_record(conn, table, data, user_id)
+            if table in {"exercise_checkins", "exercise_daily_logs", "exercise_diet_checkins"}:
+                reason = _exercise_write_version_error(conn, user_id, str(data_copy.get("date") or _cst_today())[:10], str(data_copy.get("plan_version") or "v0"))
+                if reason:
+                    raise ValueError(reason)
             body_metric_locked = False
             if table == "exercise_daily_logs" and (
                 data_copy.get("weight") is not None or data_copy.get("body_fat_rate") is not None
             ):
                 target_date = str(data_copy.get("date") or _cst_today())[:10]
-                if target_date != _cst_today():
-                    raise ValueError("body_metrics_recording_requires_today")
+                age = (datetime.fromisoformat(_cst_today()) - datetime.fromisoformat(target_date)).days
+                if age < 0 or age > 7:
+                    raise ValueError("body_metrics_recovery_window_expired")
+                if data_copy.get("weight") is not None and not 30 <= float(data_copy["weight"]) <= 200:
+                    raise ValueError("weight_out_of_range")
                 locked = conn.execute(
                     "SELECT 1 FROM server_exercise_checkins WHERE user_id=? AND date=? AND locked_at IS NOT NULL LIMIT 1",
                     (user_id, target_date),
                 ).fetchone()
-                body_metric_locked = bool(locked)
+                body_metric_locked = bool(locked) or age > 0
             if table == "exercise_checkins":
                 target_date = str(data_copy.get("date") or _cst_today())[:10]
                 plan_version = str(data_copy.get("plan_version") or "v0")
@@ -834,15 +952,21 @@ class SyncHub:
                     raise ValueError("body_metrics_deadline_locked")
             if table == "exercise_diet_checkins":
                 target_date = str(data_copy.get("date") or _cst_today())[:10]
-                if str(data_copy.get("plan_version") or "") != "v4":
-                    raise ValueError("diet_checkin_requires_v4")
+                if str(data_copy.get("plan_version") or "") not in {"v4", "v5"}:
+                    raise ValueError("diet_checkin_requires_v4_or_v5")
                 if str(data_copy.get("status") or "pending") not in {"pending", "completed", "failed"}:
                     raise ValueError("invalid_diet_status")
-            data_copy = self._prepare_exercise_record(conn, table, data_copy, user_id)
+            data_copy = self._prepare_exercise_record(conn, table, data_copy, user_id, client_recorded_at)
             if table == "exercise_daily_logs" and body_metric_locked:
                 # 09:00 后允许补录原始身体数据，但绝不能覆盖守时评分或其他每日事实。
                 allowed = {"id", "user_id", "date", "plan_version", "exercise_type", "weight", "body_fat_rate", "created_at", "updated_at"}
                 data_copy = {key: value for key, value in data_copy.items() if key in allowed}
+                existing_body = conn.execute("""SELECT weight,body_fat_rate FROM server_exercise_daily_logs
+                    WHERE user_id=? AND date=? AND plan_version=? AND exercise_type='daily'""",
+                    (user_id, data_copy.get("date"), data_copy.get("plan_version") or "v0")).fetchone()
+                if existing_body and any(data_copy.get(field) is not None and existing_body[field] is not None
+                        and float(data_copy[field]) != float(existing_body[field]) for field in ("weight", "body_fat_rate")):
+                    raise ValueError("body_metrics_server_wins")
 
             if table == "tasks":
                 data_copy = normalize_task_record_for_db(data_copy)
@@ -988,7 +1112,7 @@ class SyncHub:
                     difficulty=data_copy.get("difficulty"),
                 )
 
-            self._settle_synced_behavior_in_txn(conn, table, data_copy, user_id)
+            self._settle_synced_behavior_in_txn(conn, table, data_copy, user_id, client_recorded_at)
             if table == "huawei_sleep_data" and ("morning_diary" in data_copy or "evening_diary" in data_copy):
                 self._sleep_rewards.reconcile_diary_completion_in_txn(conn, user_id, data_copy["date"])
             if table == "study_sessions" and pk_value is not None:
@@ -1015,24 +1139,25 @@ class SyncHub:
             logger.error(f"upsert server_{table} (user={user_id}): {e}")
             return False, [{"table": table, "record_id": data.get("id") or data.get("ext_id") or data.get("key"), "reason": str(e)}]
 
-    def _settle_synced_behavior_in_txn(self, conn: sqlite3.Connection, table: str, record: dict, user_id: int):
+    def _settle_synced_behavior_in_txn(self, conn: sqlite3.Connection, table: str, record: dict, user_id: int,
+                                       client_recorded_at: str | None = None):
         if table == "exercise_daily_logs":
-            if str(record.get("plan_version") or "") == "v4":
+            if str(record.get("plan_version") or "") in {"v4", "v6"} and str(record.get("date") or _cst_today())[:10] == _cst_today():
                 try:
-                    from .server import _beijing_now, _exercise_v4
+                    from .server import _beijing_now, _exercise_authoritative
                 except (ImportError, ValueError):
-                    from server import _beijing_now, _exercise_v4
-                _exercise_v4().settle(conn, user_id, str(record.get("date") or _cst_today())[:10], _beijing_now())
+                    from server import _beijing_now, _exercise_authoritative
+                _exercise_authoritative(str(record.get("plan_version"))).settle(conn, user_id, str(record.get("date") or _cst_today())[:10], _beijing_now())
             return
 
         if table == "exercise_diet_checkins":
             try:
-                from .server import _beijing_now, _exercise_v4
+                from .server import _beijing_now, _exercise_authoritative
             except (ImportError, ValueError):
-                from server import _beijing_now, _exercise_v4
-            _exercise_v4().set_diet(conn, user_id, str(record.get("date") or _cst_today())[:10],
+                from server import _beijing_now, _exercise_authoritative
+            _exercise_authoritative(str(record.get("plan_version") or "v4")).set_diet(conn, user_id, str(record.get("date") or _cst_today())[:10],
                 str(record.get("rule_key") or ""), str(record.get("status") or "pending"),
-                record.get("occurred_at"), _beijing_now())
+                record.get("occurred_at"), _beijing_now(), recorded_at=client_recorded_at)
             return
         if table == "exercise_checkins":
             # 客户端通常通过通用 outbox 推送打卡，而不是调用 exercise/checkin API；
@@ -1043,12 +1168,12 @@ class SyncHub:
                 from server import _exercise_day_key, _exercise_plan_definition, _exercise_score, _persist_exercise_item_scores
             target_date = str(record.get("date") or _cst_today())[:10]
             plan_version = str(record.get("plan_version") or "v0")
-            if plan_version == "v4":
+            if plan_version in {"v4", "v5", "v6"}:
                 try:
-                    from .server import _beijing_now, _exercise_v4
+                    from .server import _beijing_now, _exercise_authoritative
                 except (ImportError, ValueError):
-                    from server import _beijing_now, _exercise_v4
-                _exercise_v4().settle(conn, user_id, target_date, _beijing_now())
+                    from server import _beijing_now, _exercise_authoritative
+                _exercise_authoritative(plan_version).settle(conn, user_id, target_date, _beijing_now())
                 return
             day_key = _exercise_day_key(target_date)
             items = [dict(row) for row in conn.execute(
@@ -1405,6 +1530,15 @@ class SyncHub:
             if field in record and record.get(field) != local.get(field):
                 merged[field] = record.get(field)
                 changed_fields.append(field)
+        if str(local.get("source") or "ticktick") != "local":
+            provider_raw = _task_raw_json(local)
+            client_raw = _task_raw_json(merged)
+            if client_raw.get("items") != provider_raw.get("items"):
+                if "items" in provider_raw:
+                    client_raw["items"] = provider_raw["items"]
+                else:
+                    client_raw.pop("items", None)
+                merged["raw_json"] = json.dumps(client_raw, ensure_ascii=False)
         if changed_fields and _parse_ts(local.get("updated_at")) > _parse_ts(record.get("updated_at")):
             for field in changed_fields:
                 self._record_conflict(
@@ -1462,6 +1596,8 @@ class SyncHub:
                 return True, []
             except Exception as e:
                 return False, [{"table": table, "record_id": pk_value, "reason": str(e)}]
+        if table == 'habits':
+            return self.upsert(table, {**record, 'is_active': 1}, user_id, conn=conn)
         if table != "tasks":
             return self.upsert(table, record, user_id, conn=conn)
         now = record.get("deleted_at") or record.get("updated_at") or _now()
@@ -1530,7 +1666,7 @@ class SyncHub:
             change_id = op.get("change_id") or op.get("op_id")
             device_id = op.get("device_id")
             operation = op.get("operation", "upsert")
-            
+
             # 只接受 payload 格式，不兼容 records 数组
             single_record = op.get("record") or op.get("payload")
             if not single_record or not isinstance(single_record, dict):
@@ -1563,7 +1699,7 @@ class SyncHub:
                     "reason": "account_scoped_config",
                 })
                 continue
-            
+
             management_owned = {"management_plans", "management_plan_revisions",
                                 "management_plan_bindings", "management_plan_change_log"}
             if table in {"goals", "rewards", "reward_fragments", "reward_source_bindings", "external_rewards", "user_wallets", "wallet", "wallets", "flash_task_recommendations"} | management_owned:
@@ -1613,6 +1749,37 @@ class SyncHub:
                     rejected.append({"table": table, "record_id": None, "reason": "missing_primary_key"})
                     operation_results.append({"change_id": change_id, "status": "rejected", "reason": "missing_primary_key"})
                     continue
+                if operation == "probe":
+                    probe_tables = {"exercise_daily_logs", "exercise_checkins", "exercise_diet_checkins",
+                                    "study_sessions", "learning_tasks", "huawei_sleep_data", "flash_cards"}
+                    canonical_id = self._canonical_record_id_for_change(table, record, user_id, pk_val)
+                    authority = self.get_record(table, canonical_id, user_id) if table in probe_tables else None
+                    operation_results.append({"change_id": change_id,
+                        "status": "server_wins" if authority else "authority_missing",
+                        "record_id": str(authority["id"] if authority else pk_val),
+                        "reason": "retry_limit_reached",
+                        **({"canonical_record": {key: value for key, value in authority.items() if key != "user_id"}} if authority else {})})
+                    continue
+                if table in {"exercise_checkins", "exercise_daily_logs", "exercise_diet_checkins"}:
+                    with self._conn() as lookup_conn:
+                        reason = _exercise_write_version_error(lookup_conn, user_id, str(record.get("date") or _cst_today())[:10], str(record.get("plan_version") or "v0"))
+                    if reason:
+                        rejected.append({"table": table, "record_id": str(pk_val), "reason": reason})
+                        operation_results.append({"change_id": change_id, "status": "rejected", "reason": reason})
+                        continue
+                if table == "exercise_diet_checkins" and record.get("plan_version") == "v5":
+                    with self._conn() as lookup_conn:
+                        cutover = lookup_conn.execute("SELECT switch_date FROM server_diet_habit_migrations WHERE user_id=?",
+                            (user_id,)).fetchone()
+                    if cutover and str(record.get("date") or "")[:10] >= cutover[0]:
+                        rejected.append({"table": table, "record_id": str(pk_val), "reason": "diet_habit_upgrade_required"})
+                        operation_results.append({"change_id": change_id, "status": "rejected", "reason": "diet_habit_upgrade_required"})
+                        continue
+                if (table == "exercise_diet_checkins" and record.get("plan_version") == "v5"
+                        and record.get("status") == "pending" and str(record.get("date") or "")[:10] < _cst_today()):
+                    operation_results.append({"change_id": change_id, "status": "skipped", "record_id": str(pk_val),
+                                              "reason": "stale_pending_diet_noop"})
+                    continue
                 if self._has_change_id(user_id, change_id):
                     accepted += 1
                     operation_results.append({"change_id": change_id, "status": "duplicate", "record_id": str(pk_val)})
@@ -1621,7 +1788,31 @@ class SyncHub:
                     with self._conn() as lookup_conn:
                         local = self._category_record_by_name(lookup_conn, user_id, record.get("name"))
                 else:
-                    local = self.get_record(table, pk_val, user_id)
+                    canonical_id = self._canonical_record_id_for_change(table, record, user_id, pk_val)
+                    local = self.get_record(table, canonical_id, user_id)
+                baseline = op.get("base_version")
+                pending_can_complete = (table == "exercise_diet_checkins" and local
+                    and (local.get("status") == "pending" and record.get("status") in {"completed", "failed"}
+                         or local.get("status") == "failed" and local.get("failure_reason") == "meal_window_passed"
+                         and record.get("status") == "completed" and record.get("occurred_at") and record.get("updated_at")))
+                blank_body_can_fill = (table == "exercise_daily_logs" and local and
+                    any(record.get(field) is not None and local.get(field) is None
+                        for field in ("weight", "body_fat_rate")) and
+                    all(record.get(field) is None or local.get(field) is None or
+                        float(record[field]) == float(local[field]) for field in ("weight", "body_fat_rate")))
+                if (local and table in {"exercise_daily_logs", "exercise_checkins", "exercise_diet_checkins",
+                                        "study_sessions", "learning_tasks", "huawei_sleep_data", "flash_cards"}
+                        and not pending_can_complete and not blank_body_can_fill
+                        and str(baseline if baseline is not None else "").isdigit()):
+                    with self._conn() as version_conn:
+                        latest = version_conn.execute("""SELECT MAX(server_version) FROM server_change_log
+                            WHERE user_id=? AND table_name=? AND record_id=?""",
+                            (user_id, server_table_for(table), str(local["id"]))).fetchone()[0]
+                    if latest is not None and int(latest) > int(baseline):
+                        operation_results.append({"change_id": change_id, "status": "server_wins",
+                            "record_id": str(local["id"]), "reason": "stale_base_version",
+                            "canonical_record": {key: value for key, value in local.items() if key != "user_id"}})
+                        continue
                 if table == "tasks" and operation == "upsert" and local and local.get("deleted_at"):
                     rejected.append({"table": table, "record_id": pk_val, "reason": "tombstone_protected"})
                     self._record_conflict(
@@ -1685,7 +1876,10 @@ class SyncHub:
                         ok = False
                         record_rejections = [{"table": table, "record_id": pk_val, "reason": str(exc)}]
 
-                    rejected.extend(record_rejections)
+                    body_server_wins = (table == "exercise_daily_logs" and local is not None and
+                        any(item.get("reason") == "body_metrics_server_wins" for item in record_rejections))
+                    if not body_server_wins:
+                        rejected.extend(record_rejections)
                     if ok:
                         if table == "study_sessions" and self._goal_store:
                             affected_dates = {
@@ -1735,7 +1929,10 @@ class SyncHub:
                             "[sync_push] upsert failed table=%s record_id=%s reason=%s",
                             table, pk_val, reason,
                         )
-                        operation_results.append({"change_id": change_id, "status": "rejected", "record_id": str(pk_val), "reason": reason})
+                        operation_results.append({"change_id": change_id,
+                            "status": "server_wins" if body_server_wins else "rejected",
+                            "record_id": str(local["id"] if body_server_wins else pk_val), "reason": reason,
+                            **({"canonical_record": {key: value for key, value in local.items() if key != "user_id"}} if body_server_wins else {})})
                 elif action == "skip":
                     logger.info("[sync_push] skipped table=%s record_id=%s reason=resolve_skip", table, pk_val)
                     operation_results.append({"change_id": change_id, "status": "skipped", "record_id": str(pk_val)})
@@ -1934,7 +2131,7 @@ class SyncHub:
             if table == "tasks":
                 tid = str(rec.get("id", ""))
                 raw_project_id = rec.get("project_id") or rec.get("projectId")
-                
+
                 # 1. 优先从 rec.raw_json 恢复
                 if not raw_project_id and rec.get("raw_json"):
                     try:
@@ -1943,7 +2140,7 @@ class SyncHub:
                         raw_project_id = raw_data.get("projectId") or raw_data.get("project_id")
                     except Exception:
                         pass
-                
+
                 # 2. 如果还没有，从数据库查询恢复
                 if not raw_project_id:
                     with self._conn() as conn:
@@ -1964,7 +2161,7 @@ class SyncHub:
                         user_id, tid, sorted(rec.keys()),
                     )
                     return {"table": table, "record_id": tid, "ok": False, "error": "missing_project_id"}
-                
+
                 project_id = str(raw_project_id)
                 if not tid:
                     logger.warning(
@@ -2080,7 +2277,7 @@ class SyncHub:
                 "diagnostics": {"request_id": request_id, "reward_rebuild_in_progress": True},
                 "sync_state": self._get_sync_state_map(user_id),
             }
-        self._expire_reward_fragments_for_user(user_id)
+        self._reconcile_reward_inventory_for_user(user_id)
         logger.info(
             "[SyncHub] legacy pull start request_id=%s user_id=%s since=%s",
             request_id,
@@ -2094,6 +2291,9 @@ class SyncHub:
             if rows:
                 tables[t] = rows
                 merged_count += len(rows)
+        with self._conn() as tomb_conn:
+            tombstones = [tombstone_payload(r) for r in tomb_conn.execute('SELECT * FROM server_habit_tombstones WHERE user_id=?', (user_id,))]
+        tables.setdefault('habits', []).extend(tombstones)
 
         # 获取用户最新的钱包资产余额快照，放入响应数据包中一同下发对齐
         try:
@@ -2102,7 +2302,7 @@ class SyncHub:
             import sys
             sys.path.append(os.path.dirname(__file__))
             from store import ServerSleepStore
-            
+
         temp_store = ServerSleepStore()
         balance = temp_store.get_user_wallet_balance(user_id)
 
@@ -2150,6 +2350,7 @@ class SyncHub:
                 "sync_state": self._get_sync_state_map(user_id),
             }
         safe_limit = max(1, min(int(limit or PULL_LIMIT_DEFAULT), PULL_LIMIT_MAX))
+        self._reconcile_reward_inventory_for_user(user_id)
         logger.info(
             "[SyncHub] version pull start request_id=%s user_id=%s since_version=%s limit=%s",
             request_id,
@@ -2191,12 +2392,12 @@ class SyncHub:
             }
         tables: dict[str, list[dict]] = {}
         if from_version == 0:
-            for table in SYNC_TABLES:
-                rows_for_table = self.get_changes_since(table, None, user_id)
-                if rows_for_table:
-                    tables[table] = rows_for_table
-            if not changes and tables:
-                to_version = self.db.allocate_server_version(user_id)
+            snapshot_conn = self._conn()
+            try:
+                tables, to_version = full_snapshot(self, snapshot_conn, user_id)
+            finally:
+                snapshot_conn.close()
+            changes, has_more = [], False
         record_ids_by_table: dict[str, set[str]] = {}
         for change in changes:
             table = str(change.get("table_name") or "").removeprefix("server_")
@@ -2226,6 +2427,8 @@ class SyncHub:
                 tables.setdefault(table, []).append(tombstone)
                 continue
             record = records_by_table.get(table, {}).get(str(change.get("record_id")))
+            if table == 'habits':
+                record = habit_event_payload(change, record)
             if record:
                 tables.setdefault(table, []).append(record)
         # Multiple device writes to the same natural key can produce several
@@ -2242,7 +2445,7 @@ class SyncHub:
                 else:
                     latest[str(key)] = row
             tables[table] = [*latest.values(), *unkeyed]
-        dependency_backfilled = self._include_habit_parents_for_checkins(tables, user_id, request_id)
+        dependency_backfilled = self._include_habit_parents_for_checkins(tables, user_id, request_id) if from_version else 0
         running_reward_snapshot = self._running_reward_snapshot(user_id)
         wallet = self.get_record("user_wallets", user_id, user_id)
         if running_reward_snapshot:
@@ -2427,7 +2630,8 @@ class SyncHub:
             self._notify_clients(["tasks", "habits", "habit_checkins", "reward_ledger", "user_wallets"])
 
     async def force_pull_ticktick(
-        self, user_id: int, request_id: str | None = None, job_id: str | None = None, manual: bool = False,
+        self, user_id: int, request_id: str | None = None, job_id: str | None = None,
+        manual: bool = False, validate_only: bool = False,
     ):
         """兼容 refresh=true 的 TickTick provider 对账入口。"""
         async with self._provider_reconcile_lock:
@@ -2439,7 +2643,7 @@ class SyncHub:
                     user_id,
                 )
                 return {
-                    "ok": True,
+                    "ok": True, "complete": False, "scope": "checklist", "provider": "ticktick",
                     "enabled": True,
                     "foreground": False,
                     "request_id": request_id,
@@ -2457,13 +2661,14 @@ class SyncHub:
             retry_at = None if manual else self._ticktick_cooldown_retry_at(user_id)
             if retry_at:
                 return {
-                    "ok": True, "status": "degraded", "enabled": True, "foreground": False,
+                    "ok": False, "complete": False, "scope": "checklist", "provider": "ticktick",
+                    "status": "degraded", "enabled": True, "foreground": False,
                     "request_id": request_id, "job_id": job_id, "skipped": True, "reason": "cooldown",
                     "retry_at": retry_at, "failure_summary": "外部任务源部分更新，冷却中等待自动重试",
                     "started_at": _now(), "finished_at": _now(), "elapsed_ms": 0, "merged_count": 0,
                     "tasks": {}, "habits": {}, "errors": ["tasks:incomplete_snapshot"],
                 }
-            reconcile = self._force_pull_ticktick_impl(user_id, request_id, job_id) if job_id else self._force_pull_ticktick_impl(user_id, request_id)
+            reconcile = self._force_pull_ticktick_impl(user_id, request_id, job_id, validate_only) if (job_id or validate_only) else self._force_pull_ticktick_impl(user_id, request_id)
             task = asyncio.create_task(reconcile)
             self._provider_reconcile_tasks[user_id] = task
         try:
@@ -2473,12 +2678,19 @@ class SyncHub:
                 if self._provider_reconcile_tasks.get(user_id) is task:
                     self._provider_reconcile_tasks.pop(user_id, None)
 
-    async def _force_pull_ticktick_impl(self, user_id: int, request_id: str | None = None, job_id: str | None = None):
+    async def _force_pull_ticktick_impl(
+        self, user_id: int, request_id: str | None = None, job_id: str | None = None,
+        validate_only: bool = False,
+    ):
         """执行单轮 TickTick provider 对账；由 force_pull_ticktick 做并发单飞。"""
         started_at = _now()
         started_perf = _time.perf_counter()
         diagnostics = {
             "ok": True,
+            "complete": False,
+            "scope": "checklist",
+            "provider": "ticktick",
+            "validate_only": validate_only,
             "status": "success",
             "enabled": False,
             "foreground": True,
@@ -2489,9 +2701,19 @@ class SyncHub:
             "elapsed_ms": None,
             "merged_count": 0,
             "tasks": {},
-            "habits": {},
+            "habits": {"status": "disabled", "reason": "provider_habit_sync_disabled"},
             "errors": [],
+            "provider_observed_at": None,
+            "last_success_at": self._ticktick_last_success_at(user_id),
+            "fresh": False,
+            "transport_mode": "direct",
+            "failure_stage": None,
         }
+        try:
+            with self._transact() as conn:
+                diagnostics["habits"] = retire_provider_habits(conn, self.db, user_id, _now())
+        except Exception as exc:
+            diagnostics["habits"] = {"status": "degraded", "reason": type(exc).__name__}
         logger.info("[ProviderReconcile] start request_id=%s user_id=%s", request_id, user_id)
         if request_id:
             log_event(logger, trace_id=request_id, job_id=job_id, user_id=user_id,
@@ -2514,6 +2736,7 @@ class SyncHub:
             logger.warning("[ProviderReconcile] skipped request_id=%s user_id=%s reason=ticktick_not_configured", request_id, user_id)
             return diagnostics
         diagnostics["enabled"] = True
+        diagnostics["transport_mode"] = getattr(settings, "transport_mode", "explicit_proxy" if getattr(settings, "proxy_url", None) else "direct")
         TickTickClient = _get_ticktick_client_class()
 
         changed = False
@@ -2523,17 +2746,24 @@ class SyncHub:
             verify_tls=settings.verify_tls,
             timeout_seconds=settings.timeout_seconds,
             request_id=request_id,
+            proxy_url=getattr(settings, "proxy_url", None),
         ) as client:
             try:
                 logger.info("[ProviderReconcile] tasks start request_id=%s user_id=%s", request_id, user_id)
-                diagnostics["tasks"] = await self._pull_tasks(client, user_id)
+                diagnostics["tasks"] = (
+                    await self._pull_tasks(client, user_id, publish=False)
+                    if validate_only else await self._pull_tasks(client, user_id)
+                )
                 if not diagnostics["tasks"].get("complete"):
+                    diagnostics["ok"] = False
                     diagnostics["status"] = "degraded"
                     diagnostics["retry_at"] = (datetime.now(CST) + timedelta(seconds=TICKTICK_DEGRADED_COOLDOWN_SECONDS)).isoformat(timespec="seconds")
                     diagnostics["failure_summary"] = "任务快照未完整读取，已保留已有任务，稍后重试"
                     diagnostics["failed_projects"] = diagnostics["tasks"].get("failed_projects", [])
                     diagnostics["errors"].append("tasks:incomplete_snapshot")
-                changed = True
+                changed = not validate_only
+                diagnostics["complete"] = bool(diagnostics["tasks"].get("complete"))
+                diagnostics["failure_stage"] = diagnostics["tasks"].get("failure_stage")
                 logger.info("[ProviderReconcile] tasks finish request_id=%s user_id=%s stats=%s", request_id, user_id, diagnostics["tasks"])
             except Exception as e:
                 error = f"tasks:{getattr(e, 'pull_code', type(e).__name__)}"
@@ -2541,28 +2771,13 @@ class SyncHub:
                 diagnostics["ok"] = False
                 diagnostics["status"] = "error"
                 diagnostics["errors"].append(error)
+                diagnostics["failure_stage"] = diagnostics["tasks"].get("failure_stage") if isinstance(diagnostics["tasks"], dict) else "task_pull"
                 logger.warning("[ProviderReconcile] tasks failed request_id=%s user_id=%s error=%s", request_id, user_id, error)
-            try:
-                logger.info("[ProviderReconcile] habits start request_id=%s user_id=%s", request_id, user_id)
-                diagnostics["habits"] = await self._pull_habits(client, user_id)
-                if not diagnostics["habits"].get("complete"):
-                    diagnostics["ok"] = False
-                    diagnostics["status"] = "error"
-                    diagnostics["errors"].append("habits:incomplete_snapshot")
-                changed = True
-                logger.info("[ProviderReconcile] habits finish request_id=%s user_id=%s stats=%s", request_id, user_id, diagnostics["habits"])
-            except Exception as e:
-                error = f"habits:{getattr(e, 'pull_code', type(e).__name__)}"
-                diagnostics["habits"] = getattr(e, "diagnostics", diagnostics["habits"])
-                diagnostics["ok"] = False
-                diagnostics["status"] = "error"
-                diagnostics["errors"].append(error)
-                logger.warning("[ProviderReconcile] habits failed request_id=%s user_id=%s error=%s", request_id, user_id, error)
-
+        changed = bool((diagnostics.get("tasks") or {}).get("published_upserts") or (diagnostics.get("tasks") or {}).get("deleted_tasks"))
         if changed:
-            self._notify_clients(["tasks", "habits", "habit_checkins", "reward_ledger"])
+            self._notify_clients(["tasks"], user_id)
         merged_count = 0
-        for key in ("tasks", "habits"):
+        for key in ("tasks",):
             value = diagnostics.get(key) or {}
             if isinstance(value, dict):
                 merged_count += sum(
@@ -2571,26 +2786,15 @@ class SyncHub:
                 )
         diagnostics["merged_count"] = merged_count
         diagnostics["finished_at"] = _now()
+        diagnostics["provider_observed_at"] = diagnostics["finished_at"]
+        diagnostics["fresh"] = bool(diagnostics["ok"] and diagnostics["complete"])
+        if diagnostics["fresh"]:
+            diagnostics["last_success_at"] = diagnostics["finished_at"]
         diagnostics["elapsed_ms"] = round((_time.perf_counter() - started_perf) * 1000, 2)
-        if diagnostics["ok"]:
+        if not validate_only:
             self._record_sync_state(
-                user_id,
-                "ticktick",
-                "ticktick_to_server",
-                diagnostics["status"],
-                ";".join(diagnostics["errors"]) or None,
-                merged_count=merged_count,
-                diagnostics=diagnostics,
-            )
-        else:
-            self._record_sync_state(
-                user_id,
-                "ticktick",
-                "ticktick_to_server",
-                "error",
-                ";".join(diagnostics["errors"]),
-                merged_count,
-                diagnostics=diagnostics,
+                user_id, "ticktick", "ticktick_to_server", diagnostics["status"],
+                ";".join(diagnostics["errors"]) or None, merged_count, diagnostics=diagnostics,
             )
         logger.info(
             "[ProviderReconcile] finish request_id=%s user_id=%s ok=%s merged_count=%s errors=%s elapsed_ms=%s",
@@ -2611,11 +2815,13 @@ class SyncHub:
                       level=logging.INFO if diagnostics["ok"] else logging.WARNING)
         return diagnostics
 
-    async def _pull_tasks(self, client: "TickTickClient", user_id: int):
+    async def _pull_tasks(self, client: "TickTickClient", user_id: int, publish: bool = True):
         stats = {
             "projects": 0,
             "provider_requests": 0,
             "request_budget": TICKTICK_PULL_REQUEST_BUDGET,
+            "failure_stage": None,
+            "published": publish,
             "request_budget_exceeded": False,
             "project_failures": 0,
             "failed_projects": [],
@@ -2638,11 +2844,14 @@ class SyncHub:
             "completed_task_changes": 0,
             "completed_task_unchanged": 0,
             "completed_item_errors": [],
+            "active_item_errors": [],
+            "candidate_upserts": 0,
+            "published_upserts": 0,
             "sample_fields": [],
             "missing_fields": [],
         }
         try:
-            return await self._pull_tasks_impl(client, user_id, stats)
+            return await self._pull_tasks_impl(client, user_id, stats, publish)
         except ProviderPullError:
             raise
         except Exception as exc:
@@ -2650,10 +2859,10 @@ class SyncHub:
                 exc, f"task_pull_failed:{type(exc).__name__}", stats,
             )
 
-    async def _pull_tasks_impl(self, client: "TickTickClient", user_id: int, stats: dict):
+    async def _pull_tasks_impl(self, client: "TickTickClient", user_id: int, stats: dict, publish: bool = True):
         start_date = self._get_checklist_sync_start_date(user_id)
         async def provider_get(read):
-            remaining = TICKTICK_PULL_REQUEST_BUDGET - stats["provider_requests"]
+            remaining = stats["request_budget"] - stats["provider_requests"]
             if remaining <= 0:
                 stats["request_budget_exceeded"] = True
                 raise ValueError("provider_request_budget_exhausted")
@@ -2668,7 +2877,9 @@ class SyncHub:
                 attempts = int(actual - before) if isinstance(before, int) and isinstance(actual, int) else int(getattr(client, "last_get_attempts", 1) or 1)
                 stats["provider_requests"] += max(1, min(attempts, remaining))
 
+        stats["failure_stage"] = "project_list"
         projects = await provider_get(client.get_projects)
+        stats["failure_stage"] = None
         stats["projects"] = len(projects)
         project_map = {
             str(p.get("id", "")): p.get("name", "")
@@ -2696,6 +2907,11 @@ class SyncHub:
             active_projects.append({"id": "inbox", "name": "收集箱", "_inbox": True})
         if inbox_enabled:
             active_projects.sort(key=lambda project: str(project.get("id", "")).lower() != "inbox")
+        # 每个 GET 最多重试一次；在读取项目列表后按真实项目数预留完整快照预算。
+        stats["request_budget"] = max(
+            TICKTICK_PULL_REQUEST_BUDGET,
+            2 * (1 + len(active_projects) + TICKTICK_COMPLETED_PAGE_LIMIT),
+        )
 
         # 1. 查询本地数据库中当前属于该用户的未完成（status=0）任务的 id
         db_active_tids = set()
@@ -2704,7 +2920,7 @@ class SyncHub:
         try:
             conn = self._conn()
             rows = conn.execute(
-                "SELECT id FROM server_tasks WHERE user_id = ? AND status = 0",
+                "SELECT id FROM server_tasks WHERE user_id = ? AND status = 0 AND source = 'ticktick'",
                 (user_id,)
             ).fetchall()
             db_active_tids = {row["id"] for row in rows if row["id"]}
@@ -2715,12 +2931,12 @@ class SyncHub:
             snapshot_columns = [
                 column for column in (
                     "id", "title", "priority", "due_date", "tags", "project_id",
-                    "project_name", "raw_json", "source_etag", "source_modified_time", "deleted_at",
+                    "project_name", "raw_json", "source", "source_etag", "source_modified_time", "deleted_at",
                 )
                 if column in columns
             ]
             known_rows = conn.execute(
-                f"SELECT {', '.join(snapshot_columns)} FROM server_tasks WHERE user_id = ?",
+                f"SELECT {', '.join(snapshot_columns)} FROM server_tasks WHERE user_id = ? AND source = 'ticktick'",
                 (user_id,)
             ).fetchall()
             db_known_tids = {
@@ -2733,6 +2949,10 @@ class SyncHub:
             logger.error(f"查询本地未完成任务失败 (user={user_id}): {e}")
 
         current_active_tids = set()
+        staged_active_tasks = {}
+        staged_completed_tasks = {}
+        staged_completed_sources = {}
+        snapshot_fingerprints = {}
         task_fingerprints = {}
         try:
             task_fingerprints = self.db.get_provider_fingerprints(user_id, "server_tasks")
@@ -2767,6 +2987,7 @@ class SyncHub:
                         if field not in t and field not in stats["missing_fields"]:
                             stats["missing_fields"].append(field)
                     normalized_task = normalize_ticktick_task_times(t)
+                    items_changed = _merge_provider_task_items(normalized_task, local_snapshots.get(tid, {}))
                     due_date = normalized_task.get("due_date") or normalized_task.get("dueDate") or ""
                     if due_date and due_date < start_date.beijing_start_datetime.strftime("%Y-%m-%d %H:%M:%S") and tid not in local_snapshots:
                         continue
@@ -2789,6 +3010,10 @@ class SyncHub:
                         "modifiedTime": t.get("modifiedTime", ""),
                         **{k: v for k, v in normalized_task.items() if k not in {"id", "title", "priority", "status", "tags"}},
                     }
+                    snapshot_fingerprints[tid] = {
+                        "id": tid, "status": 0, "etag": task_payload.get("etag", ""),
+                        "modified": task_payload.get("modifiedTime", ""),
+                    }
                     try:
                         delta = classify_provider_records([task_payload], task_fingerprints, "task")
                     except MissingProviderFingerprintError as e:
@@ -2798,11 +3023,10 @@ class SyncHub:
                         )
                         raise
                     stats["active_tasks"] += 1
-                    if delta.unchanged:
+                    if delta.unchanged and not items_changed:
                         stats["active_task_unchanged"] += 1
                         continue
-                    self._clear_task_reward(user_id, tid)
-                    changed = self.db.upsert_task(user_id, task_payload)
+                    staged_active_tasks[tid] = task_payload
                     if task_payload.get("etag"):
                         task_fingerprints[tid] = {
                             "id": tid,
@@ -2810,9 +3034,9 @@ class SyncHub:
                             "source_modified_time": task_payload.get("modifiedTime", ""),
                             "status": 0,
                         }
-                    if changed:
-                        stats["active_task_changes"] += 1
+                    stats["candidate_upserts"] += 1
             except Exception as e:
+                stats["failure_stage"] = "project_data"
                 stats["project_failures"] += 1
                 if len(stats["failed_projects"]) < 3:
                     stats["failed_projects"].append({"project_id_suffix": request_project_id[-6:], "error_type": type(e).__name__})
@@ -2824,7 +3048,7 @@ class SyncHub:
                 )
 
         for index, project in enumerate(active_projects):
-            if stats["provider_requests"] >= TICKTICK_PULL_REQUEST_BUDGET:
+            if stats["provider_requests"] >= stats["request_budget"]:
                 stats["request_budget_exceeded"] = True
                 stats["project_budget_truncated"].extend(
                     str(item.get("id", ""))
@@ -2833,6 +3057,22 @@ class SyncHub:
                 break
             await process_active_project(project)
 
+        # 活动任务 upsert 不会推断远端缺失，成功项目可安全地立即发布；失败项目仍由旧快照保留。
+        if publish:
+            for tid, task_payload in staged_active_tasks.items():
+                try:
+                    changed = self.db.upsert_task(user_id, task_payload)
+                    self._clear_task_reward(user_id, tid)
+                    if changed:
+                        stats["active_task_changes"] += 1
+                        stats["published_upserts"] += 1
+                except Exception as item_error:
+                    stats["active_item_errors"].append({
+                        "code": str(item_error).split(":", 1)[0] or type(item_error).__name__,
+                        "error_type": type(item_error).__name__, "task_id_suffix": str(tid)[-6:],
+                    })
+                    stats["failure_stage"] = "active_task_publish"
+
         completed_today_tids = set()
         try:
             utc_start = start_date.utc_start_for_ticktick_completed
@@ -2840,7 +3080,12 @@ class SyncHub:
             continuation = None
             seen_continuations = set()
             seen_records = set()
+            completed_pages = 0
+            if not stats["failure_stage"]:
+                stats["failure_stage"] = "completed_tasks"
             while True:
+                if completed_pages >= TICKTICK_COMPLETED_PAGE_LIMIT:
+                    raise ValueError("completed_page_limit_exceeded")
                 if continuation is None:
                     page = await provider_get(lambda: client.get_completed_tasks(utc_start))
                 else:
@@ -2862,10 +3107,13 @@ class SyncHub:
                     raise ValueError("completed_page_no_progress")
                 seen_records.update(page_keys)
                 completed.extend(page_records)
+                completed_pages += 1
                 if next_page is None:
                     break
                 continuation = next_page
             stats["completed_pull_succeeded"] = True
+            if stats["failure_stage"] == "completed_tasks":
+                stats["failure_stage"] = None
             for t in completed:
                 if t.get("status") == 2:
                     tid = t.get("id", "")
@@ -2887,6 +3135,7 @@ class SyncHub:
                             stats["missing_fields"].append(missing_key)
                     title = t.get("title") or local_snapshot.get("title", "")
                     normalized_task = normalize_ticktick_task_times(t)
+                    items_changed = _merge_provider_task_items(normalized_task, local_snapshot)
                     due_date = normalized_task.get("due_date") or normalized_task.get("dueDate") or local_snapshot.get("due_date") or ""
                     completed_today_tids.add(tid)
                     tags = t.get("tags", local_snapshot.get("tags", []))
@@ -2903,6 +3152,10 @@ class SyncHub:
                         "modifiedTime": t.get("modifiedTime", local_snapshot.get("source_modified_time", "")),
                         **{k: v for k, v in normalized_task.items() if k not in {"id", "title", "priority", "status", "tags"}},
                     }
+                    snapshot_fingerprints[tid] = {
+                        "id": tid, "status": 2, "etag": task_payload.get("etag", ""),
+                        "modified": task_payload.get("modifiedTime", ""),
+                    }
                     try:
                         delta = classify_provider_records([task_payload], task_fingerprints, "task")
                     except MissingProviderFingerprintError as e:
@@ -2912,23 +3165,12 @@ class SyncHub:
                         )
                         raise
                     stats["completed_tasks"] += 1
-                    if delta.unchanged:
+                    if delta.unchanged and not items_changed:
                         stats["completed_task_unchanged"] += 1
                         continue
 
-                    try:
-                        # 首次出现的历史完成任务必须先持久化并建立默认奖励配置。
-                        changed = self.db.upsert_task(user_id, task_payload)
-                        self._reward_task_if_new(tid, title, t, user_id)
-                    except Exception as item_error:
-                        error = {
-                            "code": str(item_error).split(":", 1)[0] or type(item_error).__name__,
-                            "error_type": type(item_error).__name__, "task_id_suffix": str(tid)[-6:],
-                        }
-                        stats["completed_item_errors"].append(error)
-                        logger.warning("TickTick 已完成任务处理失败但继续 user=%s task_id_suffix=%s error=%s",
-                                       user_id, str(tid)[-6:], item_error)
-                        continue
+                    staged_completed_tasks[tid] = task_payload
+                    staged_completed_sources[tid] = (title, t)
                     if task_payload.get("etag"):
                         task_fingerprints[tid] = {
                             "id": tid,
@@ -2936,8 +3178,7 @@ class SyncHub:
                             "source_modified_time": task_payload.get("modifiedTime", ""),
                             "status": 2,
                         }
-                    if changed:
-                        stats["completed_task_changes"] += 1
+                    stats["candidate_upserts"] += 1
         except Exception as e:
             stats["completed_pull_error"] = f"{type(e).__name__}:{str(e) or 'empty_error'}"
             logger.warning(f"拉取已完成任务失败 (user={user_id}): {e}")
@@ -2946,14 +3187,40 @@ class SyncHub:
             not stats["request_budget_exceeded"]
             and stats["project_failures"] == 0
             and stats["completed_pull_succeeded"]
+            and not stats["active_item_errors"]
             and not stats["completed_item_errors"]
         )
         if snapshot_complete:
+            digest_input = [snapshot_fingerprints[key] for key in sorted(snapshot_fingerprints)]
+            stats["snapshot_digest"] = hashlib.sha256(
+                json.dumps(digest_input, ensure_ascii=False, sort_keys=True).encode("utf-8")
+            ).hexdigest()
+            stats["staged_at"] = datetime.now(CST).isoformat(timespec="seconds")
+        if snapshot_complete and publish:
+            # 完成态会触发奖励副作用，只能在完整快照闸门后发布。
+            for tid, task_payload in staged_completed_tasks.items():
+                try:
+                    changed = self.db.upsert_task(user_id, task_payload)
+                    if tid in staged_completed_sources:
+                        title, source = staged_completed_sources[tid]
+                        self._reward_task_if_new(tid, title, source, user_id)
+                    if changed:
+                        stats["completed_task_changes"] += 1
+                        stats["published_upserts"] += 1
+                except Exception as item_error:
+                    stats["completed_item_errors"].append({
+                        "code": str(item_error).split(":", 1)[0] or type(item_error).__name__,
+                        "error_type": type(item_error).__name__, "task_id_suffix": str(tid)[-6:],
+                    })
+                    snapshot_complete = False
+                    stats["failure_stage"] = "snapshot_commit"
+                    break
+        if snapshot_complete and publish:
             missing_tids = db_known_tids - current_active_tids - completed_today_tids
             for tid in sorted(missing_tids):
                 if self._delete_provider_task(user_id, tid):
                     stats["deleted_tasks"] += 1
-        else:
+        elif not snapshot_complete:
             reasons = []
             if stats["request_budget_exceeded"]:
                 reasons.append("request_budget_exceeded")
@@ -2963,7 +3230,12 @@ class SyncHub:
                 reasons.append("completed_pull_failed")
             if stats["completed_item_errors"]:
                 reasons.append("task_persistence_failed")
+            if stats["active_item_errors"]:
+                reasons.append("active_task_persistence_failed")
             stats["deletion_skipped_reason"] = ",".join(reasons)
+        else:
+            stats["active_task_changes"] = 0
+            stats["completed_task_changes"] = 0
 
         stats["complete"] = snapshot_complete
 
@@ -2975,7 +3247,7 @@ class SyncHub:
         try:
             with conn:
                 row = conn.execute(
-                    "SELECT id FROM server_tasks WHERE user_id = ? AND id = ? AND deleted_at IS NULL",
+                    "SELECT id FROM server_tasks WHERE user_id = ? AND id = ? AND source = 'ticktick' AND deleted_at IS NULL",
                     (user_id, task_id),
                 ).fetchone()
                 if not row:
@@ -3001,8 +3273,19 @@ class SyncHub:
 
     async def _pull_habits(self, client: "TickTickClient", user_id: int):
         start_date = self._get_checklist_sync_start_date(user_id)
+        with self._transact() as binding_conn:
+            binding_conn.execute('BEGIN IMMEDIATE')
+            settings = load_ticktick_settings(binding_conn, user_id)
+            if hasattr(client, 'headers') and (client.headers.get('Authorization') != f'Bearer {settings.access_token}'
+                    or client.base_url != f'https://api.{settings.host}/open/v1'):
+                raise ValueError('stale_habit_provider_client')
+            binding_id, round_id = begin_habit_round(binding_conn, user_id, settings)
+        contract = load_habit_contract(settings.host)
         conn = None
         stats = {
+            "observed_at": _now(),
+            "list_validated": False,
+            "lifecycle_committed": False,
             "provider_requests": 0,
             "habits": 0,
             "habit_changes": 0,
@@ -3034,7 +3317,11 @@ class SyncHub:
                 raise _attach_pull_diagnostics(
                     list_error, f"habit_list_failed:{type(list_error).__name__}", stats,
                 )
-            visible = [h for h in habits if h.get("status") in (0, 1)]
+            visible, unknown = validate_habit_list(habits, contract)
+            stats['list_validated'] = True
+            stats.update(binding_id=binding_id, round_id=round_id, unknown_status=len(unknown),
+                         hard_delete_enabled=contract.can_delete, lifecycle_committed=False,
+                         reappeared_deleted=0, lifecycle_contract_verified=bool(contract.evidence_ref))
             stats["habits"] = len(visible)
             visible.sort(key=lambda h: h.get("sortOrder", 0))
 
@@ -3046,9 +3333,12 @@ class SyncHub:
                 section_map = {s["id"]: s["name"] for s in sections if "id" in s and "name" in s}
             except Exception as se:
                 stats["section_error"] = {"code": "habit_sections_failed", "error_type": type(se).__name__}
-                logger.warning(f"拉取习惯分组(sections)失败 (user={user_id}): {se}")
+                logger.warning("拉取习惯分组失败 (user=%s): %s", user_id, type(se).__name__)
 
             conn = self._conn()
+            conn.execute('BEGIN IMMEDIATE')
+            if not habit_round_is_current(conn, user_id, binding_id, round_id):
+                raise ValueError('stale_habit_round')
             now = _now()
             try:
                 habit_fingerprints = self.db.get_provider_fingerprints(user_id, "server_habits")
@@ -3058,6 +3348,11 @@ class SyncHub:
             def record_provider_change(entity_type: str, entity_id: str, table_name: str, payload: dict):
                 if not hasattr(self.db, "write_server_change"):
                     return
+                if entity_type == 'habit':
+                    observe_habit(conn, self.db, user_id, entity_id, binding_id, hid, round_id,
+                                  contract.state(h), now, publish_change=False)
+                    payload = dict(conn.execute('SELECT * FROM server_habits WHERE user_id=? AND id=?', (user_id,entity_id)).fetchone())
+                    return publish_habit_event(conn, self.db, user_id, table_name, payload)
                 self.db.write_server_change(
                     user_id,
                     entity_type,
@@ -3072,17 +3367,26 @@ class SyncHub:
 
             for h in visible:
                 hid = str(h.get("id", ""))
-                local_hid = _ticktick_local_habit_id(user_id, hid)
+                local_hid = resolve_habit_id(conn, user_id, hid)
+                if conn.execute('SELECT 1 FROM server_habit_tombstones WHERE user_id=? AND provider_id=?', (user_id,hid)).fetchone():
+                    stats['reappeared_deleted'] += 1
+                    continue
                 name = h.get("name", "")
                 icon = h.get("iconRes", "🎯")
                 if icon and icon.startswith("txt_"):
                     icon = icon[4:]
                 sort_order = h.get("sortOrder", 0)
-                is_active = h.get("status", 0)
+                is_active = int(contract.state(h) == 'archived')
 
                 section_id = h.get("sectionId", "")
                 section_name = section_map.get(section_id, "")
                 category_id = self.db._get_category_id(user_id, section_name, [section_name], conn) if section_name else None
+                if stats["section_error"]:
+                    previous = conn.execute(
+                        "SELECT category_id FROM server_habits WHERE user_id=? AND id IN (?,?) ORDER BY id=? DESC LIMIT 1",
+                        (user_id, local_hid, hid, local_hid),
+                    ).fetchone()
+                    category_id = previous["category_id"] if previous else None
 
                 repeat_rule = h.get("repeatRule", "")
                 raw_json = json.dumps(h, ensure_ascii=False, default=str)
@@ -3102,7 +3406,7 @@ class SyncHub:
                     "source_modified_time": source_modified_time,
                 }
                 try:
-                    delta = classify_provider_records([{**h, "_provider_key": local_hid}], habit_fingerprints, "habit")
+                    delta = classify_provider_records([{**h, 'status': is_active, "_provider_key": local_hid}], habit_fingerprints, "habit")
                 except MissingProviderFingerprintError as e:
                     logger.error(
                         "TickTick 习惯缺少增量指纹，停止本轮习惯拉取 user=%s habit_id=%s field=%s",
@@ -3110,22 +3414,9 @@ class SyncHub:
                     )
                     raise
                 if delta.unchanged:
+                    observe_habit(conn, self.db, user_id, local_hid, binding_id, hid, round_id, contract.state(h), now)
                     stats["habit_unchanged"] += 1
                     continue
-                if local_hid != hid:
-                    legacy_existing = conn.execute(
-                        "SELECT id FROM server_habits WHERE user_id = ? AND id = ?",
-                        (user_id, hid),
-                    ).fetchone()
-                    if legacy_existing:
-                        conn.execute(
-                            "UPDATE server_habit_checkins SET habit_id = ? WHERE user_id = ? AND habit_id = ?",
-                            (local_hid, user_id, hid),
-                        )
-                        conn.execute(
-                            "UPDATE server_habits SET id = ? WHERE user_id = ? AND id = ?",
-                            (local_hid, user_id, hid),
-                        )
                 existing = conn.execute(
                     "SELECT id, name, color, sort_order, is_active, icon, category_id, repeat_rule, raw_json, source_etag, source_modified_time FROM server_habits WHERE user_id = ? AND id = ?", (user_id, local_hid)
                 ).fetchone()
@@ -3159,19 +3450,30 @@ class SyncHub:
                         "status": is_active,
                     }
             conn.commit()
-
-
-
-            if visible:
+            stats['lifecycle_committed'] = True
+            try:
+                stats.update(await reconcile_missing(self, client, user_id, binding_id, round_id,
+                    {h['id'] for h in habits}, contract, now))
+            except Exception as exc:
+                stats['lifecycle_error'] = type(exc).__name__
+            stats['provider_requests'] += stats.get('detail_requests', 0)
+            version_row = conn.execute('SELECT current_version FROM server_version_counters WHERE user_id=?', (user_id,)).fetchone()
+            stats['lifecycle_commit_version'] = int(version_row[0]) if version_row else 0
+            checkin_habits = [h for h in visible if contract.state(h) == 'active']
+            stats['checkin_pull_succeeded'] = not checkin_habits
+            if checkin_habits:
                 now_cst = datetime.now(CST)
                 tomorrow = (now_cst + timedelta(days=1)).strftime("%Y%m%d")
                 week_start = start_date.compact_date
                 stats["provider_requests"] += 1
                 blocks = await client.get_habit_checkins(
-                    [h["id"] for h in visible], week_start, tomorrow
+                    [h["id"] for h in checkin_habits], week_start, tomorrow
                 )
                 if not isinstance(blocks, list):
                     raise TypeError(f"habit_checkins_response_not_list:{type(blocks).__name__}")
+                conn.execute('BEGIN IMMEDIATE')
+                if not habit_round_is_current(conn, user_id, binding_id, round_id):
+                    raise ValueError('stale_habit_round')
                 stats["checkin_pull_succeeded"] = True
                 stats["checkin_blocks_raw"] = len(blocks)
                 week_start_dash = f"{week_start[:4]}-{week_start[4:6]}-{week_start[6:8]}"
@@ -3189,16 +3491,16 @@ class SyncHub:
                 stats["checkin_blocks_unique_habit_id"] = len(blocks_by_habit)
                 stats["checkin_blocks"] = len(blocks_by_habit)
 
-                for h in visible:
+                for h in checkin_habits:
                     hid = str(h.get("id", ""))
-                    local_hid = _ticktick_local_habit_id(user_id, hid)
+                    local_hid = resolve_habit_id(conn, user_id, hid)
                     block = blocks_by_habit.get(hid)
                     if block is None:
                         stats["missing_checkin_blocks"] += 1
                         stats["missing_checkin_habits"].append({
                             "id_suffix": hid[-6:], "name": str(h.get("name") or "")[:80],
                         })
-                        block = {"habitId": hid, "checkins": []}
+                        continue  # 缺失 block 不是空历史，不能撤销已结算记录。
                     habit_row = conn.execute(
                         "SELECT id, name, difficulty, icon FROM server_habits WHERE user_id = ? AND id = ?", (user_id, local_hid)
                     ).fetchone()
@@ -3207,7 +3509,7 @@ class SyncHub:
 
                     local_habit_id = habit_row["id"]
 
-                    # 滴答清单端在此期间的日期状态快照：2=成功，1=失败，缺失=未打卡。
+                    # 仅接受明确的日期状态；接口没有完整覆盖契约，缺失不等于撤销。
                     remote_checkins_by_date = {}
                     for ci in block.get("checkins", []):
                         stats["checkins"] += 1
@@ -3220,7 +3522,7 @@ class SyncHub:
                             continue
                         checkin_date = f"{stamp[:4]}-{stamp[4:6]}-{stamp[6:8]}"
                         remote_status = ci.get("status")
-                        if remote_status not in (1, 2):
+                        if type(remote_status) is not int or remote_status not in (0, 1, 2):
                             continue
                         existing_remote = remote_checkins_by_date.get(checkin_date)
                         if existing_remote:
@@ -3253,6 +3555,8 @@ class SyncHub:
                         if d < start_date.date:
                             continue
                         remote_entry = remote_checkins_by_date.get(d)
+                        if remote_entry is None:
+                            continue
                         next_status = int(remote_entry["status"]) if remote_entry else 0
                         source_checkin = remote_entry["checkin"] if remote_entry else {}
                         raw_json = json.dumps(source_checkin, ensure_ascii=False, default=str)
@@ -3335,7 +3639,10 @@ class SyncHub:
                             stats["checkin_unchanged"] += 1
 
             conn.commit()
-            stats["complete"] = bool(not visible or stats["checkin_pull_succeeded"])
+            stats["complete"] = bool((not visible or stats["checkin_pull_succeeded"])
+                                     and not stats["missing_checkin_blocks"] and not stats["section_error"])
+            stats['complete'] = stats['complete'] and not any(stats.get(key) for key in
+                ('unknown_status','reappeared_deleted','unresolved_missing','unverified_missing','deferred_candidates','lifecycle_error','list_coverage_anomalies'))
             try:
                 if SampleDataInitializationService(self.db.log_path).ensure_user_sample_data(user_id):
                     self._notify_clients(["goals", "goal_category_bindings", "rewards"], user_id)
@@ -3344,7 +3651,7 @@ class SyncHub:
         except Exception as e:
             if conn is not None:
                 conn.rollback()
-            logger.warning(f"拉取习惯失败 (user={user_id}): {e}")
+            logger.warning("拉取习惯失败 (user=%s): %s", user_id, type(e).__name__)
             if isinstance(e, ProviderPullError) or getattr(e, "pull_code", None):
                 raise
             raise _attach_pull_diagnostics(

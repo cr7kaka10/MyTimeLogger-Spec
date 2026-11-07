@@ -29,7 +29,7 @@ def test_materialize_user_creates_explicit_defaults_without_overwriting_existing
     assert service.materialize_user(conn, 1) == 3
     assert service.materialize_user(conn, 1) == 0
     rules = {(row["item_type"], row["item_id"]): (row["coins"], row["penalty"]) for row in conn.execute("SELECT item_type,item_id,coins,penalty FROM server_reward_config WHERE user_id=1")}
-    assert rules == {("task", "task"): (9.0, 8.0), ("habit", "habit"): (5.0, 5.0), ("learning", "learning"): (3.0, 3.0), ("exercise", "exercise"): (1.0, 1.0)}
+    assert rules == {("task", "task"): (9.0, 8.0), ("habit", "habit"): (1.0, 1.0), ("learning", "learning"): (3.0, 3.0), ("exercise", "exercise"): (1.0, 1.0)}
     assert conn.execute("SELECT COUNT(*) FROM server_reward_config WHERE user_id=2").fetchone()[0] == 0
 
 
@@ -55,4 +55,4 @@ def test_task_sync_and_manual_habit_creation_write_explicit_rules(tmp_path):
     conn = sqlite3.connect(db_path)
     rows = {(item_type, item_id): (coins, penalty) for item_type, item_id, coins, penalty in conn.execute("SELECT item_type,item_id,coins,penalty FROM server_reward_config WHERE user_id=?", (user_id,))}
     assert rows[("task", "task-new")] == (0.1, 0.1)
-    assert rows[("habit", habit_id)] == (5.0, 5.0)
+    assert rows[("habit", habit_id)] == (1.0, 1.0)

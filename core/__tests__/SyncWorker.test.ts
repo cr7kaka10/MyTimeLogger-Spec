@@ -119,6 +119,157 @@ describe('SyncWorker version cursor', () => {
     expect(markOutboxSynced).toHaveBeenCalledWith([1], expect.any(String))
   })
 
+  it('applies ignored and revoked habit days from the server without replaying legacy writes', async () => {
+    const db = new Database(createBetterSqliteAdapter())
+    const post = vi.fn()
+    db.createOutboxOperation('habit_day_ignores', 'ignore-1', 'upsert', { id: 'ignore-1', is_ignored: 1 })
+    const states = [1, 0]
+    const get = vi.fn(async () => {
+      const ignored = states.shift() ?? 0
+      return { ok: true, data: { status: 'ok', from_version: ignored ? 0 : 1,
+        to_version: ignored ? 1 : 2, server_time: '2026-10-31 18:00:00',
+        tables: { habit_day_ignores: [{ id: 'ignore-1', habit_id: 'local_h', date: '2026-10-31',
+          is_ignored: ignored, created_at: '2026-10-31 09:00:00', updated_at: '2026-10-31 18:00:00' }] } } }
+    })
+    const worker = new SyncWorker(); worker.bind({ post, get } as any, db)
+    await worker.flushNow(true)
+    expect(db.getIgnoredHabitIds('2026-10-31').has('local_h')).toBe(true)
+    await worker.flushNow(true)
+    expect(db.getIgnoredHabitIds('2026-10-31').has('local_h')).toBe(false)
+    expect(db.getIgnoredHabitIds('2026-11-01').size).toBe(0)
+    expect(db.getPendingOutbox(20).some(row => row.table_name === 'habit_day_ignores')).toBe(false)
+    expect(post).not.toHaveBeenCalled()
+  })
+
+  it('isolates a locally blocked task without a server task and retains its payload', async () => {
+    const db = new Database(createBetterSqliteAdapter())
+    db.createOutboxOperation('tasks', 'local_orphan', 'delete', { id: 'local_orphan', source: 'ticktick', title: '原内容' })
+    const entry = db.getPendingOutbox(10)[0]
+    const get = vi.fn(async () => ({ ok: true, data: { status: 'ok', tasks: [] } }))
+    const post = vi.fn()
+    const worker = new SyncWorker(); worker.bind({ get, post } as any, db)
+    expect((await (worker as any)._flushOutbox({ scope: 'checklist' })).ok).toBe(true)
+    expect(get).toHaveBeenCalled()
+    expect(post).not.toHaveBeenCalled()
+    expect(db.getPendingOutbox(10)).toHaveLength(0)
+    expect(db.allRaw('SELECT status,payload_json FROM sync_outbox WHERE id=?', [entry.id])[0]).toMatchObject({ status: 'terminated' })
+    expect(db.allRaw('SELECT payload_json FROM sync_outbox WHERE id=?', [entry.id])[0].payload_json).toContain('原内容')
+  })
+
+  it('adopts a server task when a local protected task write was blocked', async () => {
+    const db = new Database(createBetterSqliteAdapter())
+    db.runRaw("INSERT INTO tasks (id,title,priority,status,due_date,tags,raw_json,updated_at) VALUES (?,'本地标题',0,0,'2026-10-31','[]','{}','2026-10-31 08:00:00')", ['remote-1'])
+    db.createOutboxOperation('tasks', 'remote-1', 'delete', { id: 'remote-1', source: 'ticktick', title: '本地标题' })
+    const entry = db.getPendingOutbox(10)[0]
+    const get = vi.fn(async () => ({ ok: true, data: { status: 'ok', tasks: [{ id: 'remote-1', title: '服务端标题', source: 'ticktick', due_date: '2026-10-31' }] } }))
+    const post = vi.fn()
+    const worker = new SyncWorker(); worker.bind({ get, post } as any, db)
+    expect((await (worker as any)._flushOutbox({ scope: 'checklist' })).ok).toBe(true)
+    expect(db.getRecordById('tasks', 'remote-1')).toMatchObject({ title: '服务端标题' })
+    expect(db.allRaw('SELECT status,payload_json FROM sync_outbox WHERE id=?', [entry.id])[0]).toMatchObject({ status: 'resolved' })
+    expect(post).not.toHaveBeenCalled()
+  })
+
+  it('stops retrying an unavailable task authority after four attempts', async () => {
+    const db = new Database(createBetterSqliteAdapter())
+    db.createOutboxOperation('tasks', 'local_retry', 'archive', { id: 'local_retry', title: '可恢复内容' })
+    const entry = db.getPendingOutbox(10)[0]
+    const get = vi.fn(async () => ({ ok: false, error: 'request_timeout' }))
+    const worker = new SyncWorker(); worker.bind({ get, post: vi.fn() } as any, db)
+    for (let attempt = 0; attempt < 4; attempt++) await (worker as any)._flushOutbox({ scope: 'checklist' })
+    expect(get).toHaveBeenCalledTimes(4)
+    expect(db.getPendingOutbox(10)).toHaveLength(0)
+    expect(db.allRaw('SELECT status,payload_json FROM sync_outbox WHERE id=?', [entry.id])[0]).toMatchObject({ status: 'terminated' })
+  })
+
+  it('pushes a local task instead of treating its local id as protected provider structure', async () => {
+    const db = new Database(createBetterSqliteAdapter())
+    db.createOutboxOperation('tasks', 'local_new', 'upsert', { id: 'local_new', title: '本地任务', source: 'local' })
+    const get = vi.fn()
+    const post = vi.fn(async () => ({ ok: true, data: { status: 'ok', server_time: '2026-10-31 12:00:00', operation_results: [] } }))
+    const worker = new SyncWorker(); worker.bind({ get, post } as any, db)
+    expect((await (worker as any)._flushOutbox({ scope: 'checklist' })).ok).toBe(true)
+    expect(post).toHaveBeenCalled()
+    expect(get).not.toHaveBeenCalled()
+    expect(db.getPendingOutbox(10)).toHaveLength(0)
+  })
+
+  it('probes exhausted changes and merges the authoritative record without another write', async () => {
+    const worker = new SyncWorker()
+    const resolved = vi.fn()
+    const upsert = vi.spyOn(worker as any, '_upsertLocal').mockReturnValue(null)
+    const entry = { id: 1, table_name: 'exercise_daily_logs', record_id: 'local-1',
+      change_id: 'change-1', operation: 'upsert', status: 'exhausted', retry_count: 4,
+      payload_json: '{"id":"local-1","date":"2026-10-28","weight":98}' }
+    const db: any = { setEnqueue() {}, getConfig: () => '', setConfig() {},
+      getPendingOutbox: () => [entry], markOutboxSending() {}, runInTransaction: (fn: () => void) => fn(),
+      getRecordById: () => ({ id: 'local-1' }), resolveOutbox: resolved }
+    const post = vi.fn(async (_path: string, data: any) => ({ ok: true, data: { status: 'ok',
+      operation_results: [{ change_id: 'change-1', status: 'server_wins', reason: 'retry_limit_reached',
+        canonical_record: { id: 'server-1', date: '2026-10-28', weight: 99 } }] } }))
+    worker.bind({ post } as any, db)
+    expect(await (worker as any)._flushOutbox()).toMatchObject({ ok: true })
+    expect(post.mock.calls[0][1].operations[0].operation).toBe('probe')
+    expect(resolved).toHaveBeenCalledWith(1, 'resolved', 'retry_limit_reached')
+    expect(upsert).toHaveBeenCalledWith('exercise_daily_logs', expect.objectContaining({ id: 'local-1', weight: 99 }), expect.any(String), expect.any(String))
+  })
+
+  it('updates a real local body row from server_wins and retains the original outbox payload', async () => {
+    const db = new Database(createBetterSqliteAdapter())
+    db.upsertExerciseDailyLog('2026-10-28', 44, '周三', 98, 0, 0, 'v5', undefined, 'gym', 29)
+    const original = db.getPendingOutbox(10).find(row => row.table_name === 'exercise_daily_logs')!
+    const worker = new SyncWorker()
+    worker.bind({ post: vi.fn(async () => ({ ok: true, data: { status: 'ok', server_time: '2026-10-28 14:00:00',
+      operation_results: [{ change_id: original.change_id, status: 'server_wins', reason: 'stale_base_version',
+        canonical_record: { id: 'server-body', date: '2026-10-28', plan_version: 'v5', exercise_type: 'daily',
+          weight: 99, body_fat_rate: 30.5 } }] } })) } as any, db)
+    expect(await (worker as any)._flushOutbox()).toMatchObject({ ok: true })
+    expect(db.getExerciseDailyLog('2026-10-28', 'v5')).toMatchObject({ weight: 99, body_fat_rate: 30.5 })
+    expect(db.getPendingOutbox(10).some(row => row.id === original.id)).toBe(false)
+    expect(db.allRaw('SELECT status,payload_json FROM sync_outbox WHERE id=?', [original.id])[0]).toMatchObject({ status: 'resolved' })
+    expect(db.allRaw('SELECT payload_json FROM sync_outbox WHERE id=?', [original.id])[0].payload_json).toContain('"weight":98')
+  })
+
+  it('stops writing after four failed attempts then probes and adopts server body values', async () => {
+    const db = new Database(createBetterSqliteAdapter())
+    db.upsertExerciseDailyLog('2026-10-28', 44, '周三', 98, 0, 0, 'v5', undefined, 'gym', 29)
+    const original = db.getPendingOutbox(10).find(row => row.table_name === 'exercise_daily_logs')!
+    const calls: string[] = []
+    const worker = new SyncWorker()
+    worker.bind({ post: vi.fn(async (_path: string, data: any) => {
+      const operation = data.operations[0].operation
+      calls.push(operation)
+      return operation === 'probe'
+        ? { ok: true, data: { status: 'ok', operation_results: [{ change_id: original.change_id,
+          status: 'server_wins', canonical_record: { id: 'server-id', date: '2026-10-28',
+            plan_version: 'v5', exercise_type: 'daily', weight: 99, body_fat_rate: 30.5 } }] } }
+        : { ok: false, error: 'push_failed' }
+    }) } as any, db)
+    for (let attempt = 0; attempt < 4; attempt++) expect((await (worker as any)._flushOutbox()).ok).toBe(false)
+    expect(db.getPendingOutbox(10).find(row => row.id === original.id)).toMatchObject({ status: 'exhausted', retry_count: 4 })
+    expect((await (worker as any)._flushOutbox()).ok).toBe(true)
+    expect(calls).toEqual(['upsert', 'upsert', 'upsert', 'upsert', 'probe'])
+    expect(db.getExerciseDailyLog('2026-10-28', 'v5')).toMatchObject({ weight: 99, body_fat_rate: 30.5 })
+    expect(db.getPendingOutbox(10).some(row => row.id === original.id)).toBe(false)
+  })
+
+  it('backs off automatic retries without an unbounded immediate loop', async () => {
+    vi.useFakeTimers()
+    try {
+      const worker = new SyncWorker()
+      const request = vi.spyOn(worker, 'requestSync').mockResolvedValue({ ok: false, merged: 0 })
+      ;(worker as any)._running = true
+      for (const delay of [1000, 2000, 4000]) {
+        ;(worker as any)._scheduleOutboxRetry()
+        await vi.advanceTimersByTimeAsync(delay - 1)
+        expect(request).toHaveBeenCalledTimes([1000, 2000, 4000].indexOf(delay))
+        await vi.advanceTimersByTimeAsync(1)
+      }
+      expect(request).toHaveBeenCalledTimes(3)
+      worker.stop()
+    } finally { vi.useRealTimers() }
+  })
+
   it('recovers interrupted sending once before startup sync', () => {
     const worker = new SyncWorker()
     const recover = vi.fn()
@@ -400,6 +551,34 @@ describe('SyncWorker version cursor', () => {
     expect(version).toBe(8)
   })
 
+  it('merges reward parents before the first ledger fragment snapshot', async () => {
+    const db = new Database(createBetterSqliteAdapter())
+    const stamp = '2026-11-05 16:00:00'
+    const reward = { id: '1:seed:reward:phone', title: '手机', price: 100, created_at: stamp, updated_at: stamp }
+    const ledger = { id: 'earned-1', amount: 1, source_type: 'habit_checkin', target_date: '2026-11-05', created_at: stamp, updated_at: stamp }
+    const fragment = { id: 'fragment-1', reward_id: reward.id, source_type: 'habit', source_id: 'habit-1',
+      completion_event_key: 'habit:habit-1:2026-11-05', rule_version: 1, fragment_measure_mode: 'count',
+      progress_units: 1, consumed_units: 0, issued_at: stamp, expires_at: '2026-12-01 00:00:00',
+      status: 'active', created_at: stamp, updated_at: stamp }
+    const binding = { id: 'binding-1', reward_id: reward.id, source_type: 'habit', source_id: 'habit-1',
+      drop_mode: null, created_at: stamp, updated_at: stamp }
+    const worker = new SyncWorker()
+    worker.bind({ post: vi.fn(), get: vi.fn(async () => ({ ok: true, data: {
+      status: 'ok', from_version: 0, to_version: 42, server_time: stamp, wallet: { balance: 1 },
+      tables: { rewards: [reward], reward_source_bindings: [binding] }, ledger_snapshot: { rows: [ledger], reward_fragments: [fragment],
+        summary: { balance: 1, income: 1, expense: 0 }, integrity: { count: 1, sha256: 'a'.repeat(64) } },
+    } })) } as any, db)
+
+    const result = await worker.pullAndMergeResult(true)
+
+    expect(result.diagnostics?.ledger_snapshot?.error).toBeUndefined()
+    expect(result).toMatchObject({ ok: true })
+    expect(db.getRecordById('rewards', reward.id)).toMatchObject({ title: reward.title })
+    expect(db.getRecordById('reward_source_bindings', binding.id)).toMatchObject({ drop_mode: 'fixed' })
+    expect(db.allRaw('SELECT id FROM reward_fragments')).toMatchObject([{ id: fragment.id }])
+    expect(db.getLastServerVersion()).toBe(42)
+  })
+
   it('repairs an Android core pull when the new ledger row is visible but its total differs from the server wallet', async () => {
     const db = new Database(createBetterSqliteAdapter()) as any
     const stamp = '2026-09-14 14:00:00'
@@ -567,7 +746,9 @@ describe('SyncWorker version cursor', () => {
     }
     worker.bind({ get: async () => ({ ok: true, data: { status: 'ok', from_version: 7, to_version: 8, tables: {}, ledger_snapshot: { summary: {}, integrity: {} } } }), post: vi.fn() } as any, db)
 
-    await expect(worker.flushNow(false)).resolves.toMatchObject({ ok: false, error: 'ledger_snapshot_failed' })
+    const result = await worker.flushNow(false)
+    expect(result).toMatchObject({ ok: false, error: 'ledger_snapshot_failed',
+      diagnostics: { ledger_snapshot: { error: 'invalid_server_ledger_snapshot' }, cursor: { advanced: false } } })
     expect(version).toBe(7)
   })
 
@@ -840,7 +1021,7 @@ describe('SyncWorker version cursor', () => {
     worker.bind(api, db)
     const result = await worker.flushNow(false, { syncRunId: 'run-1', reason: 'sleep-date-switch' })
 
-    expect(result.ok).toBe(true)
+    expect(result.ok).toBe(false)
     expect(result.merged).toBe(1)
     expect(savedVersion).toBe(71)
     expect(result.diagnostics?.push.error).toBe('cors_preflight_failed')
@@ -1353,6 +1534,23 @@ describe('SyncWorker version cursor', () => {
     expect(version).toBe(8)
     await worker.pullAndMergeResult(true)
     expect(get.mock.calls[1][1]).toMatchObject({ since_version: '8' })
+  })
+
+  it('emits request-scoped incomplete provider details instead of a generic success', async () => {
+    const db: any = { setEnqueue() {}, getPendingOutbox: () => [], getConfig: () => '', setConfig() {} }
+    const provider = { ok: false, complete: false, status: 'degraded', request_id: 'provider-2',
+      errors: ['tasks:incomplete_snapshot'], retry_at: '2026-09-24T19:00:00+08:00' }
+    const worker = new SyncWorker(); worker.bind({ post: vi.fn(), get: vi.fn(async () => ({ ok: true, data: {
+      status: 'ok', tables: {}, server_time: '2026-09-24 18:59:00', diagnostics: { scope: 'checklist', provider_refresh: provider },
+    } })) } as any, db)
+    const events: any[] = []; const previousWindow = (globalThis as any).window
+    ;(globalThis as any).window = { CustomEvent: class { constructor(public type: string, public init?: any) {} },
+      dispatchEvent: (event: any) => { if (event.type === 'sync-pull-complete') events.push(event.init.detail) } }
+    try {
+      expect(await worker.flushNow(true, { scope: 'checklist', syncRunId: 'provider-2' })).toMatchObject({ ok: false })
+    } finally { (globalThis as any).window = previousWindow }
+    expect(events).toEqual([expect.objectContaining({ provider: 'ticktick', request_id: 'provider-2', complete: false,
+      status: 'degraded', errors: ['tasks:incomplete_snapshot'] })])
   })
 
   it('emits one-line redacted PC and Android merge diagnostics', async () => {

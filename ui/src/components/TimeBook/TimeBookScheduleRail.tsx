@@ -13,7 +13,7 @@ export function TimeBookScheduleRail({ day, date, definition, states, locked, on
   const sourceRows = day === '六' ? definition.restSchedule : day === '日'
     ? [...definition.restSchedule, definition.sundayExtra]
     : definition.weekdaySchedule
-  const rows = definition.version === 'v4'
+  const rows = ['v4', 'v5'].includes(definition.version)
     ? sourceRows.filter(row => !/体重|体脂/.test(row.item))
     : sourceRows
   return <aside aria-label="全天计划" className="min-w-0 self-start p-2 lg:sticky lg:top-2 lg:max-h-[calc(100vh-7rem)] lg:overflow-y-auto lg:p-3">

@@ -18,10 +18,10 @@ export const SourceRewardEditor = ({ sourceType, sourceId, sourceTitle, onClose 
   useEffect(() => { if (source.summary) setCoins(source.summary.coins) }, [source.summary])
   const available = useMemo(() => catalog.rewards.filter(item => item.redemption_mode === 'task' && item.fulfillment_mode === 'fragment'), [catalog.rewards])
   const itemRewards = source.summary?.itemRewards || (source.summary?.itemReward ? [source.summary.itemReward] : [])
-  const fragmentHint = '物品进度：每次完成按绑定规则增加百分比；多个来源共同累计到 100% 后合成完整卡片。'
+  const fragmentHint = '默认每次完成获得 1 枚碎片并精确按 n 枚合成；自定义百分比掉落商品仍按 100% 合成。'
 
   const saveItem = async (data: RewardDraft) => {
-    if (sheetReward) await catalog.updateReward(sheetReward.id, data.title, data.icon, data.price, data.description, null, null, null, null, data.inventory_mode, data.inventory_limit, data.unlock_required_count, data.redemption_mode, data.fulfillment_mode, data.fragment_target_count)
+    if (sheetReward) await catalog.updateReward(sheetReward.id, data.title, data.icon, data.price, data.description, null, null, null, null, data.inventory_mode, data.inventory_limit, data.unlock_required_count, data.redemption_mode, data.fulfillment_mode, data.fragment_target_count, data.convert_fragment_to_count === true)
     else {
       const created: any = await catalog.addReward(data.title, data.icon, data.price, data.description, null, null, null, null, data.inventory_mode, data.inventory_limit, data.unlock_required_count, 'task', 'fragment', data.fragment_target_count)
       if (created?.reward_id) await source.bindItem(created.reward_id)
@@ -40,15 +40,15 @@ export const SourceRewardEditor = ({ sourceType, sourceId, sourceTitle, onClose 
     <BottomSheet open onClose={onClose} layerClass="z-[70]">
       <div className="space-y-4 p-1 text-gray-900 dark:text-gray-100">
         <h3 className="text-lg font-bold">更新奖励</h3>
-        <div className="rounded-xl border border-gray-200 p-3 dark:border-gray-700">
+        {sourceType !== 'goal' && <div className="rounded-xl border border-gray-200 p-3 dark:border-gray-700">
           <label className="text-xs text-gray-500">金币奖励</label>
           <div className="mt-2 flex gap-2"><input type="number" min={0} value={coins} onChange={event => setCoins(Number(event.target.value))} className="min-w-0 flex-1 rounded-lg border border-gray-200 bg-white px-3 py-2 dark:border-gray-700 dark:bg-gray-900" /><button type="button" onClick={() => void source.saveCoins(coins).catch(reason => setError(reason.message))} className="rounded-lg bg-blue-600 px-4 text-sm font-semibold text-white">保存</button></div>
-        </div>
+        </div>}
         <div className="rounded-xl border border-gray-200 p-3 dark:border-gray-700">
           <div className="text-xs text-gray-500">物品奖励</div>
           <p className="mt-1 text-xs text-blue-600 dark:text-blue-300">{fragmentHint}</p>
-          <div className="mt-2 flex flex-wrap items-center gap-2 text-sm">{itemRewards.length ? itemRewards.map(item => { const progress = source.summary?.fragmentProgress?.[String(item.id)]; return <span key={item.id} className="rounded-lg bg-gray-100 px-2 py-1 dark:bg-gray-800">{item.icon} {item.title} · {progress?.percent ?? progress?.activeUnits ?? 0}%{progress?.inventoryLimitReached ? ' · 本月已满' : ''}<button type="button" onClick={() => void source.unbindItem(item.id).catch(reason => setError(reason.message))} className="ml-1 text-red-500">×</button></span> }) : <span>未设置</span>}</div>
-          <div className="mt-3 flex gap-2"><select value={selectedId} onChange={event => setSelectedId(event.target.value)} className="min-w-0 flex-1 rounded-lg border border-gray-200 bg-white px-2 py-2 text-sm dark:border-gray-700 dark:bg-gray-900"><option value="">选择完成奖励型商品</option>{available.map(item => <option key={item.id} value={String(item.id)}>{item.icon} {item.title} · 累计到 100%</option>)}</select><button type="button" disabled={!selectedId} onClick={() => void bindSelected().catch(reason => setError(reason.message))} className="rounded-lg bg-blue-600 px-3 text-sm text-white disabled:bg-gray-300">绑定</button></div>
+          <div className="mt-2 flex flex-wrap items-center gap-2 text-sm">{itemRewards.length ? itemRewards.map(item => { const progress = source.summary?.fragmentProgress?.[String(item.id)]; const isPercent = progress?.measureMode === 'percent' || item.fragment_measure_mode === 'percent' || Number(item.legacy_percent_binding_count || 0) > 0; const countText = isPercent ? `历史百分比 · ${progress?.percent ?? 0}%` : `${progress?.activePieces ?? 0}/${progress?.targetPieces ?? item.fragment_target_count ?? 1} 枚`; const periodText = progress?.periodMode !== 'unlimited' ? ` · 本周期 ${progress?.periodUsed ?? 0}/${progress?.inventoryLimit ?? 0}` : ''; return <span key={item.id} className="rounded-lg bg-gray-100 px-2 py-1 dark:bg-gray-800">{item.icon} {item.title} · {countText}{periodText}{progress?.expiresAt ? ` · ${progress.expiresAt} 清零` : ''}<button type="button" onClick={() => setSheetReward(item)} className="ml-2 text-blue-600">编辑</button><button type="button" onClick={() => void source.unbindItem(item.id).catch(reason => setError(reason.message))} className="ml-1 text-red-500">×</button></span> }) : <span>未设置</span>}</div>
+          <div className="mt-3 flex gap-2"><select value={selectedId} onChange={event => setSelectedId(event.target.value)} className="min-w-0 flex-1 rounded-lg border border-gray-200 bg-white px-2 py-2 text-sm dark:border-gray-700 dark:bg-gray-900"><option value="">选择完成奖励型商品</option>{available.map(item => <option key={item.id} value={String(item.id)}>{item.icon} {item.title} · {item.fragment_target_count ?? 1} 枚合成</option>)}</select><button type="button" disabled={!selectedId} onClick={() => void bindSelected().catch(reason => setError(reason.message))} className="rounded-lg bg-blue-600 px-3 text-sm text-white disabled:bg-gray-300">绑定</button></div>
           <button type="button" onClick={() => setSheetReward(null)} className="mt-3 text-sm font-semibold text-blue-600">+ 创建完成奖励型商品</button>
         </div>
         {(error || source.error) && <div className="text-sm text-red-500">{error || source.error}</div>}

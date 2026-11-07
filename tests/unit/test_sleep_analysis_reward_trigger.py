@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import asyncio
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -13,7 +14,9 @@ from server.sync_hub import SyncHub
 def _sleep_data():
     return {
         "date": "2026-08-28", "sleep_start": "23:00", "sleep_end": "07:00",
-        "sleep_score": 90, "deep_sleep_min": 95, "sleep_cycles": 5.5,
+        "sleep_score": 90, "total_sleep_min": 420, "deep_sleep_min": 95,
+        "light_sleep_min": 250, "rem_sleep_min": 75, "deep_sleep_ratio": 23,
+        "official_advice": "睡眠时长良好，建议继续保持规律作息并关注长期睡眠质量。", "sleep_cycles": 5.5,
         "awake_min": 10, "awake_count": 1, "fall_asleep_min": 20, "wake_up_min": 10,
     }
 
@@ -40,6 +43,18 @@ def _run_with_result(monkeypatch, tmp_db_path, tmp_path, result, completed_at="2
     monkeypatch.setattr(server_module, "_beijing_now", lambda: __import__("datetime").datetime.strptime(completed_at, "%Y-%m-%d %H:%M:%S"))
     server_module._run_analysis("sleep-reward-job", str(image_path), user_id=1, full=full)
     return store
+
+
+def test_invalid_ocr_result_never_commits_report(monkeypatch, tmp_db_path, tmp_path):
+    invalid = _sleep_data() | {"total_sleep_min": 330, "deep_sleep_min": 60,
+                               "light_sleep_min": 193, "rem_sleep_min": 60}
+    store = _run_with_result(monkeypatch, tmp_db_path, tmp_path, SimpleNamespace(
+        status="done", date="2026-08-28", sleep_data=invalid,
+        analysis_report="# 不应保存", report_path="", error=None,
+    ))
+
+    assert store.get_job("sleep-reward-job", user_id=1)["status"] == "error"
+    assert store.get_huawei_sleep_data(1, "2026-08-28") is None
 
 
 def test_done_analysis_creates_one_server_sleep_settlement(monkeypatch, tmp_db_path, tmp_path):
@@ -137,6 +152,26 @@ def test_error_analysis_does_not_create_sleep_settlement(monkeypatch, tmp_db_pat
         settlement_count = conn.execute("SELECT COUNT(*) FROM server_sleep_score_settlements").fetchone()[0]
     assert settlement_count == 0
     assert notifications == []
+
+
+def test_missing_atimelogger_boundary_keeps_the_sleep_date_in_error_result(monkeypatch):
+    skill_dir = Path(__file__).parents[2] / "server" / "skills" / "time-management"
+    sys.path.insert(0, str(skill_dir))
+    try:
+        import generate_full_report
+        monkeypatch.setattr(generate_full_report, "generate_comprehensive_report", lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("aTimeLogger 睡眠边界缺失：上床开始时间（2026-08-28）")))
+        analyzer = SleepAnalyzer(
+            {}, date_str="2026-08-28", include_time_analysis=True,
+            sleep_data={"sleep_date": "2026-08-28", "sleep_score": 80, "deep_sleep_min": 90, "light_sleep_min": 210, "rem_sleep_min": 120, "deep_sleep_ratio": 30, "sleep_start": "23:00", "sleep_end": "07:00", "total_sleep_min": 420, "official_advice": "测试建议"},
+        )
+        result = analyzer.analyze()
+    finally:
+        sys.path.remove(str(skill_dir))
+
+    assert result.status == "error"
+    assert result.date == "2026-08-28"
+    assert "aTimeLogger 睡眠边界缺失" in result.error
+    assert result.analysis_report == result.report_path == ""
 
 
 def test_report_commit_broadcasts_sleep_and_coin_versions(monkeypatch, tmp_db_path, tmp_path):

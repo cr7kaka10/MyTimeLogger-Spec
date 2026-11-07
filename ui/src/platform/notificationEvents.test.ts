@@ -20,6 +20,17 @@ assert(result.notifications.some(item => item.body.includes('2 项奖励待领�
 assert(result.notifications.some(item => item.body === '金币到账 +3') && result.notifications.some(item => item.body === '金币扣除 -1'), 'coin credit and penalty use net summaries')
 assert(result.notifications.some(item => item.body.includes('电影券') && item.route === 'backpack'), 'reward purchase routes to backpack')
 assert(!result.notifications.some(item => item.body === '金币扣除 -9'), 'reward purchase must not duplicate generic deduction')
+const meal = classifyNotificationEvents([], [
+  { id: 'breakfast', source_id: 'exercise-diet-penalty:1:2026-10-28:v5:breakfast_on_time', target_date: '2026-10-28', amount: -20, source_type: 'exercise_diet_penalty', description: '饮食必做项逾期未完成' },
+  { id: 'lunch', source_id: 'exercise-diet-penalty:1:2026-10-28:v5:lunch_on_time', target_date: '2026-10-28', amount: -20, source_type: 'exercise_diet_penalty', description: '饮食必做项逾期未完成' },
+])
+assert(meal.notifications.length === 2 && meal.notifications[0].eventKey !== meal.notifications[1].eventKey, 'meal penalties notify separately')
+assert(meal.notifications[1].body.includes('午餐按时打卡') && meal.notifications[1].body.includes('13:31') && meal.notifications[1].body.includes('-20🪙'), 'meal notification identifies precise deduction')
+assert(classifyNotificationEvents([], []).notifications.length === 0, 'revoked penalties are not notified')
+const desktop = classifyNotificationEvents(external, ledger, { runtime: 'electron', today: '2026-10-31' })
+assert(desktop.notifications.length === 0 && desktop.handledKeys.length === external.length + ledger.length, 'desktop handles business facts without system popups')
+const stale = classifyNotificationEvents([], [{ id: 'stale', amount: -20, source_type: 'exercise_diet_penalty', target_date: '2026-10-29' }], { runtime: 'capacitor-android', today: '2026-10-31' })
+assert(stale.notifications.length === 0 && stale.handledKeys.includes('ledger:stale'), 'Android handles expired dated facts without late popup')
 const sleep = classifySleepNotificationEvents([{ id: 'done', event_type: 'analysis_done' }, { id: 'error', event_type: 'analysis_error' }, { id: 'skip', event_type: 'analysis_skipped_missing_sleep_data' }])
 assert(sleep.map(item => item.body).join('|') === '睡眠分析已完成|缺少有效睡眠数据，未执行完整分析|缺少有效睡眠数据，未执行完整分析', 'sleep result notifications cover done/error/skipped')
 console.log('notification event tests passed')

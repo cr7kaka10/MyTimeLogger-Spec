@@ -8,7 +8,34 @@ TZ = timezone(timedelta(hours=8))
 PLAN_VERSION = "v4"
 RULE_VERSION = "exercise-score-v4"
 DIET_RULES = ("no_snacks", "no_sugary_drinks", "no_refined_staples")
+V5_MEAL_RULES = ("breakfast_on_time", "lunch_on_time", "dinner_on_time")
+V5_RESTORED_QUALITY_RULES = ("no_sugary_drinks", "no_refined_staples", "no_snacks")
+DIET_RULE_NAMES = {
+    "breakfast_on_time": "早餐按时打卡", "lunch_on_time": "午餐按时打卡", "dinner_on_time": "晚餐按时打卡",
+    "no_snacks": "不吃零食", "no_sugary_drinks": "不喝含糖饮料", "no_refined_staples": "不吃精制主食",
+    "protein_at_lunch_and_dinner": "午晚餐摄入蛋白质", "vegetables_at_lunch_and_dinner": "午晚餐摄入蔬菜",
+    "controlled_staple_and_no_sugary_drink": "控制主食且不喝含糖饮料",
+}
+REST_DAY_DIET_EXEMPTION_FROM = "2026-10-26"
+V5_DIET_POINTS = {"breakfast_on_time": 11, "lunch_on_time": 11, "dinner_on_time": 11,
+                  "protein_at_lunch_and_dinner": 6, "vegetables_at_lunch_and_dinner": 6,
+                  "controlled_staple_and_no_sugary_drink": 5,
+                  "no_sugary_drinks": 6, "no_refined_staples": 6, "no_snacks": 5}
+PLAN_POLICIES = {
+    "v4": {"rule_version": RULE_VERSION, "diet_rules": DIET_RULES, "diet_penalty": -20, "effective_from": "2026-09-10"},
+    "v5": {"rule_version": "exercise-score-v5", "diet_rules": (
+        "protein_at_lunch_and_dinner", "vegetables_at_lunch_and_dinner",
+        "controlled_staple_and_no_sugary_drink",
+    ), "diet_penalty": 0, "effective_from": "2026-10-18"},
+    "v6": {"rule_version": "exercise-score-v6", "diet_rules": (), "diet_penalty": 0, "effective_from": "0001-01-01"},
+}
 SCOPES = {"training", "diet", "body"}
+OPTIONAL_BODY_POLICY_KEY = "optional_body_exercise_200_v1"
+
+
+def optional_body_policy_active(conn, date: str) -> bool:
+    row = conn.execute("SELECT effective_date FROM server_exercise_policy_metadata WHERE policy_key=?", (OPTIONAL_BODY_POLICY_KEY,)).fetchone()
+    return bool(row and date >= str(row[0]))
 
 
 def _dt(value: str) -> datetime:
@@ -21,42 +48,137 @@ def _deadline(date: str, hour: int = 0) -> datetime:
     return base.replace(hour=hour) if hour else base + timedelta(days=1)
 
 
+def _diet_deadline(date: str, rule_key: str) -> datetime:
+    day = datetime.strptime(date, "%Y-%m-%d").replace(tzinfo=TZ)
+    times = {"breakfast_on_time": (8, 30), "lunch_on_time": (13, 31), "dinner_on_time": (19, 1)}
+    return day.replace(hour=times[rule_key][0], minute=times[rule_key][1]) if rule_key in times else day + timedelta(days=1)
+
+
+def _diet_penalty_description(date: str, rule_key: str) -> str:
+    name = DIET_RULE_NAMES.get(rule_key, rule_key)
+    deadline = _diet_deadline(date, rule_key).strftime("%Y-%m-%d %H:%M")
+    return f"{name}逾期未完成（截止 {deadline}，北京时间）"
+
+
 def _now_text(now: datetime) -> str:
     return now.astimezone(TZ).strftime("%Y-%m-%d %H:%M:%S")
 
 
+def is_exercise_rest_day(conn, user_id: int, plan_version: str, date: str) -> bool:
+    if date < REST_DAY_DIET_EXEMPTION_FROM:
+        return False
+    day = ("周一", "周二", "周三", "周四", "周五", "六", "日")[datetime.strptime(date, "%Y-%m-%d").weekday()]
+    return not conn.execute("""SELECT 1 FROM server_exercise_plan_items WHERE user_id=? AND plan_version=?
+        AND day_key=? AND variant IN ('gym','rain') AND is_active=1 LIMIT 1""",
+        (user_id, plan_version, day)).fetchone()
+
+
 class ExerciseV4Service:
-    def __init__(self, wallet, record_change):
+    def __init__(self, wallet, record_change, plan_version: str = PLAN_VERSION):
+        if plan_version not in PLAN_POLICIES:
+            raise ValueError("unsupported_authoritative_exercise_plan")
         self.wallet = wallet
         self.record_change = record_change
+        self.plan_version = plan_version
+        self.rule_version = PLAN_POLICIES[plan_version]["rule_version"]
+        self.diet_rules = PLAN_POLICIES[plan_version]["diet_rules"]
+        self.diet_penalty = PLAN_POLICIES[plan_version]["diet_penalty"]
 
     def _change(self, conn, user_id, table, record_id, operation="upsert"):
         self.record_change(conn, user_id, table, record_id, operation)
 
-    def _discard_invalid_diet_facts(self, conn, user_id: int, date: str) -> None:
-        placeholders = ",".join("?" for _ in DIET_RULES)
+    def _new_v5_policy(self, conn, date: str) -> bool:
+        if self.plan_version != "v5":
+            return False
+        row = conn.execute("SELECT effective_date FROM server_exercise_policy_metadata WHERE policy_key='v5_meal_timing'").fetchone()
+        return bool(row and date >= str(row["effective_date"]))
+
+    def _restored_v5_quality(self, conn, date: str) -> bool:
+        if self.plan_version != "v5":
+            return False
+        row = conn.execute("SELECT effective_date FROM server_exercise_policy_metadata WHERE policy_key='v5_quality_restored'").fetchone()
+        return bool(row and date >= str(row["effective_date"]))
+
+    def _quality_transition_day(self, conn, date: str) -> bool:
+        if self.plan_version != "v5":
+            return False
+        row = conn.execute("SELECT effective_date,created_at FROM server_exercise_policy_metadata WHERE policy_key='v5_quality_restored'").fetchone()
+        return bool(row and date == str(row["created_at"])[:10]
+            and date == (datetime.strptime(str(row["effective_date"]), "%Y-%m-%d").date() - timedelta(days=1)).isoformat())
+
+    def _is_rest_day(self, conn, user_id: int, date: str) -> bool:
+        return is_exercise_rest_day(conn, user_id, self.plan_version, date)
+
+    def _diet_migrated(self, conn, user_id: int, date: str) -> bool:
+        row = conn.execute("SELECT switch_date FROM server_diet_habit_migrations WHERE user_id=?", (user_id,)).fetchone()
+        return self.plan_version == "v5" and bool(row and date >= row["switch_date"])
+
+    def _diet_rules_for_date(self, conn, user_id: int, date: str) -> tuple[str, ...]:
+        if self.plan_version == "v6":
+            return ()
+        if self._diet_migrated(conn, user_id, date):
+            return ()
+        if self._is_rest_day(conn, user_id, date):
+            return ()
+        quality = V5_RESTORED_QUALITY_RULES if self._restored_v5_quality(conn, date) else self.diet_rules
+        return quality + V5_MEAL_RULES if self._new_v5_policy(conn, date) else quality
+
+    def _discard_invalid_diet_facts(self, conn, user_id: int, date: str, now: datetime) -> None:
+        if self._is_rest_day(conn, user_id, date):
+            stamp = _now_text(now)
+            facts = conn.execute("SELECT id FROM server_exercise_diet_checkins WHERE user_id=? AND date=? AND plan_version=?",
+                (user_id, date, self.plan_version)).fetchall()
+            for row in facts:
+                conn.execute("DELETE FROM server_exercise_diet_checkins WHERE user_id=? AND id=?", (user_id, row["id"]))
+                self._change(conn, user_id, "server_exercise_diet_checkins", row["id"], "delete")
+            scores = conn.execute("SELECT id FROM server_exercise_item_scores WHERE user_id=? AND date=? AND plan_version=? AND item_key LIKE 'diet:%'",
+                (user_id, date, self.plan_version)).fetchall()
+            for row in scores:
+                conn.execute("DELETE FROM server_exercise_item_scores WHERE user_id=? AND id=?", (user_id, row["id"]))
+                self._change(conn, user_id, "server_exercise_item_scores", row["id"], "delete")
+            prefix = f"exercise-diet-penalty:{user_id}:{date}:{self.plan_version}:%"
+            penalties = conn.execute("SELECT id FROM server_reward_ledger WHERE user_id=? AND source_type='exercise_diet_penalty' AND id LIKE ?",
+                (user_id, prefix)).fetchall()
+            for row in penalties:
+                conn.execute("DELETE FROM server_reward_ledger WHERE user_id=? AND id=?", (user_id, row["id"]))
+                self._change(conn, user_id, "server_reward_ledger", row["id"], "delete")
+            if penalties:
+                self.wallet.rebuild_wallet_snapshot_in_txn(conn, user_id, lambda: stamp)
+                self._change(conn, user_id, "server_user_wallets", str(user_id))
+            return
+        rules = self._diet_rules_for_date(conn, user_id, date)
+        placeholders = ",".join("?" for _ in rules)
         rows = conn.execute(f"""SELECT id FROM server_exercise_diet_checkins
             WHERE user_id=? AND date=? AND plan_version=? AND rule_key NOT IN ({placeholders})""",
-            (user_id, date, PLAN_VERSION, *DIET_RULES)).fetchall()
+            (user_id, date, self.plan_version, *rules)).fetchall()
         for row in rows:
             conn.execute("DELETE FROM server_exercise_diet_checkins WHERE id=? AND user_id=?", (row["id"], user_id))
             self._change(conn, user_id, "server_exercise_diet_checkins", row["id"], "delete")
 
     def ensure_diet_rows(self, conn, user_id: int, date: str, now: datetime) -> None:
-        self._discard_invalid_diet_facts(conn, user_id, date)
-        stamp, cutoff = _now_text(now), _deadline(date).strftime("%Y-%m-%d %H:%M:%S")
-        for rule_key in DIET_RULES:
-            row_id = f"diet:{user_id}:{date}:{PLAN_VERSION}:{rule_key}"
+        if self.plan_version == "v6":
+            return
+        if self._diet_migrated(conn, user_id, date):
+            return
+        self._discard_invalid_diet_facts(conn, user_id, date, now)
+        stamp = _now_text(now)
+        for rule_key in self._diet_rules_for_date(conn, user_id, date):
+            row_id = f"diet:{user_id}:{date}:{self.plan_version}:{rule_key}"
+            cutoff = _diet_deadline(date, rule_key).strftime("%Y-%m-%d %H:%M:%S")
             inserted = conn.execute("""INSERT OR IGNORE INTO server_exercise_diet_checkins
                 (id,user_id,date,plan_version,rule_key,status,deadline_at,created_at,updated_at)
                 VALUES (?,?,?,?,?,'pending',?,?,?)""",
-                (row_id, user_id, date, PLAN_VERSION, rule_key, cutoff, stamp, stamp))
+                (row_id, user_id, date, self.plan_version, rule_key, cutoff, stamp, stamp))
             if inserted.rowcount:
                 self._change(conn, user_id, "server_exercise_diet_checkins", row_id)
 
     def set_diet(self, conn, user_id: int, date: str, rule_key: str, status: str | bool,
-                 occurred_at: str | None, now: datetime) -> dict:
-        if rule_key not in DIET_RULES:
+                 occurred_at: str | None, now: datetime, recorded_at: str | None = None) -> dict:
+        if self.plan_version == "v6":
+            raise ValueError("diet_habit_upgrade_required")
+        if self._diet_migrated(conn, user_id, date):
+            raise ValueError("diet_habit_upgrade_required")
+        if rule_key not in self._diet_rules_for_date(conn, user_id, date):
             raise ValueError("unknown_diet_rule")
         if isinstance(status, bool):
             status = "completed" if status else "pending"
@@ -64,12 +186,18 @@ class ExerciseV4Service:
             raise ValueError("invalid_diet_status")
         self.ensure_diet_rows(conn, user_id, date, now)
         event_time = _dt(occurred_at) if occurred_at else now.astimezone(TZ)
-        if event_time >= _deadline(date):
+        deadline = _diet_deadline(date, rule_key)
+        recorded_time = _dt(recorded_at) if recorded_at else None
+        late_evidence = bool(recorded_time and event_time <= recorded_time < deadline)
+        if status == "completed" and (event_time < _deadline(date) - timedelta(days=1) or
+                event_time >= deadline or (now.astimezone(TZ) >= deadline and not late_evidence)):
             raise ValueError("diet_deadline_passed")
         row = conn.execute("""SELECT * FROM server_exercise_diet_checkins
             WHERE user_id=? AND date=? AND plan_version=? AND rule_key=?""",
-            (user_id, date, PLAN_VERSION, rule_key)).fetchone()
-        if status == "pending" and now.astimezone(TZ) >= _deadline(date):
+            (user_id, date, self.plan_version, rule_key)).fetchone()
+        auto_failed = row["status"] == "failed" and row["failure_reason"] in {"meal_window_passed", "not_completed_before_midnight"}
+        if (row["status"] == "failed" and status == "completed" and not (auto_failed and late_evidence)) or (status == "pending" and
+                now.astimezone(TZ) >= deadline):
             raise ValueError("diet_deadline_passed")
         stamp = _now_text(now)
         occurred_text = event_time.strftime("%Y-%m-%d %H:%M:%S") if status != "pending" else None
@@ -88,45 +216,74 @@ class ExerciseV4Service:
         return self.settle(conn, user_id, date, now)
 
     def close_diet(self, conn, user_id: int, date: str, now: datetime) -> int:
-        if now.astimezone(TZ) < _deadline(date):
+        if self.plan_version == "v6":
+            return 0
+        if self._diet_migrated(conn, user_id, date):
             return 0
         self.ensure_diet_rows(conn, user_id, date, now)
-        changed, stamp = 0, _now_text(now)
+        changed, stamp, new_policy = 0, _now_text(now), self._new_v5_policy(conn, date)
+        transition = self._quality_transition_day(conn, date)
         rows = conn.execute("""SELECT * FROM server_exercise_diet_checkins
-            WHERE user_id=? AND date=? AND plan_version=?""", (user_id, date, PLAN_VERSION)).fetchall()
+            WHERE user_id=? AND date=? AND plan_version=?""", (user_id, date, self.plan_version)).fetchall()
         for row in rows:
+            if transition and row["rule_key"] in self.diet_rules:
+                auto_failed = row["status"] == "failed" and row["failure_reason"] in ("meal_window_passed", "not_completed_before_midnight")
+                due = row["status"] == "pending" and now.astimezone(TZ) >= _diet_deadline(date, str(row["rule_key"]))
+                if auto_failed or due:
+                    self._remove_diet_penalty(conn, user_id, date, str(row["rule_key"]))
+                    conn.execute("""UPDATE server_exercise_diet_checkins SET status='failed',failure_reason='quality_transition_exempt',
+                        penalty_source_id=NULL,updated_at=? WHERE user_id=? AND id=?""", (stamp, user_id, row["id"]))
+                    self._change(conn, user_id, "server_exercise_diet_checkins", row["id"])
+                    changed += 1
+                continue
             if row["status"] != "pending":
                 continue
-            source = f"exercise-diet-penalty:{user_id}:{date}:{PLAN_VERSION}:{row['rule_key']}"
+            deadline = _diet_deadline(date, str(row["rule_key"]))
+            current = now.astimezone(TZ)
+            if current < deadline:
+                continue
+            source = f"exercise-diet-penalty:{user_id}:{date}:{self.plan_version}:{row['rule_key']}"
+            penalty = -20 if new_policy else self.diet_penalty
+            penalty_source = source if penalty < 0 else None
+            failure_reason = "meal_window_passed" if new_policy else "not_completed_before_midnight"
             row_changed = (row["status"], row["failure_reason"], row["penalty_source_id"]) != (
-                "failed", "not_completed_before_midnight", source,
+                "failed", failure_reason, penalty_source,
             )
             if row_changed:
-                conn.execute("""UPDATE server_exercise_diet_checkins SET status='failed',failure_reason='not_completed_before_midnight',
-                    penalty_source_id=?,updated_at=? WHERE id=? AND user_id=?""", (source, stamp, row["id"], user_id))
-            ledger_missing = not conn.execute("SELECT 1 FROM server_reward_ledger WHERE user_id=? AND id=?", (user_id, source)).fetchone()
+                applied = conn.execute("""UPDATE server_exercise_diet_checkins SET status='failed',failure_reason=?,
+                    penalty_source_id=?,updated_at=? WHERE id=? AND user_id=? AND status='pending'""",
+                    (failure_reason, penalty_source, stamp, row["id"], user_id))
+                if not applied.rowcount:
+                    continue
+            ledger_missing = penalty < 0 and not conn.execute(
+                "SELECT 1 FROM server_reward_ledger WHERE user_id=? AND id=?", (user_id, source)).fetchone()
             if ledger_missing:
-                self.wallet.append_ledger_in_txn(conn, user_id, -20, "exercise_diet_penalty", source,
-                    "饮食必做项逾期未完成", date, source, stamp)
+                self.wallet.append_ledger_in_txn(conn, user_id, penalty, "exercise_diet_penalty", source,
+                    _diet_penalty_description(date, str(row["rule_key"])), date, source, stamp)
                 self._change(conn, user_id, "server_reward_ledger", source)
             if row_changed:
                 self._change(conn, user_id, "server_exercise_diet_checkins", row["id"])
             changed += int(row_changed or ledger_missing)
-        if changed:
+        if changed and (new_policy or self.diet_penalty < 0):
             self.wallet.rebuild_wallet_snapshot_in_txn(conn, user_id, lambda: stamp)
             self._change(conn, user_id, "server_user_wallets", str(user_id))
+        if changed or self._is_rest_day(conn, user_id, date):
             self.settle(conn, user_id, date, now)
         return changed
 
     def settle_body_deadline(self, conn, user_id: int, date: str, now: datetime) -> dict | None:
+        if self.plan_version == "v6":
+            return None
+        if optional_body_policy_active(conn, date):
+            return None
         if now.astimezone(TZ) < _deadline(date, 9):
             return None
         existing_metric = conn.execute("""SELECT status FROM server_exercise_deadline_facts
             WHERE user_id=? AND date=? AND plan_version=? AND fact_type='body_metrics'""",
-            (user_id, date, PLAN_VERSION)).fetchone()
+            (user_id, date, self.plan_version)).fetchone()
         log = conn.execute("""SELECT weight,body_fat_rate FROM server_exercise_daily_logs
             WHERE user_id=? AND date=? AND plan_version=? AND exercise_type='daily'""",
-            (user_id, date, PLAN_VERSION)).fetchone()
+            (user_id, date, self.plan_version)).fetchone()
         field_statuses = {
             "body_weight": "complete" if log and log["weight"] is not None else "failed",
             "body_fat_rate": "complete" if log and log["body_fat_rate"] is not None else "failed",
@@ -134,28 +291,28 @@ class ExerciseV4Service:
         if existing_metric:
             field_statuses = {key: "complete" if existing_metric["status"] == "complete" else "failed" for key in field_statuses}
         complete = all(status == "complete" for status in field_statuses.values())
-        fact_id = f"body-deadline:{user_id}:{date}:{PLAN_VERSION}"
-        source = f"body-metric-deadline-penalty:{user_id}:{date}"
+        fact_id = f"body-deadline:{user_id}:{date}:{self.plan_version}"
+        source = f"body-metric-deadline-penalty:{user_id}:{date}" + (f":{self.plan_version}" if self.plan_version != "v4" else "")
         stamp = _now_text(now)
         field_inserted = 0
         for fact_type, status in field_statuses.items():
             inserted_field = conn.execute("""INSERT INTO server_exercise_deadline_facts
                 (id,user_id,date,plan_version,fact_type,status,deadline_at,reason,penalty_source_id,penalty_amount,created_at,updated_at)
                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(user_id,date,plan_version,fact_type) DO NOTHING""",
-                (f"body-deadline:{user_id}:{date}:{PLAN_VERSION}:{fact_type}", user_id, date, PLAN_VERSION, fact_type, status,
+                (f"body-deadline:{user_id}:{date}:{self.plan_version}:{fact_type}", user_id, date, self.plan_version, fact_type, status,
                  _deadline(date, 9).strftime("%Y-%m-%d %H:%M:%S"), f"{fact_type}_{status}_before_09:00", None, 0, stamp, stamp))
             if inserted_field.rowcount:
                 field_inserted += 1
-                self._change(conn, user_id, "server_exercise_deadline_facts", f"body-deadline:{user_id}:{date}:{PLAN_VERSION}:{fact_type}")
+                self._change(conn, user_id, "server_exercise_deadline_facts", f"body-deadline:{user_id}:{date}:{self.plan_version}:{fact_type}")
         inserted = conn.execute("""INSERT INTO server_exercise_deadline_facts
             (id,user_id,date,plan_version,fact_type,status,deadline_at,reason,penalty_source_id,penalty_amount,created_at,updated_at)
             VALUES (?,?,?,?, 'body_metrics',?,?,?,?,?,?,?)
             ON CONFLICT(user_id,date,plan_version,fact_type) DO NOTHING""",
-            (fact_id, user_id, date, PLAN_VERSION, "complete" if complete else "failed",
+            (fact_id, user_id, date, self.plan_version, "complete" if complete else "failed",
              _deadline(date, 9).strftime("%Y-%m-%d %H:%M:%S"), "complete_before_09:00" if complete else "body_metrics_missing_at_09:00",
              None if complete else source, 0 if complete else -50, stamp, stamp))
         fact = conn.execute("SELECT * FROM server_exercise_deadline_facts WHERE user_id=? AND date=? AND plan_version=? AND fact_type='body_metrics'",
-            (user_id, date, PLAN_VERSION)).fetchone()
+            (user_id, date, self.plan_version)).fetchone()
         ledger_missing = fact["status"] == "failed" and not conn.execute("SELECT 1 FROM server_reward_ledger WHERE user_id=? AND id=?", (user_id, source)).fetchone()
         if ledger_missing:
             self.wallet.append_ledger_in_txn(conn, user_id, -50, "body_metric_deadline_penalty",
@@ -171,25 +328,33 @@ class ExerciseV4Service:
         self.ensure_diet_rows(conn, user_id, date, now)
         day = ("周一", "周二", "周三", "周四", "周五", "六", "日")[datetime.strptime(date, "%Y-%m-%d").weekday()]
         checkins = {str(row["item_key"]): int(row["status"] or 0) for row in conn.execute(
-            "SELECT item_key,status FROM server_exercise_checkins WHERE user_id=? AND date=? AND plan_version=?", (user_id, date, PLAN_VERSION))}
+            "SELECT item_key,status FROM server_exercise_checkins WHERE user_id=? AND date=? AND plan_version=?", (user_id, date, self.plan_version))}
         facts = []
-        for item in conn.execute("""SELECT * FROM server_exercise_plan_items WHERE user_id=? AND plan_version=?
-            AND day_key=? AND variant='gym' AND is_active=1 ORDER BY sort_order""", (user_id, PLAN_VERSION, day)):
+        new_policy = self._new_v5_policy(conn, date)
+        optional_body = optional_body_policy_active(conn, date)
+        training_items = conn.execute("""SELECT * FROM server_exercise_plan_items WHERE user_id=? AND plan_version=?
+            AND day_key=? AND variant='gym' AND is_active=1 ORDER BY sort_order""", (user_id, self.plan_version, day)).fetchall()
+        raw_training_total = sum(float(json.loads(item["tags_json"] or "{}").get("scorePoints") or 0) for item in training_items)
+        training_scale = 50 / raw_training_total if new_policy and raw_training_total else 1
+        for item in training_items:
             tags = json.loads(item["tags_json"] or "{}")
-            maximum = float(tags.get("scorePoints") or 0)
+            maximum = float(tags.get("scorePoints") or 0) * training_scale
             key = f"ex-{date}-g-{item['sort_order']}"
             facts.append((key, "training", maximum if checkins.get(key) == 1 else 0, maximum, item["name"]))
-        placeholders = ",".join("?" for _ in DIET_RULES)
-        for row in conn.execute(f"""SELECT rule_key,status FROM server_exercise_diet_checkins
-            WHERE user_id=? AND date=? AND plan_version=? AND rule_key IN ({placeholders})""",
-                                (user_id, date, PLAN_VERSION, *DIET_RULES)):
-            facts.append((f"diet:{row['rule_key']}", "diet", 5 if row["status"] == "completed" else 0, 5, row["status"]))
+        diet_rules = self._diet_rules_for_date(conn, user_id, date)
+        placeholders = ",".join("?" for _ in diet_rules)
+        if diet_rules:
+            for row in conn.execute(f"""SELECT rule_key,status FROM server_exercise_diet_checkins
+                WHERE user_id=? AND date=? AND plan_version=? AND rule_key IN ({placeholders})""",
+                                    (user_id, date, self.plan_version, *diet_rules)):
+                maximum = V5_DIET_POINTS[row["rule_key"]] if new_policy else 5
+                facts.append((f"diet:{row['rule_key']}", "diet", maximum if row["status"] == "completed" else 0, maximum, row["status"]))
         log = conn.execute("""SELECT * FROM server_exercise_daily_logs WHERE user_id=? AND date=?
-            AND plan_version=? AND exercise_type='daily'""", (user_id, date, PLAN_VERSION)).fetchone()
+            AND plan_version=? AND exercise_type='daily'""", (user_id, date, self.plan_version)).fetchone()
         after_body_deadline = now.astimezone(TZ) >= _deadline(date, 9)
         eligibility = {row["fact_type"]: row["status"] for row in conn.execute("""SELECT fact_type,status
             FROM server_exercise_deadline_facts WHERE user_id=? AND date=? AND plan_version=?
-            AND fact_type IN ('body_weight','body_fat_rate')""", (user_id, date, PLAN_VERSION))}
+            AND fact_type IN ('body_weight','body_fat_rate')""", (user_id, date, self.plan_version))}
         def body_points(field: str, value) -> tuple[int, str]:
             eligible = eligibility.get(field)
             if after_body_deadline:
@@ -197,17 +362,20 @@ class ExerciseV4Service:
             return (5 if value is not None else 0, "有效身体记录")
         weight_points, weight_reason = body_points("body_weight", log["weight"] if log else None)
         fat_points, fat_reason = body_points("body_fat_rate", log["body_fat_rate"] if log else None)
-        facts.extend((("body:weight", "body", weight_points, 5, weight_reason),
-                      ("body:body_fat_rate", "body", fat_points, 5, fat_reason)))
-        stamp, categories = _now_text(now), {scope: {"s": 0.0, "m": 0.0} for scope in SCOPES}
+        body_maximum = 0 if new_policy or optional_body else 5
+        if self.plan_version != "v6":
+            facts.extend((("body:weight", "body", weight_points if body_maximum else 0, body_maximum, weight_reason),
+                          ("body:body_fat_rate", "body", fat_points if body_maximum else 0, body_maximum, fat_reason)))
+        scopes = {"training"} if self.plan_version == "v6" else SCOPES
+        stamp, categories = _now_text(now), {scope: {"s": 0.0, "m": 0.0} for scope in scopes}
         for key, scope, earned, maximum, reason in facts:
-            if scope not in SCOPES:
+            if scope not in scopes:
                 continue
-            score_id = f"exercise-item-score:{user_id}:{date}:{PLAN_VERSION}:{key}"
+            score_id = f"exercise-item-score:{user_id}:{date}:{self.plan_version}:{key}"
             existing = conn.execute("""SELECT earned_points,max_points,score_rule_version,score_reason,score_scope,status
                 FROM server_exercise_item_scores WHERE user_id=? AND date=? AND plan_version=? AND item_key=?""",
-                (user_id, date, PLAN_VERSION, key)).fetchone()
-            desired = (float(earned), float(maximum), RULE_VERSION, str(reason), scope, "active")
+                (user_id, date, self.plan_version, key)).fetchone()
+            desired = (float(earned), float(maximum), self.rule_version, str(reason), scope, "active")
             current = None if not existing else (float(existing["earned_points"]), float(existing["max_points"]),
                 existing["score_rule_version"], existing["score_reason"], existing["score_scope"], existing["status"])
             if current != desired:
@@ -216,28 +384,35 @@ class ExerciseV4Service:
                 VALUES (?,?,?,?,?,?,?,?,?,?,'active',?,?) ON CONFLICT(user_id,date,plan_version,item_key) DO UPDATE SET
                 earned_points=excluded.earned_points,max_points=excluded.max_points,score_rule_version=excluded.score_rule_version,
                 score_reason=excluded.score_reason,score_scope=excluded.score_scope,status='active',updated_at=excluded.updated_at""",
-                    (score_id, user_id, date, PLAN_VERSION, key, earned, maximum, RULE_VERSION, reason, scope, stamp, stamp))
+                    (score_id, user_id, date, self.plan_version, key, earned, maximum, self.rule_version, reason, scope, stamp, stamp))
                 self._change(conn, user_id, "server_exercise_item_scores", score_id)
             categories[scope]["s"] += earned; categories[scope]["m"] += maximum
         ignored = conn.execute("""SELECT id FROM server_exercise_item_scores WHERE user_id=? AND date=? AND plan_version=?
             AND item_key LIKE 'sc-%' AND (earned_points!=0 OR max_points!=0 OR status!='ignored' OR score_scope!='schedule')""",
-            (user_id, date, PLAN_VERSION)).fetchall()
+            (user_id, date, self.plan_version)).fetchall()
         if ignored:
             conn.execute("""UPDATE server_exercise_item_scores SET earned_points=0,max_points=0,status='ignored',score_scope='schedule',updated_at=?
-                WHERE user_id=? AND date=? AND plan_version=? AND item_key LIKE 'sc-%'""", (stamp, user_id, date, PLAN_VERSION))
+            WHERE user_id=? AND date=? AND plan_version=? AND item_key LIKE 'sc-%'""", (stamp, user_id, date, self.plan_version))
             for row in ignored:
                 self._change(conn, user_id, "server_exercise_item_scores", row["id"])
+        for value in categories.values():
+            value["s"], value["m"] = round(value["s"], 2), round(value["m"], 2)
         total = round(sum(value["s"] for value in categories.values()), 2)
-        complete = all(categories[s]["m"] > 0 and categories[s]["s"] == categories[s]["m"] for s in SCOPES)
-        snapshot = {"total": total, "cats": {"运动训练": categories["training"], "饮食约束": categories["diet"], "身体记录": categories["body"]}, "plan_version": PLAN_VERSION}
-        settlement_id = f"exercise-settlement:{user_id}:{PLAN_VERSION}:{date}"
+        complete = any(value["m"] > 0 for value in categories.values()) and all(value["m"] == 0 or value["s"] == value["m"] for value in categories.values())
+        cats = {"运动训练": categories["training"]} if self.plan_version == "v6" else {
+            "运动训练": categories["training"], "饮食约束": categories["diet"], "身体记录": categories["body"]}
+        snapshot = {"total": total, "cats": cats, "plan_version": self.plan_version}
+        settlement_id = f"exercise-settlement:{user_id}:{self.plan_version}:{date}"
+        reward_amount = 200 if self.plan_version == "v6" or optional_body else 100
+        completion_reason = ("运动训练满分" if self.plan_version == "v6" else
+            "全部应评分项满分" if optional_body else f"三个{self.plan_version.upper()}评分域均满分") if complete else "应评分项尚未满分"
         settlement_values = (json.dumps(snapshot, ensure_ascii=False, sort_keys=True), total,
             json.dumps(snapshot["cats"], ensure_ascii=False, sort_keys=True), sum(1 for _,_,e,m,_ in facts if m > 0 and e == m),
-            sum(1 for _,_,_,m,_ in facts if m > 0), RULE_VERSION, int(complete), 100 if complete else 0,
-            "三个V4评分域均满分" if complete else "训练、饮食或身体记录尚未满分")
+            sum(1 for _,_,_,m,_ in facts if m > 0), self.rule_version, int(complete), reward_amount if complete else 0,
+            completion_reason)
         previous = conn.execute("""SELECT score_snapshot,score_total,category_scores,completed_items,total_items,rule_version,
             is_all_complete,completion_reward_amount,completion_reason FROM server_exercise_settlements
-            WHERE user_id=? AND business_date=? AND plan_version=?""", (user_id, date, PLAN_VERSION)).fetchone()
+            WHERE user_id=? AND business_date=? AND plan_version=?""", (user_id, date, self.plan_version)).fetchone()
         previous_values = None if not previous else (previous["score_snapshot"], float(previous["score_total"]), previous["category_scores"],
             int(previous["completed_items"]), int(previous["total_items"]), previous["rule_version"], int(previous["is_all_complete"]),
             int(previous["completion_reward_amount"]), previous["completion_reason"])
@@ -245,23 +420,23 @@ class ExerciseV4Service:
             conn.execute("""INSERT INTO server_exercise_settlements
             (id,user_id,business_date,plan_version,score_snapshot,score_total,category_scores,completed_items,total_items,
              settlement_status,reason_code,rule_version,coin_amount,is_all_complete,completion_reward_amount,completion_reason,occurred_at,created_at,updated_at)
-            VALUES (?,?,?,?,?,?,?,?,?,'active','v4_live',?,0,?,?,?, ?,?,?)
+            VALUES (?,?,?,?,?,?,?,?,?,'active',?, ?,0,?,?,?, ?,?,?)
             ON CONFLICT(user_id,business_date,plan_version) DO UPDATE SET score_snapshot=excluded.score_snapshot,
              score_total=excluded.score_total,category_scores=excluded.category_scores,completed_items=excluded.completed_items,
              total_items=excluded.total_items,is_all_complete=excluded.is_all_complete,completion_reward_amount=excluded.completion_reward_amount,
              completion_reason=excluded.completion_reason,updated_at=excluded.updated_at""",
-                (settlement_id, user_id, date, PLAN_VERSION, *settlement_values[:5], settlement_values[5], settlement_values[6],
+                (settlement_id, user_id, date, self.plan_version, *settlement_values[:5], f"{self.plan_version}_live", settlement_values[5], settlement_values[6],
                  settlement_values[7], settlement_values[8], stamp, stamp, stamp))
             self._change(conn, user_id, "server_exercise_settlements", settlement_id)
         self._reconcile_completion_reward(conn, user_id, date, complete, stamp)
         return snapshot
 
     def _reconcile_completion_reward(self, conn, user_id: int, date: str, complete: bool, stamp: str) -> None:
-        ledger_id = f"exercise-completion-reward:{user_id}:{PLAN_VERSION}:{date}"
+        ledger_id = f"exercise-completion-reward:{user_id}:{self.plan_version}:{date}"
         existing = conn.execute("SELECT 1 FROM server_reward_ledger WHERE user_id=? AND id=?", (user_id, ledger_id)).fetchone()
         if complete and not existing:
-            self.wallet.append_ledger_in_txn(conn, user_id, 100, "exercise_completion_reward",
-                f"exercise-completion:{PLAN_VERSION}:{date}", "V4运动指标全完成奖励", date, ledger_id, stamp)
+            self.wallet.append_ledger_in_txn(conn, user_id, 200 if self.plan_version == "v6" or optional_body_policy_active(conn, date) else 100, "exercise_completion_reward",
+                f"exercise-completion:{self.plan_version}:{date}", f"{self.plan_version.upper()}运动指标全完成奖励", date, ledger_id, stamp)
             self._change(conn, user_id, "server_reward_ledger", ledger_id)
             self.wallet.rebuild_wallet_snapshot_in_txn(conn, user_id, lambda: stamp)
             self._change(conn, user_id, "server_user_wallets", str(user_id))
@@ -272,7 +447,7 @@ class ExerciseV4Service:
             self._change(conn, user_id, "server_user_wallets", str(user_id))
 
     def _remove_diet_penalty(self, conn, user_id: int, date: str, rule_key: str) -> None:
-        source = f"exercise-diet-penalty:{user_id}:{date}:{PLAN_VERSION}:{rule_key}"
+        source = f"exercise-diet-penalty:{user_id}:{date}:{self.plan_version}:{rule_key}"
         if conn.execute("SELECT 1 FROM server_reward_ledger WHERE user_id=? AND id=?", (user_id, source)).fetchone():
             conn.execute("DELETE FROM server_reward_ledger WHERE user_id=? AND id=?", (user_id, source))
             self._change(conn, user_id, "server_reward_ledger", source, "delete")

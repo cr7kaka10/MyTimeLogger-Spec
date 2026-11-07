@@ -19,7 +19,13 @@ def _rebuild_case(tmp_db_path, monkeypatch, event_type):
     service = RewardRebuildService(store)
     with store._transact() as conn:
         conn.execute("INSERT INTO users(id,username,password_hash,created_at) VALUES(1,'u','p','2026-08-25')")
-        conn.execute("INSERT INTO server_reward_ledger VALUES('old',1,2,'manual_adjustment','old','旧账','2026-08-25','2026-08-25 00:00:00','2026-08-25','2026-08-25',NULL)")
+        conn.execute(
+            """INSERT INTO server_reward_ledger(
+                id,user_id,amount,source_type,source_id,description,target_date,
+                occurred_at,expires_at,created_at,updated_at,pushed_at
+            ) VALUES('old',1,2,'manual_adjustment','old','旧账','2026-08-25',
+                '2026-08-25 00:00:00',NULL,'2026-08-25','2026-08-25',NULL)"""
+        )
         store.reward_wallet_service.rebuild_wallet_snapshot_in_txn(conn, 1, lambda: '2026-08-25')
         snapshot = service._snapshot(conn, 1)
         frozen = service._revision(conn, 1)
@@ -35,7 +41,13 @@ def _rebuild_case(tmp_db_path, monkeypatch, event_type):
                 for table in ("server_backpack_events", "server_reward_fragments", "server_user_wallets", "server_external_rewards", "server_reward_ledger"):
                     conn.execute(f"DELETE FROM {table} WHERE user_id=?", (user_id,))
                 if event_type == "revoked":
-                    conn.execute("INSERT INTO server_reward_ledger VALUES('fact',1,5,'manual_adjustment','fact','事实','2026-08-25','2026-08-25 00:00:00','2026-08-25','2026-08-25',NULL)")
+                    conn.execute(
+                        """INSERT INTO server_reward_ledger(
+                            id,user_id,amount,source_type,source_id,description,target_date,
+                            occurred_at,expires_at,created_at,updated_at,pushed_at
+                        ) VALUES('fact',1,5,'manual_adjustment','fact','事实','2026-08-25',
+                            '2026-08-25 00:00:00',NULL,'2026-08-25','2026-08-25',NULL)"""
+                    )
                     conn.execute("INSERT INTO server_user_wallets(user_id,balance,updated_at) VALUES(1,5,'2026-08-25')")
                 else:
                     conn.execute("INSERT INTO server_user_wallets(user_id,balance,updated_at) VALUES(1,0,'2026-08-25')")

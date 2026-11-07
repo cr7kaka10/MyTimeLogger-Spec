@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+from .diet_habit_migration_service import DietHabitMigrationService
+from .exercise_v4_service import is_exercise_rest_day
 
-import httpx
+class HabitUnavailable(ValueError):
+    pass
 
 
 class HabitCheckinCommandService:
-    """TickTick 外部优先的习惯目标状态命令。"""
+    """MyTimeLogger 本地习惯的幂等目标状态命令。"""
 
     def __init__(self, transact, habit_domain_service, command_store):
         self._transact = transact
@@ -18,35 +21,25 @@ class HabitCheckinCommandService:
         command, _ = self._commands.create_or_get(user_id, idempotency_key, habit_id, checkin_date, desired_status)
         if not self._matches(command, habit_id, checkin_date, desired_status):
             return {**command, "status": "failed", "error_code": "idempotency_key_conflict"}
-        if command["status"] == "confirmed":
+        if command["status"] in {"confirmed", "failed"}:
             return command
         async with self._lock(user_id, habit_id, checkin_date):
             command = self._commands.get(user_id, idempotency_key) or command
-            if command["status"] == "confirmed":
+            if command["status"] in {"confirmed", "failed"}:
                 return command
             if command["status"] == "provider_confirmed":
                 return self._finalize(user_id, idempotency_key, habit_id, checkin_date, desired_status)
             try:
                 applicable = self._can_apply(user_id, habit_id, checkin_date, desired_status)
-            except ValueError:
-                return self._commands.mark(user_id, idempotency_key, "retryable_failed", error_code="cancel_not_allowed")
+            except HabitUnavailable as exc:
+                return self._commands.mark(user_id, idempotency_key, "failed", error_code=str(exc))
+            except ValueError as exc:
+                code = str(exc) if str(exc).startswith("timed_habit_") else "cancel_not_allowed"
+                return self._commands.mark(user_id, idempotency_key,
+                    "failed" if code.startswith("timed_habit_") else "retryable_failed", error_code=code)
             if not applicable:
                 return self._commands.mark(user_id, idempotency_key, "retryable_failed", error_code="cancel_not_allowed")
             self._commands.begin_attempt(user_id, idempotency_key)
-            if self._requires_provider(habit_id):
-                if client is None:
-                    return self._commands.mark(user_id, idempotency_key, "retryable_failed", error_code="provider_not_configured")
-                try:
-                    await client.checkin_habit(
-                        self._provider_habit_id(user_id, habit_id),
-                        str(checkin_date).replace("-", ""),
-                        int(desired_status),
-                        1.0 if int(desired_status) == 2 else 0.0,
-                    )
-                except httpx.TimeoutException:
-                    return self._commands.mark(user_id, idempotency_key, "retryable_failed", error_code="provider_timeout")
-                except Exception:
-                    return self._commands.mark(user_id, idempotency_key, "retryable_failed", error_code="provider_request_failed")
             self._commands.mark(user_id, idempotency_key, "provider_confirmed")
             return self._finalize(user_id, idempotency_key, habit_id, checkin_date, desired_status)
 
@@ -54,12 +47,18 @@ class HabitCheckinCommandService:
         finalize_error = None
         try:
             with self._transact() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                self._require_active(conn, user_id, habit_id)
+                self._require_system_day(conn, user_id, habit_id, checkin_date, desired_status)
+                already_completed = False
                 if int(desired_status) == 2:
                     existing = conn.execute(
-                        "SELECT id FROM server_habit_checkins WHERE user_id=? AND habit_id=? AND COALESCE(checkin_date,date)=?",
+                        "SELECT id,status FROM server_habit_checkins WHERE user_id=? AND habit_id=? AND COALESCE(checkin_date,date)=?",
                         (user_id, habit_id, checkin_date),
                     ).fetchone()
-                    if not existing and not self._habits.checkin_habit_in_txn(conn, user_id, habit_id, checkin_date):
+                    already_completed = bool(existing and int(existing["status"] or 0) == 2)
+                    if (not existing or int(existing["status"] or 0) != 2) and not self._habits.checkin_habit_in_txn(
+                            conn, user_id, habit_id, checkin_date, replace_failed=True):
                         self._commands.mark_in_txn(conn, user_id, idempotency_key, "retryable_failed", error_code="habit_not_found")
                         finalize_error = "habit_not_found"
                 elif int(desired_status) == 1:
@@ -69,16 +68,21 @@ class HabitCheckinCommandService:
                 else:
                     self._habits.cancel_checkin_habit_in_txn(conn, user_id, habit_id, checkin_date)
                 if not finalize_error:
-                    self._commands.mark_in_txn(conn, user_id, idempotency_key, "confirmed")
-        except ValueError:
-            return self._commands.mark(user_id, idempotency_key, "retryable_failed", error_code="cancel_not_allowed")
+                    self._commands.mark_in_txn(conn, user_id, idempotency_key, "confirmed",
+                                               error_code="already_completed" if already_completed else None)
+        except HabitUnavailable as exc:
+            return self._commands.mark(user_id, idempotency_key, "failed", error_code=str(exc))
+        except ValueError as exc:
+            code = str(exc) if str(exc).startswith("timed_habit_") else "cancel_not_allowed"
+            return self._commands.mark(user_id, idempotency_key,
+                "failed" if code.startswith("timed_habit_") else "retryable_failed", error_code=code)
         return self._commands.get(user_id, idempotency_key)
 
     def _can_apply(self, user_id: int, habit_id: str, checkin_date: str, desired_status: int) -> bool:
         with self._transact() as conn:
-            habit = conn.execute("SELECT id FROM server_habits WHERE user_id=? AND id=?", (user_id, habit_id)).fetchone()
-            if not habit:
-                return False
+            self._require_active(conn, user_id, habit_id)
+            self._require_system_day(conn, user_id, habit_id, checkin_date, desired_status)
+            self._habits.timed_checkin_guard(conn, user_id, habit_id, checkin_date, desired_status)
             if int(desired_status) == 2:
                 return True
             if int(desired_status) == 1:
@@ -89,19 +93,29 @@ class HabitCheckinCommandService:
         return self._locks.setdefault((int(user_id), str(habit_id), str(checkin_date)), asyncio.Lock())
 
     @staticmethod
+    def _require_active(conn, user_id, habit_id):
+        habit = conn.execute("SELECT is_active,source FROM server_habits WHERE user_id=? AND id=?", (user_id, habit_id)).fetchone()
+        if not habit:
+            raise HabitUnavailable("habit_not_found")
+        if habit["source"] not in {"local", "system"}:
+            raise HabitUnavailable("provider_habit_sync_disabled")
+        if habit["is_active"] != 0:
+            raise HabitUnavailable("habit_archived")
+
+    @staticmethod
+    def _require_system_day(conn, user_id, habit_id, date, desired_status):
+        row = conn.execute("SELECT source FROM server_habits WHERE user_id=? AND id=?", (user_id, habit_id)).fetchone()
+        if row["source"] != "system":
+            return
+        if not str(habit_id).startswith("diet-v5:") or not DietHabitMigrationService.active(conn, user_id, date) or is_exercise_rest_day(conn, user_id, "v5", date):
+            raise HabitUnavailable("diet_habit_unavailable")
+        if int(desired_status) != 2:
+            raise HabitUnavailable("diet_habit_auto_failure_only")
+
+    @staticmethod
     def _matches(command: dict, habit_id: str, checkin_date: str, desired_status: int) -> bool:
         return (
             str(command.get("habit_id")) == str(habit_id)
             and str(command.get("checkin_date")) == str(checkin_date)
             and int(command.get("desired_status") or 0) == int(desired_status)
         )
-
-    @staticmethod
-    def _requires_provider(habit_id: str) -> bool:
-        return not str(habit_id).startswith("local_")
-
-    @staticmethod
-    def _provider_habit_id(user_id: int, habit_id: str) -> str:
-        prefix = f"ticktick:{user_id}:"
-        value = str(habit_id)
-        return value[len(prefix):] if value.startswith(prefix) else value

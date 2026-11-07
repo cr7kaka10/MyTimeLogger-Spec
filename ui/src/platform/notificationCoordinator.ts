@@ -1,9 +1,10 @@
 import type { NotificationService } from './services'
 import type { NotificationPreferences } from './notificationPreferences'
 import { classifyNotificationEvents, externalNotificationKey, ledgerNotificationKey } from './notificationEvents'
+import type { PlatformRuntime } from './runtime'
 
 type Facts = { external: any[]; ledger: any[] }
-type Dependencies = { readFacts(): Facts | Promise<Facts>; preferences: NotificationPreferences; notifications: NotificationService; isForeground(): boolean }
+type Dependencies = { readFacts(): Facts | Promise<Facts>; preferences: NotificationPreferences; notifications: NotificationService; isForeground(): boolean; runtime?: PlatformRuntime; today?: () => string }
 
 export function createNotificationCoordinator(dependencies: Dependencies) {
   let queue = Promise.resolve()
@@ -16,13 +17,16 @@ export function createNotificationCoordinator(dependencies: Dependencies) {
     const batch = classifyNotificationEvents(
       facts.external.filter(item => unseen.has(externalNotificationKey(item))),
       facts.ledger.filter(item => unseen.has(ledgerNotificationKey(item))),
+      { runtime: dependencies.runtime, today: dependencies.today?.() },
     )
     const settings = await dependencies.preferences.getSettings(); let delivered = 0
+    const handled = new Set(batch.handledKeys)
     for (const message of batch.notifications) {
-      if (!settings.master || !settings[message.channel] || (dependencies.isForeground() && !settings.foreground)) continue
-      try { if (await dependencies.notifications.notify(message) === 'delivered') delivered += 1 } catch { /* notifications never block business state */ }
+      for (const key of message.handledKeys) handled.delete(key)
+      if (!settings.master || !settings[message.channel] || (dependencies.isForeground() && !settings.foreground && message.title !== '饮食打卡逾期')) continue
+      try { if (await dependencies.notifications.notify(message) === 'delivered') { delivered += 1; message.handledKeys.forEach(key => handled.add(key)) } } catch { /* retry on next reconciliation */ }
     }
-    await dependencies.preferences.markHandled(batch.handledKeys)
+    await dependencies.preferences.markHandled([...handled])
     return { delivered, baseline: false }
   }
   return { reconcile() { const result = queue.then(run, run); queue = result.then(() => {}, () => {}); return result } }

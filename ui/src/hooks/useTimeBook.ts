@@ -8,6 +8,8 @@ import { sessionBusinessDate } from '@core/SessionBusinessDate'
 import { platformFetch } from '../platform/fetch'
 import type { ManagementPlanRuntime } from './useManagementPlan'
 import { useChecklistTaskSubmission, type ChecklistTaskSubmission } from './useChecklistTaskSubmission'
+import { useEventRefresh } from './useEventRefresh'
+import { LOCAL_HABITS_UPDATED } from './useLocalHabitMutation'
 
 const resolveEditDurationSeconds = (startTime: string, endTime: string): number => {
   const start = parseBeijingDateTimeMs(startTime)
@@ -62,6 +64,7 @@ export const formatSyncFailure = (result: SyncNowResult): string =>
 export interface UseTimeBookReturn {
   sessions: SessionRecord[]
   selectedDate: string
+  summaryLoadedDate: string
   setSelectedDate: (d: string) => void
   resetToToday: () => void
   availableDates: string[]
@@ -71,7 +74,10 @@ export interface UseTimeBookReturn {
   updateSession: (id: string | number, fields: Partial<SessionRecord>) => void
   saveSession: (data: SessionEditData) => void
   todaySummary: { groupName: string; minutes: number; color: string }[]
-  diary: { morning_diary?: string; evening_diary?: string; morning_diary_written_at?: string; evening_diary_written_at?: string; report_status?: number; morning_diary_reward_status?: string; morning_diary_reward_amount?: number; morning_diary_reward_reason?: string; evening_diary_reward_status?: string; evening_diary_reward_amount?: number; evening_diary_reward_reason?: string } | null
+  diary: { morning_diary?: string; evening_diary?: string; morning_diary_written_at?: string; evening_diary_written_at?: string; image_uploaded_at?: string; report_status?: number; source?: string; sync_status?: string; full_report_state?: string; report_completed_at?: string; morning_diary_reward_status?: string; morning_diary_reward_amount?: number; morning_diary_reward_reason?: string; evening_diary_reward_status?: string; evening_diary_reward_amount?: number; evening_diary_reward_reason?: string } | null
+  dailyGoals: Array<{ id: string | number; title: string; period: string; operator: string; current: number; target: number; periodKey?: string; periodEnd?: string; rewardCoins: number; penaltyCoins: number }>
+  dailySummaryLedger: Array<{ id: string | number; source_type: string; source_id?: string | number; amount: number; description?: string; occurred_at?: string | null }>
+  dailyHabits: Array<{ id: string | number; name: string; icon?: string; repeatRule?: string | null; status: number; source?: string }>
   saveDiary: (type: 'morning' | 'evening', content: string) => void
   sleepStatusMap: Record<string, number>
   syncError: string
@@ -120,12 +126,20 @@ const beijingDateTime = () => new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia
 
 export const useTimeBook = (isActive = true, runtime?: ManagementPlanRuntime): UseTimeBookReturn => {
   const [selectedDate, setSelectedDate] = useState(() => formatBeijingDate())
+  const [summaryLoadedDate, setSummaryLoadedDate] = useState('')
+  const activeDateRef = useRef(selectedDate)
+  activeDateRef.current = selectedDate
+  const loadGenerationRef = useRef(0)
   const [sessions, setSessions] = useState<SessionRecord[]>([])
   const [availableDates, setAvailableDates] = useState<string[]>([])
   const [categories, setCategories] = useState<Array<{ id: number; name: string; icon?: string; color?: string }>>([])
   const [diary, setDiary] = useState<UseTimeBookReturn['diary']>(null)
+  const [dailyGoals, setDailyGoals] = useState<UseTimeBookReturn['dailyGoals']>([])
+  const [dailySummaryLedger, setDailySummaryLedger] = useState<UseTimeBookReturn['dailySummaryLedger']>([])
+  const [dailyHabits, setDailyHabits] = useState<UseTimeBookReturn['dailyHabits']>([])
   const [sleepStatusMap, setSleepStatusMap] = useState<Record<string, number>>({})
   const [refreshTrigger, setRefreshTrigger] = useState(0)
+  const sourceRefresh = useEventRefresh(['sync-pull-complete', 'balance-updated', LOCAL_HABITS_UPDATED])
   const [syncError, setSyncError] = useState('')
   const [flashCards, setFlashCards] = useState<FlashCard[]>([])
   const [flashError, setFlashError] = useState('')
@@ -134,11 +148,15 @@ export const useTimeBook = (isActive = true, runtime?: ManagementPlanRuntime): U
   const syncPromise = useRef<Promise<void> | null>(null)
 
   const loadLocal = useCallback(async () => {
+    const generation = ++loadGenerationRef.current
     const db = await getDatabase()
+    if (activeDateRef.current !== selectedDate || generation !== loadGenerationRef.current) return
     setSessions(db.getSessionsByDate(selectedDate) as any[])
     setAvailableDates(db.getAvailableDates() ?? [])
     setCategories(db.getCategories().map((c: any) => ({ id: c.id, name: c.name, icon: c.icon, color: c.color })))
     if (typeof db.getDiaryForDate === 'function') setDiary(db.getDiaryForDate(selectedDate))
+    if (typeof db.getSummaryGoalsForDate === 'function') setDailyGoals(db.getSummaryGoalsForDate(selectedDate).map((goal: any) => ({ id: goal.id, title: goal.title, period: goal.period, operator: goal.operator, current: goal.current, target: goal.target, periodKey: goal.periodKey, periodEnd: goal.periodEnd, rewardCoins: Number(goal.reward_coins || 0), penaltyCoins: Number(goal.penalty_coins || 0) })))
+    if (typeof db.getDailySummaryLedger === 'function') setDailySummaryLedger(db.getDailySummaryLedger(selectedDate) as any)
     if (typeof db.getSleepStatusMap === 'function') setSleepStatusMap(db.getSleepStatusMap())
 
     if (typeof db.getFlashCards === 'function') {
@@ -153,8 +171,16 @@ export const useTimeBook = (isActive = true, runtime?: ManagementPlanRuntime): U
       const value = String(time || '').trim()
       return /^\d{4}-\d{2}-\d{2}/.test(value) ? value : value && date ? `${date} ${value}` : ''
     }
-    const habitNames = new Map((db.getHabits?.() || []).map((habit: any) => [String(habit.id), String(habit.name || '')]))
-    const habitEntries = (db.getTodayCheckins?.(selectedDate) || []).flatMap((checkin: any) => {
+    const allHabits = (db.getHabits?.() || []) as any[]
+    const habitWindows = db.getHabitWindowsForDate(selectedDate)
+    const dayCheckins = (db.getTodayCheckins?.(selectedDate) || []) as any[]
+    const habitNames = new Map(allHabits.map((habit: any) => [String(habit.id), String(habit.name || '')]))
+    const checkinsByHabit = new Map(dayCheckins.map((checkin: any) => [String(checkin.habit_id ?? checkin.habitId), checkin]))
+    setDailyHabits(allHabits.filter((habit: any) => Number(habit.is_active || 0) === 0 && (habit.source !== 'system' || habitWindows.has(String(habit.id)))).map((habit: any) => ({
+      id: habit.id, name: String(habit.name || habit.title || ''), icon: String(habit.icon || ''),
+      repeatRule: habit.repeat_rule || habit.repeatRule || null, status: Number(checkinsByHabit.get(String(habit.id))?.status || 0), source: habit.source,
+    })).filter(habit => habit.name))
+    const habitEntries = dayCheckins.flatMap((checkin: any) => {
       const status = Number(checkin.status)
       const at = toAt(checkin.checkin_date || selectedDate, status === 1 ? checkin.updated_at || checkin.checkin_time : checkin.checkin_time || checkin.updated_at)
       const name = String(checkin.habit_name || habitNames.get(String(checkin.habit_id)) || '')
@@ -166,6 +192,7 @@ export const useTimeBook = (isActive = true, runtime?: ManagementPlanRuntime): U
       return at && name && (status === 1 || status === -1) ? [{ id: `exercise-checkin-${checkin.id}`, at, kind: 'checkin' as const, checkinSource: 'exercise' as const, checkinName: name, checkinStatus: status === 1 ? 'success' as const : 'failure' as const }] : []
     })
     setCheckinEntries([...habitEntries, ...exerciseEntries])
+    setSummaryLoadedDate(selectedDate)
   }, [selectedDate])
 
   const flashRequest = useCallback(async (path: string, init: RequestInit = {}) => {
@@ -186,7 +213,7 @@ export const useTimeBook = (isActive = true, runtime?: ManagementPlanRuntime): U
 
   useEffect(() => {
     void loadLocal()
-  }, [loadLocal, refreshTrigger])
+  }, [loadLocal, refreshTrigger, sourceRefresh])
 
   useEffect(() => { void loadFlashCards() }, [loadFlashCards])
 
@@ -224,6 +251,12 @@ export const useTimeBook = (isActive = true, runtime?: ManagementPlanRuntime): U
           ...currentDiary,
           [type === 'morning' ? 'morning_diary' : 'evening_diary']: content,
         })
+        if (type === 'evening') {
+          const bridge = (window as any).MTLEveningDiary
+          if (content.trim()) bridge?.saved?.(selectedDate)
+          else bridge?.refresh?.()
+          window.dispatchEvent(new Event('mtl:evening-diary-updated'))
+        }
         setRefreshTrigger(prev => prev + 1)
       }
     })
@@ -281,6 +314,7 @@ export const useTimeBook = (isActive = true, runtime?: ManagementPlanRuntime): U
   }, [])
 
   const changeSelectedDate = useCallback((date: string) => {
+    setSummaryLoadedDate('')
     setSelectedDate(date)
     syncAfterDateSwitch('timebook', date)
       .then(result => {
@@ -389,10 +423,10 @@ export const useTimeBook = (isActive = true, runtime?: ManagementPlanRuntime): U
 
   return useMemo(
     () => ({
-      sessions, selectedDate, setSelectedDate: changeSelectedDate, resetToToday, availableDates, markedDates, categories,
-      deleteSession, updateSession, saveSession, todaySummary, diary, saveDiary, sleepStatusMap, syncError,
+      sessions, selectedDate, summaryLoadedDate, setSelectedDate: changeSelectedDate, resetToToday, availableDates, markedDates, categories,
+      deleteSession, updateSession, saveSession, todaySummary, diary, dailyGoals, dailySummaryLedger, dailyHabits, saveDiary, sleepStatusMap, syncError,
       flashCards, timelineEntries, flashError, taskRecommendations, taskSubmissions, createRecommendedTask, ignoreRecommendedTask, submitFlashClassificationFeedback, loadFlashProcessingLogs, correctFlashPolish, loadFlashSkillHistory, recordFlashCard, saveFlashCard, deleteFlashCard,
     }),
-    [sessions, selectedDate, changeSelectedDate, resetToToday, availableDates, markedDates, categories, deleteSession, updateSession, saveSession, todaySummary, diary, saveDiary, sleepStatusMap, syncError, flashCards, timelineEntries, flashError, taskRecommendations, taskSubmissions, createRecommendedTask, ignoreRecommendedTask, submitFlashClassificationFeedback, loadFlashProcessingLogs, correctFlashPolish, loadFlashSkillHistory, recordFlashCard, saveFlashCard, deleteFlashCard],
+    [sessions, selectedDate, summaryLoadedDate, changeSelectedDate, resetToToday, availableDates, markedDates, categories, deleteSession, updateSession, saveSession, todaySummary, diary, dailyGoals, dailySummaryLedger, dailyHabits, saveDiary, sleepStatusMap, syncError, flashCards, timelineEntries, flashError, taskRecommendations, taskSubmissions, createRecommendedTask, ignoreRecommendedTask, submitFlashClassificationFeedback, loadFlashProcessingLogs, correctFlashPolish, loadFlashSkillHistory, recordFlashCard, saveFlashCard, deleteFlashCard],
   )
 }

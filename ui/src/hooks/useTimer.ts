@@ -10,6 +10,8 @@ import { resolveInputOutputCountdownSeconds, resolveLongBreakSeconds, resolveStu
 import { emitTimerAudioFlow, emitTimerFlow } from '../utils/timerFlow'
 import { applyStatusSwitchNote, canRequestStatusSwitch, formatStatusSwitchSourceSummary, requiresStatusSwitchNote, statusSwitchSourcePolicy, type StatusSwitchLifecycle } from './statusSwitchFlow'
 import { shouldBlockTimerCategoryAction } from './timerFocusGuard'
+import { focusCategoryPolicy, focusGroupFor, resolveFocusCommandPolicy, sameFocusGroup } from '@core/FocusCategoryPolicy'
+import { recordBehavior } from '../utils/behaviorAudit'
 import { decideTaskFocus, executeTaskFocus, type TaskFocusResult } from './taskFocusRouting'
 import type { DeviceRuntimeStateService } from '../platform'
 import { reconcileTimerReminder } from '../platform/timerReminders'
@@ -30,6 +32,7 @@ export const persistTimerSnapshot = async (engine: LogicEngine, service = timerR
   await service.set(TIMER_RUNTIME_KEY, JSON.stringify(snapshot))
   refresh()
   await reconcileTimerReminder(snapshot)
+  if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent('mtl:timer-snapshot', { detail: snapshot }))
   return true
 }
 export const restoreTimerSnapshot = async (engine: LogicEngine, service = timerRuntimeState) => {
@@ -37,7 +40,9 @@ export const restoreTimerSnapshot = async (engine: LogicEngine, service = timerR
   try {
     const raw = await service.get(TIMER_RUNTIME_KEY)
     const restored = raw ? engine.restoreSnapshot(JSON.parse(raw)) : false
-    await reconcileTimerReminder(restored ? engine.exportSnapshot() : null)
+    const snapshot = restored ? engine.exportSnapshot() : null
+    await reconcileTimerReminder(snapshot)
+    if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent('mtl:timer-snapshot', { detail: snapshot }))
     return restored
   } catch { return false }
 }
@@ -130,6 +135,8 @@ export function useTimer(): UseTimerReturn {
   const lastTimerAudioEffectKeyRef = useRef('')
   const runtimeCueKeysRef = useRef(new Set<string>())
   const longBreakStopIntentsRef = useRef(new Set<string>())
+  const timerDeviceIdRef = useRef('')
+  const summaryVisibleRef = useRef(false)
   const [state, setState] = useState<TimerState>('stopped')
   const [isPaused, setIsPaused] = useState(false)
   const [cycleCount, setCycleCount] = useState(0)
@@ -138,6 +145,7 @@ export function useTimer(): UseTimerReturn {
   const [microBreakRemainingSeconds, setMicroBreakRemainingSeconds] = useState(0)
   const [showPauseReason, setShowPauseReason] = useState(false)
   const [showSummary, setShowSummary] = useState(false)
+  summaryVisibleRef.current = showSummary
   const [showStatusSwitchNote, setShowStatusSwitchNote] = useState(false)
   const [isEarlyEnd, setIsEarlyEnd] = useState(false)
   const [currentCategory, setCurrentCategory] = useState<Category | null>(null)
@@ -238,7 +246,13 @@ export function useTimer(): UseTimerReturn {
         },
         onSummaryRequested: (isSuccess: boolean, earlyEnd: boolean) => {
           setIsEarlyEnd(earlyEnd)
-          setShowSummary(true)
+          const coordinator = currentTimerCoordinatorRef.current
+          const current = coordinator?.snapshot()
+          if (!coordinator || !current?.active) return
+          void coordinator.command('request_summary', {
+            summaryRevision: current.summary_revision || 0,
+            userIntentId: `summary-request:${current.session_id}`,
+          }).catch(() => undefined)
         },
         onPauseReasonRequested: () => {
           setShowPauseReason(true)
@@ -295,6 +309,7 @@ export function useTimer(): UseTimerReturn {
             if (!disposed && epoch === coordinatorEpochRef.current) applyTimerReadiness('unavailable')
             return null
           }
+          timerDeviceIdRef.current = deviceId
           if (!currentTimerCoordinatorRef.current || currentTimerClientRef.current !== timerClient) {
             currentTimerClientRef.current = timerClient
             currentTimerCoordinatorRef.current = new CurrentTimerCoordinator(
@@ -318,6 +333,13 @@ export function useTimer(): UseTimerReturn {
               }
             }
             setCurrentTimer(authoritative)
+            const ownsPendingSummary = authoritative?.summary_state === 'pending'
+              && authoritative.summary_owner_device_id === timerDeviceIdRef.current
+            if (ownsPendingSummary) setShowSummary(true)
+            else if (!authoritative || authoritative.summary_state !== 'pending') {
+              setShowSummary(false)
+              setIsEarlyEnd(false)
+            } else setShowSummary(false)
             setCurrentCategory(authoritative?.active
               ? resolveCurrentTimerCategory(categoriesRef.current, authoritative.category_id, authoritative.category_name)
               : null)
@@ -557,7 +579,7 @@ export function useTimer(): UseTimerReturn {
       const widgetEventAt = new Date(command.eventEpochMs)
       if (!Number.isFinite(widgetEventAt.getTime())) return Promise.resolve('requires_app')
       const cat = categories.find(item => item.id === command.categoryId)
-      if (!cat || ['输入', '输出'].includes(cat.name)) return Promise.resolve('requires_app')
+      if (!cat || focusCategoryPolicy(cat.name).structured) return Promise.resolve('requires_app')
       return enqueueTimerAction(`widget-${command.action}`, async ({ engine }) => {
         const coordinator = await ensureCoordinatorRef.current()
         if (!coordinator || !isTimerCommandReady(timerReadinessRef.current)) return 'requires_app'
@@ -588,15 +610,12 @@ export function useTimer(): UseTimerReturn {
     const cat = categories.find(c => c.id === categoryId)
     if (!cat || !engineRef.current) return
     enqueueTimerAction('start', async ({ actionId, engine, db }) => {
-      if (shouldBlockTimerCategoryAction('start', engine.currentCategoryName, engine.state)) {
+      if (shouldBlockTimerCategoryAction('start', engine.currentCategoryName, engine.state, cat.name, engine.isPaused)) {
         warnTimerFlow('focus-lock.category-blocked', { actionId, action: 'start', sourceCategoryId: engine.currentCategoryId, sourceCategoryName: engine.currentCategoryName, targetCategoryId: cat.id, targetCategoryName: cat.name, engineState: engine.state, result: 'gated', reason: 'structured-focus-active' })
         return
       }
       const sessionId = `timer-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
-      const timerMode = ['输入', '输出'].includes(cat.name) ? 'countdown' : 'countup'
-      const durationMs = timerMode === 'countdown'
-        ? resolveInputOutputCountdownSeconds(db.getConfig('input_output_countdown_min')) * 1000
-        : 0
+      const { timerMode, durationMs } = resolveFocusCommandPolicy(cat.name, db.getConfig('input_output_countdown_min'))
       const outcome = await commandCurrentTimer('start', {
         sessionId, categoryId: cat.id, categoryName: cat.name, currentNote: topic ?? '', timerMode, durationMs,
       })
@@ -624,7 +643,7 @@ export function useTimer(): UseTimerReturn {
       if (timer) clearTimeout(timer)
       timer = setTimeout(async () => {
         const active = currentTimerCoordinatorRef.current?.snapshot()?.active
-        if (active && document.visibilityState === 'visible') await refresh()
+        if ((active || summaryVisibleRef.current) && document.visibilityState === 'visible') await refresh()
         schedule()
       }, 15_000)
     }
@@ -657,13 +676,14 @@ export function useTimer(): UseTimerReturn {
   const requestTaskFocus = useCallback(async (categoryId: number, title: string): Promise<TaskFocusResult> => {
     const cat = categories.find(c => c.id === categoryId)
     if (!cat) return { status: 'unavailable', reason: 'missing-category' }
-    const result = await enqueueTimerAction('task-focus', async ({ actionId, engine }) => {
-      const decision = decideTaskFocus(engine.state, engine.currentCategoryId, engine.currentCategoryName, cat.id)
+    const result = await enqueueTimerAction('task-focus', async ({ actionId, engine, db }) => {
+      const decision = decideTaskFocus(engine.state, engine.currentCategoryId, engine.currentCategoryName, cat.id, cat.name)
+      const { timerMode, durationMs } = resolveFocusCommandPolicy(cat.name, db.getConfig('input_output_countdown_min'))
       logTimerFlow('task-focus.decided', { actionId, sourceCategoryId: engine.currentCategoryId, sourceCategoryName: engine.currentCategoryName, targetCategoryId: cat.id, targetCategoryName: cat.name, engineState: engine.state, result: decision.status, hasTitle: Boolean(title.trim()), titleLength: title.length })
       return executeTaskFocus(decision, {
         started: async () => {
           const outcome = await commandCurrentTimer('start', {
-            sessionId: `task-${Date.now()}`, categoryId: cat.id, categoryName: cat.name, currentNote: title, timerMode: 'countup',
+            sessionId: `task-${Date.now()}`, categoryId: cat.id, categoryName: cat.name, currentNote: title, timerMode, durationMs,
           })
           if (outcome?.code !== 'accepted') throw new Error('current-timer-start-failed')
           setCurrentNoteState(title)
@@ -673,8 +693,9 @@ export function useTimer(): UseTimerReturn {
           if (outcome?.code !== 'accepted') throw new Error('current-timer-note-failed')
         },
         switched: async () => {
-          const outcome = await commandCurrentTimer('switch', {
-            categoryId: cat.id, categoryName: cat.name, currentNote: title, timerMode: 'countup',
+          const operation = engine.state === 'studying' && !engine.isPaused && sameFocusGroup(engine.currentCategoryName, cat.name) ? 'handoff' : 'switch'
+          const outcome = await commandCurrentTimer(operation, {
+            categoryId: cat.id, categoryName: cat.name, currentNote: title, timerMode, durationMs,
           })
           if (outcome?.code !== 'accepted') throw new Error('current-timer-switch-failed')
           setCurrentNoteState(title)
@@ -922,7 +943,11 @@ export function useTimer(): UseTimerReturn {
         engineState: engine.state, currentCategoryId: engine.currentCategoryId,
         currentCategoryName: engine.currentCategoryName,
       })
-      const outcome = await commandCurrentTimer('stop', { sessionSummary: text })
+      const current = currentTimerCoordinatorRef.current?.snapshot()
+      const operation = text.trim() ? 'resolve_summary' : 'skip_summary'
+      const outcome = await commandCurrentTimer(operation, {
+        sessionSummary: text, summaryRevision: current?.summary_revision || 0,
+      })
       if (outcome?.code !== 'accepted' || !outcome.state) {
         setShowSummary(true)
         return
@@ -965,7 +990,7 @@ export function useTimer(): UseTimerReturn {
       requestStatusSwitch()
       return
     }
-    if (shouldBlockTimerCategoryAction('switchCategory', engine.currentCategoryName, engine.state)) {
+    if (shouldBlockTimerCategoryAction('switchCategory', engine.currentCategoryName, engine.state, cat.name, engine.isPaused)) {
       warnTimerFlow('focus-lock.category-blocked', { action: 'switchCategory', sourceCategoryId: engine.currentCategoryId, sourceCategoryName: engine.currentCategoryName, targetCategoryId: cat.id, targetCategoryName: cat.name, engineState: engine.state, result: 'gated', reason: 'structured-focus-active' })
       return
     }
@@ -977,17 +1002,18 @@ export function useTimer(): UseTimerReturn {
       currentCategoryName: engine.currentCategoryName,
     })
     void enqueueTimerAction('switch-category', async ({ db }) => {
-      const timerMode = ['输入', '输出'].includes(cat.name) ? 'countdown' : 'countup'
-      const durationMs = timerMode === 'countdown'
-        ? resolveInputOutputCountdownSeconds(db.getConfig('input_output_countdown_min')) * 1000
-        : 0
-      const outcome = await commandCurrentTimer('switch', {
+      const { timerMode, durationMs } = resolveFocusCommandPolicy(cat.name, db.getConfig('input_output_countdown_min'))
+      const operation = engine.state === 'studying' && !engine.isPaused && sameFocusGroup(engine.currentCategoryName, cat.name)
+        ? 'handoff' : 'switch'
+      const outcome = await commandCurrentTimer(operation, {
         categoryId: cat.id, categoryName: cat.name, timerMode, durationMs,
       })
       if (outcome?.code !== 'accepted' || !outcome.state) {
+        if (operation === 'handoff') recordBehavior('timer.focus_handoff.completed', { from_group: focusGroupFor(engine.currentCategoryName) || 'none', to_group: focusGroupFor(cat.name) || 'none', same_group: true, state: engine.state, revision: currentTimerCoordinatorRef.current?.snapshot()?.revision || 0, result: 'failed', error_code: outcome?.errorCode || outcome?.code || 'unknown' })
         warnTimerFlow('current-state.switch.rejected', { errorCode: outcome?.errorCode || outcome?.code })
         return
       }
+      if (operation === 'handoff') recordBehavior('timer.focus_handoff.completed', { from_group: focusGroupFor(engine.currentCategoryName) || 'none', to_group: focusGroupFor(cat.name) || 'none', same_group: true, state: engine.state, revision: outcome.state.revision, result: 'succeeded' }, `${outcome.state.session_id}:${outcome.state.revision}`)
       setCurrentNoteState('')
     })
   }, [categories, commandCurrentTimer, enqueueTimerAction, requestStatusSwitch])

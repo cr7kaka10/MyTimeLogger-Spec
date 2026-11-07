@@ -112,12 +112,14 @@ const TaskItem = ({ task, index, onToggle, onRemove, onAddChecklist, submission,
   )
 }
 
-const KRCard = ({ kr, categories, isExpanded, onToggleExpanded, onAddTask, onToggleTask, onRemoveTask, onAddChecklist, submissions, statusOverrides, pendingTaskIds, actionErrors }: {
+const KRCard = ({ kr, categories, isExpanded, onToggleExpanded, onAddTask, onUpdateKR, onRemoveKR, onToggleTask, onRemoveTask, onAddChecklist, submissions, statusOverrides, pendingTaskIds, actionErrors }: {
   kr: LearningKR; 
   categories: LearningCategory[];
   isExpanded: boolean;
   onToggleExpanded: () => void;
   onAddTask: (title: string, categoryId: number) => void;
+  onUpdateKR: (title: string) => Promise<unknown>;
+  onRemoveKR: () => Promise<unknown>;
   onToggleTask: (task: LearningTask) => void;
   onRemoveTask: (taskId: string, currentStatus: number) => void;
   onAddChecklist: (task: LearningTask) => void;
@@ -128,6 +130,10 @@ const KRCard = ({ kr, categories, isExpanded, onToggleExpanded, onAddTask, onTog
 }) => {
   const [newTaskTitle, setNewTaskTitle] = useState('')
   const [newTaskCategory, setNewTaskCategory] = useState<'输入' | '输出'>('输入')
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState(kr.title)
+  const [pending, setPending] = useState(false)
+  const [error, setError] = useState('')
   const displayedStatus = (task: LearningTask) => statusOverrides[task.id] ?? task.status
   const completedCount = kr.tasks?.filter(task => displayedStatus(task) === 2).length ?? 0
   const taskCount = kr.tasks?.length ?? 0
@@ -142,14 +148,32 @@ const KRCard = ({ kr, categories, isExpanded, onToggleExpanded, onAddTask, onTog
     onAddTask(newTaskTitle.trim(), categoryId)
     setNewTaskTitle('')
   }
+  const saveTitle = async (event: React.FormEvent) => {
+    event.preventDefault()
+    if (!draft.trim() || pending) return
+    setPending(true); setError('')
+    try { await onUpdateKR(draft.trim()); setEditing(false) }
+    catch (reason) { setError(reason instanceof Error ? reason.message : '修改 KR 失败') }
+    finally { setPending(false) }
+  }
+  const deleteKR = async () => {
+    if (pending || !confirm(`确定删除 KR「${kr.title}」及其 ${kr.tasks?.length ?? 0} 个学习单元吗？\n此操作不可恢复。`)) return
+    setPending(true); setError('')
+    try { await onRemoveKR() }
+    catch (reason) { setError(reason instanceof Error ? reason.message : '删除 KR 失败') }
+    finally { setPending(false) }
+  }
 
   return (
     <section className={`${isExpanded ? 'mb-4 overflow-visible rounded-2xl shadow-sm hover:shadow-md' : 'mb-2 overflow-hidden rounded-xl shadow-sm'} border border-gray-200/80 bg-white transition-all dark:border-gray-700 dark:bg-gray-800/80`}>
-      <button type="button" onClick={onToggleExpanded} aria-expanded={isExpanded} className={`flex w-full items-center gap-2.5 text-left transition-colors hover:bg-gray-50 dark:hover:bg-gray-700/40 ${isExpanded ? 'px-4 pb-1 pt-4' : 'px-3 py-2'}`}>
+      <div className="flex items-start"><button type="button" onClick={onToggleExpanded} aria-expanded={isExpanded} className={`flex min-w-0 flex-1 items-center gap-2.5 text-left transition-colors hover:bg-gray-50 dark:hover:bg-gray-700/40 ${isExpanded ? 'px-4 pb-1 pt-4' : 'px-3 py-2'}`}>
         <span className={`flex h-5 w-5 flex-none items-center justify-center rounded-md bg-gray-100 text-base font-bold leading-none text-gray-500 transition-transform dark:bg-gray-700 dark:text-gray-300 ${isExpanded ? 'rotate-90' : ''}`}>›</span>
         <span className={`min-w-0 flex-1 text-sm font-bold leading-5 text-gray-900 dark:text-gray-100 ${isExpanded ? '' : 'truncate'}`} title={!isExpanded ? kr.title : undefined}>{kr.title}</span>
         <span className="flex-none rounded-full bg-blue-50 px-2 py-0.5 text-[10px] font-medium text-blue-600 dark:bg-blue-900/30 dark:text-blue-300">{completedCount}/{taskCount}</span>
       </button>
+      <div className="flex items-center gap-1 px-3 pt-2"><button type="button" disabled={pending} onClick={() => { setDraft(kr.title); setError(''); setEditing(true) }} aria-label={`修改 KR：${kr.title}`} title="修改 KR" className="rounded px-2 text-sm hover:bg-blue-50 disabled:opacity-50">✏️</button><button type="button" disabled={pending} onClick={() => void deleteKR()} aria-label={`删除 KR：${kr.title}`} title="删除 KR" className="rounded px-2 text-sm hover:bg-red-50 disabled:opacity-50">🗑️</button></div></div>
+      {editing && <form onSubmit={saveTitle} className="flex gap-2 px-4 pb-2"><input autoFocus value={draft} onChange={event => setDraft(event.target.value)} aria-label="KR 标题" className="min-w-0 flex-1 rounded border px-2 py-1 text-sm dark:bg-gray-800" /><button type="submit" disabled={!draft.trim() || pending} className="text-sm text-blue-600 disabled:opacity-50">保存</button><button type="button" disabled={pending} onClick={() => { setEditing(false); setError('') }} className="text-sm text-gray-500">取消</button></form>}
+      {error && <p role="alert" className="px-4 pb-2 text-sm text-red-600">{error}</p>}
       {isExpanded ? <div className="px-4 pb-3"><ProgressBar current={displayedCurrent} total={kr.target_value} /></div> : (
         <div className="mx-3 mb-2 h-1 overflow-hidden rounded-full bg-gray-100 dark:bg-gray-700" aria-label={`进度 ${percent}%`}>
           <div className="h-full rounded-full bg-blue-500 transition-all" style={{ width: `${percent}%` }} />
@@ -199,10 +223,12 @@ const KRCard = ({ kr, categories, isExpanded, onToggleExpanded, onAddTask, onTog
   )
 }
 
-const ObjectiveCard = ({ objective, categories, onAddKR, onAddTask, onToggleTask, onRemoveTask, onAddChecklist, submissions, statusOverrides, pendingTaskIds, actionErrors, onOpenAi, onUpdate, onRemove, onOpenEdit }: {
+const ObjectiveCard = ({ objective, categories, onAddKR, onUpdateKR, onRemoveKR, onAddTask, onToggleTask, onRemoveTask, onAddChecklist, submissions, statusOverrides, pendingTaskIds, actionErrors, onOpenAi, onUpdate, onRemove, onOpenEdit }: {
   objective: LearningObjective; 
   categories: LearningCategory[];
   onAddKR: (title: string) => void;
+  onUpdateKR: (id: string, title: string) => Promise<unknown>;
+  onRemoveKR: (id: string) => Promise<unknown>;
   onAddTask: (krId: string, title: string, categoryId: number) => void;
   onToggleTask: (task: LearningTask) => void;
   onRemoveTask: (taskId: string, currentStatus: number, krId: string) => void;
@@ -302,6 +328,8 @@ const ObjectiveCard = ({ objective, categories, onAddKR, onAddTask, onToggleTask
             isExpanded={expandedKrIds.has(kr.id)}
             onToggleExpanded={() => toggleKr(kr.id)}
             onAddTask={(title, categoryId) => onAddTask(kr.id, title, categoryId)}
+            onUpdateKR={title => onUpdateKR(kr.id, title)}
+            onRemoveKR={() => onRemoveKR(kr.id)}
             onToggleTask={onToggleTask}
             onRemoveTask={(taskId, status) => onRemoveTask(taskId, status, kr.id)}
             onAddChecklist={onAddChecklist}
@@ -575,7 +603,7 @@ const EditObjectiveModal = ({ objective, onClose, onSave }: { objective: Learnin
 }
 
 export const LearningPage = memo(({ runtime }: LearningPageProps) => {
-  const { objectives, learningCategories, createObjective, updateObjective, removeObjective, addKR, addTask, removeTask, cancelChecklistTask, refresh: refreshLearning, importFullObjective, importKRsToObjective } = useLearning(runtime)
+  const { objectives, learningCategories, error: learningError, createObjective, updateObjective, removeObjective, addKR, updateKR, removeKR, addTask, removeTask, cancelChecklistTask, refresh: refreshLearning, importFullObjective, importKRsToObjective } = useLearning(runtime)
   const { submissions, submit: submitChecklistTask, clear: clearChecklistTaskSubmission } = useChecklistTaskSubmission(runtime, refreshLearning)
   const [showCreateModal, setShowCreateModal] = useState(false)
   const [editingObjective, setEditingObjective] = useState<LearningObjective | null>(null)
@@ -820,6 +848,7 @@ export const LearningPage = memo(({ runtime }: LearningPageProps) => {
         </div>
       )}
 
+      {learningError && <div role="alert" className="mx-5 flex items-center justify-between rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">{learningError}<button type="button" onClick={() => void refreshLearning()} className="ml-3 font-medium underline">重试刷新</button></div>}
       <main className="flex-1 overflow-y-auto px-5 py-4 scrollbar-hide">
         {objectives.map(obj => (
           <ObjectiveCard 
@@ -827,6 +856,8 @@ export const LearningPage = memo(({ runtime }: LearningPageProps) => {
             objective={obj} 
             categories={learningCategories}
             onAddKR={(title) => addKR(obj.id, title)}
+            onUpdateKR={updateKR}
+            onRemoveKR={removeKR}
             onAddTask={(krId, title, categoryId) => addTask(krId, { title, category_id: categoryId })}
             onToggleTask={handleToggleTask}
             onRemoveTask={removeTask}

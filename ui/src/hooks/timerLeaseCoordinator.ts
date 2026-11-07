@@ -5,6 +5,7 @@ import type {
   CurrentTimerState,
 } from '@core/ApiClient'
 import { LOGIC_SNAPSHOT_VERSION, type LogicSnapshot } from '@core/LogicSnapshot'
+import { focusCategoryPolicy } from '@core/FocusCategoryPolicy'
 
 export interface CurrentTimerClient {
   readCurrentTimer(timeout?: number): Promise<CurrentTimerOutcome>
@@ -23,6 +24,7 @@ export interface CurrentTimerCommandInput {
   timerMode?: 'countup' | 'countdown'
   durationMs?: number
   sessionSummary?: string
+  summaryRevision?: number
   userIntentId?: string
 }
 
@@ -53,7 +55,7 @@ export function currentTimerLogicSnapshot(state: CurrentTimerState | null, local
   }
   const elapsedMs = currentTimerElapsedMs(state)
   const countdown = state.timer_mode === 'countdown'
-  const structured = ['输入', '输出'].includes(state.category_name)
+  const structured = focusCategoryPolicy(state.category_name).structured
   const longBreak = countdown && state.category_name === '状态切换'
   const effectiveCountdown = countdown && (structured || longBreak)
   const startedAt = Date.parse(state.started_at)
@@ -127,6 +129,7 @@ export class CurrentTimerCoordinator {
         timer_mode: input.timerMode,
         duration_ms: input.durationMs,
         session_summary: input.sessionSummary,
+        summary_revision: input.summaryRevision,
       }
       return this.client.commandCurrentTimer(operation, request)
     }

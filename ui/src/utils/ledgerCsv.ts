@@ -17,7 +17,7 @@ export const buildLedgerCsv = (entries: LedgerEntry[]): string => {
     const date = entry.target_date || (entry.occurred_at || entry.created_at || '').slice(0, 10)
     const display = parseLedgerDisplay(entry)
     return [date, entry.occurred_at || '', ledgerSourceName(entry.source_type),
-      display.title, entry.description || '',
+      display.title, display.description,
       amount > 0 ? numberText(amount) : '', amount < 0 ? numberText(-amount) : '', numberText(amount),
       ledgerSourceName(entry.source_type), entry.source_id ?? '', entry.id, entry.created_at || '']
       .map((value, index) => index >= 5 && index <= 7 ? String(value) : safeText(value)).join(',')

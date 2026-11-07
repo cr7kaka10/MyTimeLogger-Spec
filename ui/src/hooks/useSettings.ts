@@ -13,6 +13,7 @@ import { detectPlatformRuntime } from '../platform/runtime'
 import { clearActiveAccountStorageKey, setSecureCredential, writeActiveAccountStorageKey } from '../platform/credentials'
 import { formatPlatformNetworkError } from '../platform/fetch'
 import { clearTimerWidgetRuntime, configureTimerWidgetRuntime } from '../platform/timerWidget'
+import { createSleepAutomationConfigSync } from '../platform/sleepAutomation'
 import { resolveActiveSessionVerification, type ActiveSessionVerification } from '../auth/sessionState'
 import {
   AUDIO_SETTING_DEFAULTS,
@@ -21,6 +22,7 @@ import {
   syncAudioConfig,
 } from '../utils/audio'
 import { millisecondsUntilAndroidThemeBoundary, nextAndroidThemeBoundaryAt, resolveAndroidTheme, type AndroidThemeOverride } from '../utils/androidScheduledTheme'
+import { markAndroidStartup } from '../utils/startupTrace'
 
 export const formatSettingsNetworkError = formatPlatformNetworkError
 
@@ -30,6 +32,7 @@ const provisionTimerWidgetRuntime = (db: any, profile: { serverUrl: string, auth
   let deviceId = db.getConfig('device_id')
   if (!deviceId) { deviceId = `mtl-${crypto.randomUUID()}`; db.setConfig('device_id', deviceId) }
   configureTimerWidgetRuntime({ ...profile, deviceId, generation: Date.now() })
+  window.dispatchEvent(new Event('mtl:daily-widget-runtime-changed'))
 }
 
 export const safeFetch = async (url: string, options?: any, timeout = 3000): Promise<{ ok: boolean; status: number; text: () => Promise<string>; json: () => Promise<any> }> => {
@@ -61,6 +64,7 @@ export interface UseSettingsReturn {
   loginEnvironment: (username: string, password: string, environment?: EnvironmentName) => Promise<{ success: boolean; error?: string }>
   clearActiveSession: () => Promise<void>
   logoutActiveSession: () => Promise<void>
+  markEnvironmentUnauthorized: (environment: EnvironmentName) => void
   activeEnvironment: EnvironmentName
   switchEnvironment: (environment: EnvironmentName) => Promise<{ success: boolean; error?: string }>
   selectedEnvironment: EnvironmentName
@@ -82,6 +86,7 @@ const defaultSettings: SystemSettings = {
   sync_interval: 15,
   statistics_start_date: DEFAULT_STATISTICS_START_DATE,
   last_sync_at: '—',
+  home_slogan: '',
   atimelogger_enabled: false,
   atimelogger_username: '',
   atimelogger_password: '',
@@ -94,6 +99,7 @@ const defaultSettings: SystemSettings = {
   atimelogger_unmatched_categories: '[]',
   sleep_sync_enabled: true,
   sleep_sync_interval: 30,
+  sleep_automation_consent: false,
   ai_text_model: '',
   ai_text_api_key: '',
   ai_text_endpoint: '',
@@ -110,6 +116,9 @@ const defaultSettings: SystemSettings = {
   ledger_format_task_success: '√ 任务 {title}',
   ledger_format_task_fail: '× 任务 {title}',
 }
+
+export const normalizeSleepAutomationConsent = (value: unknown): boolean =>
+  value === true || value === 1 || String(value ?? '').trim().toLowerCase() === 'true' || String(value ?? '').trim() === '1'
 
 const configNumber = (cfg: Record<string, any>, key: string, fallback: number): number => {
   const value = cfg[key]
@@ -146,9 +155,30 @@ export const useSettings = (): UseSettingsReturn => {
   const [selectedEnvironment, setSelectedEnvironment] = useState<EnvironmentName>('development')
   const [selectedEnvironmentProfile, setSelectedEnvironmentProfile] = useState({ serverUrl: '', username: '', authToken: '', verifiedUserId: '' })
   const [profileReady, setProfileReady] = useState(false)
+  useEffect(() => { if (profileReady) markAndroidStartup('profile-ready') }, [profileReady])
   const environmentInitialized = useRef(false)
   const connectionRequestIds = useRef<Record<EnvironmentName, number>>({ development: 0, testing: 0, production: 0 })
   const androidThemeOverrideRef = useRef<AndroidThemeOverride | null>(null)
+  const sleepAutomationSync = useRef(createSleepAutomationConfigSync())
+
+  useEffect(() => {
+    let active = true
+    const refreshHomeSlogan = () => {
+      void getDatabase().then(db => {
+        if (!active) return
+        const homeSlogan = db.getConfig('home_slogan') || ''
+        setSettings(previous => previous.home_slogan === homeSlogan ? previous : { ...previous, home_slogan: homeSlogan })
+      }).catch(() => {})
+    }
+    window.addEventListener('sync-pull-complete', refreshHomeSlogan)
+    return () => { active = false; window.removeEventListener('sync-pull-complete', refreshHomeSlogan) }
+  }, [])
+
+  useEffect(() => {
+    if (!profileReady || detectPlatformRuntime() !== 'capacitor-android' || selectedEnvironment !== activeEnvironment) return
+    const { serverUrl, authToken, verifiedUserId } = selectedEnvironmentProfile
+    sleepAutomationSync.current(serverUrl && authToken && verifiedUserId ? { url: serverUrl, token: authToken, userId: verifiedUserId } : null)
+  }, [profileReady, activeEnvironment, selectedEnvironment, selectedEnvironmentProfile.serverUrl, selectedEnvironmentProfile.authToken, selectedEnvironmentProfile.verifiedUserId])
 
   useEffect(() => {
     if (!profileReady || detectPlatformRuntime() !== 'capacitor-android') return
@@ -314,6 +344,7 @@ export const useSettings = (): UseSettingsReturn => {
       }
       else db.setConfig(tokenKey, body.token)
       provisionTimerWidgetRuntime(db, { serverUrl: url, authToken: body.token, verifiedUserId: String(userId) })
+      if (detectPlatformRuntime() === 'capacitor-android') sleepAutomationSync.current({ url, token: body.token, userId: String(userId) })
       if (environment === activeEnvironment) await refreshSyncConfiguration(db)
       setSelectedEnvironmentProfile({ serverUrl: url, username: username.trim(), authToken: body.token, verifiedUserId: String(userId) })
       setConnectionStatuses(prev => ({ ...prev, [environment]: 'connected' }))
@@ -332,13 +363,19 @@ export const useSettings = (): UseSettingsReturn => {
       else await setSecureCredential(tokenKey, '')
       await clearActiveAccountStorageKey()
       clearTimerWidgetRuntime()
+      sleepAutomationSync.current(null)
     } else db.setConfig(tokenKey, '')
     db.setConfig(environmentKey(activeEnvironment, 'username'), '')
     db.setConfig(environmentKey(activeEnvironment, 'verified_user_id'), '')
     await refreshSyncConfiguration(db)
+    window.dispatchEvent(new Event('mtl:auth-cleared'))
     if (selectedEnvironment === activeEnvironment) setSelectedEnvironmentProfile(previous => ({ ...previous, authToken: '', username: '', verifiedUserId: '' }))
     setConnectionStatuses(previous => ({ ...previous, [activeEnvironment]: 'unauthorized' }))
   }, [activeEnvironment, selectedEnvironment])
+
+  const markEnvironmentUnauthorized = useCallback((environment: EnvironmentName) => {
+    setConnectionStatuses(previous => ({ ...previous, [environment]: 'unauthorized' }))
+  }, [])
 
   const logoutActiveSession = useCallback(async () => {
     const db = await getDatabase()
@@ -381,7 +418,6 @@ export const useSettings = (): UseSettingsReturn => {
       } else {
         setSelectedEnvironmentProfile(readEnvironmentProfile(cfg, selectedEnvironment))
       }
-      setProfileReady(true)
       const active = cfg.active_environment as EnvironmentName
       const activeProfile = readEnvironmentProfile(cfg, active)
       if (detectPlatformRuntime() === 'capacitor-android' && !db.getConfig('account_identity_key') && activeProfile.serverUrl && activeProfile.authToken) {
@@ -400,6 +436,7 @@ export const useSettings = (): UseSettingsReturn => {
           return
         }
       }
+      setProfileReady(true)
       provisionTimerWidgetRuntime(db, activeProfile)
       setSettings({
         server_url: activeProfile.serverUrl || defaultSettings.server_url,
@@ -413,6 +450,7 @@ export const useSettings = (): UseSettingsReturn => {
         sync_interval: configNumber(cfg, 'sync_interval', defaultSettings.sync_interval),
         statistics_start_date: resolveStatisticsStartDate(cfg['statistics_start_date'] || cfg['checklist_sync_start_date']).date,
         last_sync_at: cfg['last_sync_at'] || '—',
+        home_slogan: cfg['home_slogan'] || '',
         atimelogger_enabled: false,
         atimelogger_username: '',
         atimelogger_password: '',
@@ -425,6 +463,7 @@ export const useSettings = (): UseSettingsReturn => {
         atimelogger_unmatched_categories: '[]',
         sleep_sync_enabled: true,
         sleep_sync_interval: configNumber(cfg, 'sleep_sync_interval', 30),
+        sleep_automation_consent: normalizeSleepAutomationConsent(cfg['sleep_automation_consent']),
         ai_text_model: cfg['ai_text_model'] || '',
         ai_text_api_key: '',
         ai_text_endpoint: cfg['ai_text_endpoint'] || '',
@@ -475,7 +514,15 @@ export const useSettings = (): UseSettingsReturn => {
   }, [selectedEnvironment])
 
   const updateSetting = useCallback(async (key: string, value: string | number | boolean) => {
-    const db = await getDatabase()
+    const isSleepConsent = key === 'sleep_automation_consent'
+    if (isSleepConsent) setSettings(previous => ({ ...previous, sleep_automation_consent: normalizeSleepAutomationConsent(value) }))
+    let db
+    try { db = await getDatabase() }
+    catch {
+      if (isSleepConsent) setRefreshTrigger(previous => previous + 1)
+      return { ok: false, error: '设置保存失败，请重试' }
+    }
+    try {
       let finalVal = String(value)
       const timeKeys = ['study_time_min', 'study_time_max', 'short_break_duration', 'long_break_duration', 'long_break_threshold', 'input_output_countdown_min']
       if (timeKeys.includes(key)) {
@@ -488,6 +535,10 @@ export const useSettings = (): UseSettingsReturn => {
         syncAudioConfig(audioConfigFromSettings(next))
       }
       setRefreshTrigger(prev => prev + 1)
+    } catch {
+      if (isSleepConsent) setRefreshTrigger(previous => previous + 1)
+      return { ok: false, error: '设置保存失败，请重试' }
+    }
     if (!shouldReloadHotkeysForSetting(key)) return { ok: true }
     const result: any = await getElectronApi()?.reloadHotkeys?.()
     const registration = result?.[key === 'shortcut_toggle_timer' ? 'timer' : 'minimize']
@@ -595,6 +646,7 @@ export const useSettings = (): UseSettingsReturn => {
       loginEnvironment,
       clearActiveSession,
       logoutActiveSession,
+      markEnvironmentUnauthorized,
       activeEnvironment,
       switchEnvironment,
       selectedEnvironment,
@@ -602,6 +654,6 @@ export const useSettings = (): UseSettingsReturn => {
       selectEnvironment,
       updateEnvironmentSetting,
     }),
-    [settings, theme, updateSetting, toggleTheme, syncNow, exportConfig, importConfig, connectionStatus, profileReady, testConnection, verifyActiveSession, loginEnvironment, clearActiveSession, logoutActiveSession, activeEnvironment, switchEnvironment, selectedEnvironment, selectedEnvironmentProfile, selectEnvironment, updateEnvironmentSetting],
+    [settings, theme, updateSetting, toggleTheme, syncNow, exportConfig, importConfig, connectionStatus, profileReady, testConnection, verifyActiveSession, loginEnvironment, clearActiveSession, logoutActiveSession, markEnvironmentUnauthorized, activeEnvironment, switchEnvironment, selectedEnvironment, selectedEnvironmentProfile, selectEnvironment, updateEnvironmentSetting],
   )
 }

@@ -30,6 +30,9 @@ public class WidgetTimerCommandTest {
         assertThrows(IllegalArgumentException.class, () -> WidgetTimerCommand.parse(badTime));
         assertTrue(WidgetTimerCommand.isBlockedCategoryName("输入"));
         assertTrue(WidgetTimerCommand.isBlockedCategoryName("输出"));
-        assertFalse(WidgetTimerCommand.isBlockedCategoryName("副业研发"));
+        assertTrue(WidgetTimerCommand.isBlockedCategoryName("副业研发"));
+        assertTrue(WidgetTimerCommand.isBlockedCategoryName("副业生产"));
+        assertTrue(WidgetTimerCommand.isBlockedCategoryName("副业营销"));
+        assertTrue(WidgetTimerCommand.isBlockedCategoryName("工作"));
     }
 }

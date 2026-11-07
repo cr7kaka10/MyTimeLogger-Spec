@@ -1,19 +1,18 @@
 param(
     [switch]$PreflightOnly,
     [switch]$DryRun,
-    [ValidateSet('stale_runtime', 'complete_snapshot', 'active_lock', 'unknown_lock', 'avd_missing', 'boot_timeout', 'transport_unavailable', 'transport_ready', 'window_service_pending', 'bootanim_running', 'systemui_unstable', 'build_failure', 'active_start', 'surface_delayed', 'activity_recovered', 'activity_not_foreground', 'activity_window_not_visible', 'input_ready', 'input_no_window', 'input_recovered', 'input_reboot_recovered', 'input_recovery_failed')]
+    [ValidateSet('stale_runtime', 'complete_snapshot', 'active_lock', 'unknown_lock', 'avd_missing', 'boot_timeout', 'transport_unavailable', 'transport_ready', 'transport_reconnected', 'transport_cold_recovered', 'transport_identity_unknown', 'target_identity_child', 'target_identity_other', 'snapshot_self_recovered', 'snapshot_cold_recovered', 'snapshot_cold_exhausted', 'emulator_output_redirected', 'window_service_pending', 'bootanim_running', 'systemui_unstable', 'build_failure', 'active_start', 'surface_delayed', 'activity_recovered', 'activity_not_foreground', 'activity_window_not_visible', 'input_ready', 'input_no_window', 'input_recovered', 'input_reboot_recovered', 'input_recovery_failed', 'log_contention')]
     [string]$TestScenario
 )
 
 $ErrorActionPreference = 'Stop'
+$env:ADB_SERVER_PORT = '5038'
 $root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $avdName = 'aTimeLogger_Extraction_API35'
 $targetSerial = 'emulator-5554'
 $serverUrl = 'http://127.0.0.1:8000'
 $gradleWrapper = Join-Path $root 'ui\android\gradlew.bat'
 $windowBoundsHelper = Join-Path $PSScriptRoot 'ensure-window-visible.ps1'
-$androidSdk = @($env:ANDROID_SDK_ROOT, $env:ANDROID_HOME, (Join-Path $env:LOCALAPPDATA 'Android\Sdk')) |
-    Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
 $runStamp = [DateTimeOffset]::UtcNow.ToOffset([TimeSpan]::FromHours(8)).ToString('yyyyMMdd-HHmmss')
 $logDirectory = Join-Path $root 'tests\runtime\startup-logs'
 $script:logPath = Join-Path $logDirectory "android-$runStamp.log"
@@ -26,6 +25,14 @@ $script:errorReason = ''
 $script:recoveryActions = @()
 $script:adbPath = ''
 $script:transportPorts = @()
+$script:transportRecoveryCount = 0
+$script:recoveredEmulatorPid = 0
+$script:launcherEmulatorPid = 0
+$script:runtimeEmulatorPid = 0
+$script:snapshotDiagnostic = 'none'
+$script:emulatorStartAttempts = 0
+$script:emulatorStdoutPaths = @()
+$script:emulatorStderrPaths = @()
 $script:inputReady = $false
 $script:inputDiagnostics = 'not_checked'
 $script:bootCompleted = ''
@@ -38,12 +45,50 @@ $script:activitySurface = $false
 $script:appCrashed = $false
 $script:appRecoveryCount = 0
 $script:activityDiagnostics = 'not_checked'
+$script:reverseVerified = $false
+$script:androidSdkCandidates = @()
 New-Item -ItemType Directory -Force -Path $logDirectory | Out-Null
+
+function Resolve-AndroidSdk {
+    param(
+        [string[]]$ProcessCandidates = @($env:ANDROID_SDK_ROOT, $env:ANDROID_HOME),
+        [string[]]$UserCandidates = @([Environment]::GetEnvironmentVariable('ANDROID_SDK_ROOT', 'User'), [Environment]::GetEnvironmentVariable('ANDROID_HOME', 'User')),
+        [string]$LocalAppData = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData),
+        [string]$UserProfile = [Environment]::GetFolderPath([Environment+SpecialFolder]::UserProfile)
+    )
+    $candidates = @($ProcessCandidates) + @($UserCandidates)
+    if ($LocalAppData) { $candidates += Join-Path $LocalAppData 'Android\Sdk' }
+    if ($UserProfile) { $candidates += Join-Path $UserProfile 'AppData\Local\Android\Sdk' }
+    $seen = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    $script:androidSdkCandidates = @()
+    foreach ($candidate in $candidates) {
+        if ([string]::IsNullOrWhiteSpace([string]$candidate)) { continue }
+        try { $candidatePath = [IO.Path]::GetFullPath([Environment]::ExpandEnvironmentVariables(([string]$candidate).Trim().Trim('"'))) } catch { continue }
+        if (-not $seen.Add($candidatePath)) { continue }
+        $script:androidSdkCandidates += $candidatePath
+        $adb = Join-Path $candidatePath 'platform-tools\adb.exe'
+        $emulator = Join-Path $candidatePath 'emulator\emulator.exe'
+        if ((Test-Path -LiteralPath $adb -PathType Leaf) -and (Test-Path -LiteralPath $emulator -PathType Leaf)) { return $candidatePath }
+    }
+    return $null
+}
 
 function Write-Stage([string]$message) {
     $line = "[$([DateTimeOffset]::UtcNow.ToOffset([TimeSpan]::FromHours(8)).ToString('yyyy-MM-dd HH:mm:ss'))] [$script:stage] $message"
     Write-Host "[android] $line"
-    Add-Content -LiteralPath $script:logPath -Value $line
+    for ($attempt = 1; $attempt -le 5; $attempt++) {
+        try {
+            Add-Content -LiteralPath $script:logPath -Value $line -ErrorAction Stop
+            return
+        } catch [System.IO.IOException] {
+            if ($_.Exception.HResult -ne -2147024864) { throw }
+            if ($attempt -eq 5) {
+                [Console]::Error.WriteLine("[android] Startup log is temporarily locked; continuing without this log line: $script:logPath")
+                return
+            }
+            Start-Sleep -Milliseconds 100
+        }
+    }
 }
 
 function Set-Stage([string]$name) {
@@ -60,6 +105,10 @@ function Write-StartupSummary([int]$ExitCode) {
         avd = $avdName; serial = $script:serial; exit_code = $ExitCode
         archive_paths = @($script:archivePaths); log_path = $script:logPath
         adb_path = $script:adbPath; transport_ports = @($script:transportPorts)
+        transport_recovery_count = [int]$script:transportRecoveryCount; recovered_emulator_pid = [int]$script:recoveredEmulatorPid
+        launcher_emulator_pid = [int]$script:launcherEmulatorPid; runtime_emulator_pid = [int]$script:runtimeEmulatorPid
+        snapshot_diagnostic = $script:snapshotDiagnostic; emulator_start_attempts = [int]$script:emulatorStartAttempts
+        emulator_stdout_paths = @($script:emulatorStdoutPaths); emulator_stderr_paths = @($script:emulatorStderrPaths)
         input_ready = [bool]$script:inputReady; input_diagnostics = $script:inputDiagnostics
         boot_completed = $script:bootCompleted; boot_animation = $script:bootAnimation
         system_window_ready = [bool]$script:systemWindowReady
@@ -67,6 +116,7 @@ function Write-StartupSummary([int]$ExitCode) {
         activity_foreground = [bool]$script:activityForeground; activity_surface = [bool]$script:activitySurface
         app_crashed = [bool]$script:appCrashed; app_recovery_count = [int]$script:appRecoveryCount
         activity_diagnostics = $script:activityDiagnostics
+        reverse_verified = [bool]$script:reverseVerified
     } | ConvertTo-Json -Compress | Set-Content -LiteralPath $script:summaryPath -Encoding utf8
     Write-Host "[android] Summary: $script:summaryPath ($result/$script:stage)"
 }
@@ -116,6 +166,15 @@ function Invoke-ControlledDryRun([string]$Scenario) {
         boot_timeout = @{ stage = 'boot_wait'; ok = $false; error = 'boot_timeout'; reason = 'boot_timeout' }
         transport_unavailable = @{ stage = 'transport_wait'; ok = $false; error = 'adb_transport_unavailable'; reason = 'adb_transport_unavailable: 5554=missing,5555=missing' }
         transport_ready = @{ stage = 'boot_wait'; ok = $true; action = 'adb_transport_ready'; serial = $targetSerial }
+        transport_reconnected = @{ stage = 'boot_wait'; ok = $true; action = 'reconnect_target_transport'; serial = $targetSerial; transport_recovery_count = 1 }
+        transport_cold_recovered = @{ stage = 'boot_wait'; ok = $true; actions = @('reconnect_target_transport','cold_restart_target_avd'); serial = $targetSerial; transport_recovery_count = 1; recovered_pid = 4321 }
+        transport_identity_unknown = @{ stage = 'transport_wait'; ok = $false; error = 'adb_transport_unavailable'; reason = 'target_avd_identity_unconfirmed'; transport_recovery_count = 1 }
+        target_identity_child = @{ stage = 'transport_wait'; ok = $true; action = 'target_avd_identity_confirmed'; launcher_pid = 25608; runtime_pid = 13560 }
+        target_identity_other = @{ stage = 'transport_wait'; ok = $false; error = 'adb_transport_unavailable'; reason = 'target_avd_identity_unconfirmed'; launcher_pid = 25608; runtime_pid = 22222 }
+        snapshot_self_recovered = @{ stage = 'boot_wait'; ok = $true; action = 'snapshot_warning_self_recovered'; snapshot = 'default_boot_load_failed'; attempts = 1 }
+        snapshot_cold_recovered = @{ stage = 'boot_wait'; ok = $true; actions = @('snapshot_load_failed','cold_restart_target_avd'); snapshot = 'default_boot_load_failed'; attempts = 2 }
+        snapshot_cold_exhausted = @{ stage = 'transport_wait'; ok = $false; error = 'adb_transport_unavailable'; reason = 'snapshot_cold_recovery_exhausted'; actions = @('snapshot_load_failed','cold_restart_target_avd'); snapshot = 'default_boot_load_failed'; attempts = 2 }
+        emulator_output_redirected = @{ stage = 'avd_acquisition'; ok = $true; stdout = "$script:logPath.emulator-1.stdout.log"; stderr = "$script:logPath.emulator-1.stderr.log"; attempts = 1 }
         window_service_pending = @{ stage = 'boot_wait'; ok = $true; serial = $targetSerial; system_diagnostic = 'window_service_pending: Can''t find service: window' }
         bootanim_running = @{ stage = 'boot_wait'; ok = $false; error = 'system_window_unstable'; reason = 'system_window_unstable: boot animation running'; boot = '1'; bootanim = 'running'; stable = 0 }
         systemui_unstable = @{ stage = 'boot_wait'; ok = $false; error = 'system_window_unstable'; reason = 'system_window_unstable: system window not drawn; app_crashed=False'; boot = '1'; bootanim = 'stopped'; stable = 0; crashed = $false }
@@ -137,6 +196,13 @@ function Invoke-ControlledDryRun([string]$Scenario) {
     if ($outcome.actions) { $script:recoveryActions = @($outcome.actions) }
     elseif ($outcome.action) { $script:recoveryActions = @($outcome.action) }
     if ($outcome.serial) { $script:serial = $outcome.serial }
+    if ($outcome.transport_recovery_count) { $script:transportRecoveryCount = $outcome.transport_recovery_count }
+    if ($outcome.recovered_pid) { $script:recoveredEmulatorPid = $outcome.recovered_pid }
+    if ($outcome.launcher_pid) { $script:launcherEmulatorPid = $outcome.launcher_pid }
+    if ($outcome.runtime_pid) { $script:runtimeEmulatorPid = $outcome.runtime_pid }
+    if ($outcome.snapshot) { $script:snapshotDiagnostic = $outcome.snapshot }
+    if ($outcome.attempts) { $script:emulatorStartAttempts = $outcome.attempts }
+    if ($outcome.stdout) { $script:emulatorStdoutPaths = @($outcome.stdout); $script:emulatorStderrPaths = @($outcome.stderr) }
     if ($null -ne $outcome.input_ready) { $script:inputReady = [bool]$outcome.input_ready }
     if ($outcome.diagnostic) { $script:inputDiagnostics = $outcome.diagnostic; $script:activityDiagnostics = $outcome.diagnostic }
     if ($outcome.system_diagnostic) { $script:systemDiagnostics = $outcome.system_diagnostic }
@@ -159,11 +225,12 @@ function Show-Plan {
 
 function Invoke-Preflight {
     $missing = [System.Collections.Generic.List[string]]::new()
-    if (-not $androidSdk) { $missing.Add('Android SDK (set ANDROID_SDK_ROOT or ANDROID_HOME)') }
+    $androidSdk = Resolve-AndroidSdk
+    if (-not $androidSdk) { $missing.Add("Android SDK (checked: $(@($script:androidSdkCandidates) -join '; '))") }
     $script:adb = if ($androidSdk) { Join-Path $androidSdk 'platform-tools\adb.exe' }
     $script:emulator = if ($androidSdk) { Join-Path $androidSdk 'emulator\emulator.exe' }
-    if (-not (Test-Path $script:adb)) { $missing.Add('Android SDK platform-tools\\adb.exe') }
-    if (-not (Test-Path $script:emulator)) { $missing.Add('Android SDK emulator\\emulator.exe') }
+    if (-not $script:adb -or -not (Test-Path -LiteralPath $script:adb -PathType Leaf)) { $missing.Add('Android SDK platform-tools\\adb.exe') }
+    if (-not $script:emulator -or -not (Test-Path -LiteralPath $script:emulator -PathType Leaf)) { $missing.Add('Android SDK emulator\\emulator.exe') }
     $jdkHomes = @($env:JAVA_HOME, (Join-Path $env:ProgramFiles 'Android\Android Studio\jbr')) |
         Where-Object { $_ -and (Test-Path (Join-Path $_ 'bin\javac.exe')) }
     $script:jdkHome = $jdkHomes | Where-Object {
@@ -171,17 +238,18 @@ function Invoke-Preflight {
     } | Select-Object -First 1
     if (-not $script:jdkHome) { $missing.Add('JDK 21 (set JAVA_HOME or install Android Studio JBR)') }
     if (-not (Test-Path $gradleWrapper)) { $missing.Add('ui\\android\\gradlew.bat') }
-    if (Test-Path $script:emulator) {
+    if ($script:emulator -and (Test-Path -LiteralPath $script:emulator -PathType Leaf)) {
         $avds = & $script:emulator -list-avds
         if ($LASTEXITCODE -ne 0 -or $avdName -notin $avds) { $missing.Add("AVD $avdName") }
     }
-    if (Test-Path $script:adb) {
+    if ($script:adb -and (Test-Path -LiteralPath $script:adb -PathType Leaf)) {
         $script:adbPath = $script:adb
         & $script:adb start-server
         if ($LASTEXITCODE -ne 0) { $missing.Add('Android SDK adb server') }
     }
     if ($missing.Count) {
         $missing | ForEach-Object { [Console]::Error.WriteLine("[android] Missing: $_") }
+        $script:errorReason = "Preflight missing: $($missing -join '; ')"
         return $false
     }
     $env:ANDROID_HOME = $androidSdk
@@ -195,7 +263,7 @@ function Invoke-Preflight {
 function Get-TargetAvdSerial {
     $devices = & $script:adb devices
     $script:transportPorts = @(5554, 5555 | ForEach-Object {
-        if (Get-NetTCPConnection -LocalPort $_ -State Listen -ErrorAction SilentlyContinue) { "$_=listening" } else { "$_=missing" }
+        if (Get-NetTCPConnection -LocalPort $_ -ErrorAction SilentlyContinue) { "$_=present" } else { "$_=missing" }
     })
     foreach ($line in $devices | Select-Object -Skip 1) {
         if ($line -match ('^' + [regex]::Escape($targetSerial) + '\s+device$') -and (Get-TargetEmulatorPid)) {
@@ -245,37 +313,71 @@ function Start-TargetAvd([bool]$ColdStart = $false) {
     $serial = Get-TargetAvdSerial
     if ($serial) {
         Write-Stage "Reusing target AVD: $serial"
-        return Get-TargetEmulatorPid
+        $identity = Get-TargetEmulatorIdentity
+        $script:launcherEmulatorPid = $identity.LauncherPid; $script:runtimeEmulatorPid = $identity.RuntimePid
+        return $identity.RuntimePid
     }
-    $existingPid = Get-TargetEmulatorPid
-    if ($existingPid) {
-        Write-Stage "Target AVD process already exists (PID $existingPid); waiting for $targetSerial transport."
-        return $existingPid
+    $identity = Get-TargetEmulatorIdentity
+    if ($identity) {
+        $script:launcherEmulatorPid = $identity.LauncherPid; $script:runtimeEmulatorPid = $identity.RuntimePid
+        Write-Stage "Target AVD process already exists (runtime PID $($identity.RuntimePid)); waiting for $targetSerial transport."
+        return $identity.RuntimePid
     }
     $arguments = @('-avd', $avdName, '-port', '5554')
     if ($ColdStart) { $arguments += @('-no-snapshot-load', '-no-snapshot-save') }
-    $process = Start-Process -FilePath $script:emulator -ArgumentList $arguments -PassThru
-    Write-Stage "Started target AVD $avdName (emulator PID $($process.Id))."
-    return $process.Id
+    $script:emulatorStartAttempts++
+    $attempt = $script:emulatorStartAttempts
+    $stdoutPath = Join-Path $logDirectory "android-$runStamp.emulator-$attempt.stdout.log"
+    $stderrPath = Join-Path $logDirectory "android-$runStamp.emulator-$attempt.stderr.log"
+    $script:emulatorStdoutPaths += $stdoutPath; $script:emulatorStderrPaths += $stderrPath
+    $process = Start-Process -FilePath $script:emulator -ArgumentList $arguments -PassThru -NoNewWindow `
+        -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
+    $script:launcherEmulatorPid = $process.Id
+    Write-Stage "Emulator attempt $attempt diagnostics: stdout=$stdoutPath; stderr=$stderrPath"
+    $identityDeadline = (Get-Date).AddSeconds(15)
+    do {
+        $identity = Get-TargetEmulatorIdentity $process.Id
+        if ($identity) { break }
+        if (-not (Get-Process -Id $process.Id -ErrorAction SilentlyContinue)) { throw 'emulator_exited_before_runtime_identity' }
+        Start-Sleep -Milliseconds 250
+    } while ((Get-Date) -lt $identityDeadline)
+    if (-not $identity) { throw 'adb_transport_unavailable: target_avd_identity_unconfirmed' }
+    $script:runtimeEmulatorPid = $identity.RuntimePid
+    Write-Stage "Started target AVD $avdName (launcher PID $($process.Id), runtime PID $($identity.RuntimePid))."
+    return $identity.RuntimePid
+}
+
+function Get-TargetEmulatorIdentity([int]$LauncherPid = 0) {
+    $avdPattern = '(?i)(?:^|\s)-avd\s+(?:"?' + [regex]::Escape($avdName) + '"?)(?=\s|$)'
+    $portPattern = '(?i)(?:^|\s)-port\s+5554(?=\s|$)'
+    $runtime = Get-CimInstance Win32_Process -Filter "Name = 'qemu-system-x86_64.exe'" |
+        Where-Object { $_.CommandLine -match $avdPattern -and $_.CommandLine -match $portPattern } |
+        Select-Object -First 1
+    if (-not $runtime) { return $null }
+    if ($LauncherPid -gt 0 -and $runtime.ParentProcessId -ne $LauncherPid -and $runtime.ProcessId -ne $LauncherPid) { return $null }
+    $resolvedLauncher = if ($LauncherPid -gt 0) { $LauncherPid } else { [int]$runtime.ParentProcessId }
+    return [pscustomobject]@{ LauncherPid = $resolvedLauncher; RuntimePid = [int]$runtime.ProcessId }
 }
 
 function Get-TargetEmulatorPid {
-    $pattern = '(?i)(?:^|\s)-avd\s+(?:"?' + [regex]::Escape($avdName) + '"?)(?=\s|$)'
-    $process = Get-CimInstance Win32_Process -Filter "Name = 'qemu-system-x86_64.exe'" |
-        Where-Object { $_.CommandLine -match $pattern } |
-        Select-Object -First 1
-    return $process.ProcessId
+    $identity = Get-TargetEmulatorIdentity
+    if ($identity) { return $identity.RuntimePid }
+    return $null
 }
 
 function Request-TargetEmulatorForeground([int]$EmulatorPid) {
     $windowPid = Get-TargetEmulatorPid
-    if (-not $windowPid) { Write-Stage "Target emulator window PID is unavailable; App startup continues."; return }
-    for ($attempt = 1; $attempt -le 10; $attempt++) {
+    if (-not $windowPid -or $windowPid -ne $EmulatorPid) {
+        Write-Stage "Target emulator window PID is unavailable or changed (expected $EmulatorPid); App startup continues."
+        return
+    }
+    $lastError = 'window_handle_unavailable'
+    for ($attempt = 1; $attempt -le 30; $attempt++) {
         try {
             & $windowBoundsHelper -WindowProcessId $windowPid -Attempt $attempt
             if ($LASTEXITCODE -eq 0) { Write-Stage "Target emulator window is fully visible and foreground (PID $windowPid, attempt $attempt)."; return }
         } catch { $lastError = $_.Exception.Message }
-        Start-Sleep -Milliseconds 500
+        if ($attempt -lt 30) { Start-Sleep -Milliseconds 500 }
     }
     Write-Stage "Unable to foreground target emulator PID $windowPid; App startup continues. $lastError"
 }
@@ -329,22 +431,73 @@ function Get-AndroidSystemReadiness([string]$Serial) {
     return [pscustomobject]@{ Ready = $ready; Summary = $reason }
 }
 
+function Test-SnapshotLoadFailure {
+    $pattern = "Error -1 from the snapshot callback|Failed to load Snapshot 'default_boot'"
+    foreach ($path in @($script:emulatorStdoutPaths) + @($script:emulatorStderrPaths)) {
+        if ((Test-Path -LiteralPath $path) -and (Select-String -LiteralPath $path -Pattern $pattern -Quiet)) { return $true }
+    }
+    return $false
+}
+
+function Repair-TargetAvdTransport([int]$EmulatorPid) {
+    $snapshotFailed = Test-SnapshotLoadFailure
+    if ($snapshotFailed) {
+        $script:snapshotDiagnostic = 'default_boot_load_failed'
+        if ($script:recoveryActions -notcontains 'snapshot_load_failed') { $script:recoveryActions += 'snapshot_load_failed' }
+    }
+    if ($script:transportRecoveryCount -ge 1) {
+        if ($snapshotFailed) { throw 'adb_transport_unavailable: snapshot_cold_recovery_exhausted' }
+        throw 'adb_transport_unavailable: target transport recovery exhausted'
+    }
+    $script:transportRecoveryCount++
+    $script:recoveryActions += 'reconnect_target_transport'
+    & $script:adb -s $targetSerial reconnect 2>$null | Out-Null
+    Start-Sleep -Seconds 3
+    if (Get-TargetAvdSerial) { Write-Stage "Target transport reconnected without restarting PID $EmulatorPid."; return $EmulatorPid }
+    $confirmedPid = Get-TargetEmulatorPid
+    if (-not $confirmedPid -or $confirmedPid -ne $EmulatorPid) { throw 'adb_transport_unavailable: target_avd_identity_unconfirmed' }
+    $reason = if ($snapshotFailed) { 'failed default_boot snapshot' } else { 'transport failure' }
+    Write-Stage "Restarting only confirmed target AVD PID $confirmedPid after $reason."
+    Stop-Process -Id $confirmedPid -ErrorAction Stop
+    $stopDeadline = (Get-Date).AddSeconds(15)
+    while ((Get-Process -Id $confirmedPid -ErrorAction SilentlyContinue) -and (Get-Date) -lt $stopDeadline) {
+        Start-Sleep -Milliseconds 250
+    }
+    if (Get-Process -Id $confirmedPid -ErrorAction SilentlyContinue) {
+        throw 'adb_transport_unavailable: confirmed_target_avd_did_not_stop'
+    }
+    $script:recoveryActions += 'cold_restart_target_avd'
+    $script:recoveredEmulatorPid = $confirmedPid
+    $recoveryActions = @($script:recoveryActions)
+    [void](Repair-TargetAvdRuntimeState)
+    $script:recoveryActions = $recoveryActions
+    return Start-TargetAvd $true
+}
+
 function Wait-ForTargetAvd([int]$EmulatorPid, [int]$TimeoutSeconds = 180) {
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
     $transportDeadline = (Get-Date).AddSeconds(45)
     do {
         if (-not (Get-Process -Id $EmulatorPid -ErrorAction SilentlyContinue)) { throw 'emulator_exited_before_boot' }
         $serial = Get-TargetAvdSerial
-        $portsReady = ($script:transportPorts -contains '5554=listening') -and ($script:transportPorts -contains '5555=listening')
-        if ($portsReady -and $serial) {
+        if ($serial) {
             $state = Get-AndroidSystemReadiness $serial
             $script:systemStableSamples = if ($state.Ready) { $script:systemStableSamples + 1 } else { 0 }
             Write-Stage "System readiness sample $script:systemStableSamples/2: $($state.Summary)"
-            if ($script:systemStableSamples -ge 2) { Write-Stage "Target AVD system is stable: $serial"; return $serial }
+            if ($script:systemStableSamples -ge 2) {
+                if ($script:transportRecoveryCount -eq 0 -and (Test-SnapshotLoadFailure)) {
+                    $script:snapshotDiagnostic = 'default_boot_load_failed'
+                    $script:recoveryActions += 'snapshot_warning_self_recovered'
+                    Write-Stage 'Snapshot load warning was detected, but the target AVD recovered without a restart.'
+                }
+                Write-Stage "Target AVD system is stable: $serial"; return $serial
+            }
         }
-        if ((Get-Date) -ge $transportDeadline -and (-not $portsReady -or -not $serial)) {
+        if ((Get-Date) -ge $transportDeadline -and -not $serial) {
             Set-Stage 'transport_wait'
-            throw "adb_transport_unavailable: $($script:transportPorts -join ','); target=$targetSerial"
+            $EmulatorPid = Repair-TargetAvdTransport $EmulatorPid
+            $transportDeadline = (Get-Date).AddSeconds(45)
+            Set-Stage 'boot_wait'
         }
         Start-Sleep -Seconds 2
     } while ((Get-Date) -lt $deadline)
@@ -372,16 +525,17 @@ function Invoke-AndroidWebBuild {
 }
 
 function Install-DebugApk([string]$Serial) {
-    $previousSerial = $env:ANDROID_SERIAL
-    $env:ANDROID_SERIAL = $Serial
+    $apkPath = Join-Path $root 'ui\android\app\build\outputs\apk\debug\app-debug.apk'
     Push-Location (Join-Path $root 'ui\android')
     try {
-        Write-Stage "Installing Debug APK on $Serial."
-        Invoke-Checked ':app:installDebug' { & $gradleWrapper ':app:installDebug' }
+        Write-Stage "Building Debug APK for $Serial."
+        Invoke-Checked ':app:assembleDebug' { & $gradleWrapper ':app:assembleDebug' }
     } finally {
-        $env:ANDROID_SERIAL = $previousSerial
         Pop-Location
     }
+    if (-not (Test-Path -LiteralPath $apkPath -PathType Leaf)) { throw "Debug APK missing: $apkPath" }
+    Write-Stage "Installing Debug APK on $Serial with SDK ADB port $env:ADB_SERVER_PORT."
+    Invoke-Checked 'adb install -r' { & $script:adb -s $Serial install -r $apkPath }
 }
 
 function Start-AndroidApp([string]$Serial) {
@@ -395,10 +549,20 @@ function Start-AndroidApp([string]$Serial) {
     }
     Write-Stage 'Configuring HTTP reverse tcp:8000 -> tcp:8000.'
     Invoke-Checked 'adb reverse tcp:8000' { & $script:adb -s $Serial reverse tcp:8000 tcp:8000 }
+    Assert-AndroidReverse $Serial
     Write-Stage "Starting com.mytimelogger.app/.MainActivity on $Serial."
     Invoke-Checked 'adb shell am start MainActivity' {
         & $script:adb -s $Serial shell am start -W -n 'com.mytimelogger.app/.MainActivity'
     }
+}
+
+function Assert-AndroidReverse([string]$Serial) {
+    $script:reverseVerified = $false
+    $mappings = @(& $script:adb -s $Serial reverse --list)
+    if ($LASTEXITCODE -ne 0) { throw 'adb_transport_unavailable: reverse list failed' }
+    $script:reverseVerified = [bool](@($mappings | Where-Object { $_ -match '^\S+\s+tcp:8000\s+tcp:8000\s*$' }).Count)
+    if (-not $script:reverseVerified) { throw "adb_reverse_missing: tcp:8000 mapping absent on $Serial" }
+    Write-Stage "HTTP reverse verified on $Serial."
 }
 
 function Get-AndroidInputReadiness([string]$Serial) {
@@ -495,7 +659,14 @@ $exitCode = 1
 try {
     Set-Stage 'plan'; Show-Plan
     if ($DryRun) {
-        if ($TestScenario) { if (Invoke-ControlledDryRun $TestScenario) { $exitCode = 0 } }
+        if ($TestScenario -eq 'log_contention') {
+            $lock = [IO.File]::Open($script:logPath, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+            try { Set-Stage 'log_contention' }
+            finally { $lock.Dispose() }
+            Set-Stage 'dry_run'
+            Write-Stage 'Dry-run log contention recovered.'
+            $exitCode = 0
+        } elseif ($TestScenario) { if (Invoke-ControlledDryRun $TestScenario) { $exitCode = 0 } }
         else { Set-Stage 'dry_run'; Write-Stage 'Dry-run complete; no process was started and no device was accessed.'; $exitCode = 0 }
     } else {
         Set-Stage 'preflight'
@@ -504,6 +675,7 @@ try {
         else {
             Set-Stage 'runtime_state'; $coldStart = Repair-TargetAvdRuntimeState
             Set-Stage 'avd_acquisition'; $emulatorPid = Start-TargetAvd $coldStart
+            Set-Stage 'foreground_launch'; Request-TargetEmulatorForeground $emulatorPid
             Set-Stage 'boot_wait'; $serial = Wait-ForTargetAvd -EmulatorPid $emulatorPid; $script:serial = $serial
             Set-Stage 'foreground_boot'; Request-TargetEmulatorForeground $emulatorPid
             Set-Stage 'web_build'; Invoke-AndroidWebBuild
@@ -527,6 +699,7 @@ try {
                 if (-not $appReady) { $failure = Get-AndroidAppFailureCategory; throw "${failure}: $script:activityDiagnostics" }
             }
             Set-Stage 'foreground_request'; Request-TargetEmulatorForeground $emulatorPid
+            Assert-AndroidReverse $serial
             Write-Stage "Android development client is ready on $serial."
             $exitCode = 0
         }

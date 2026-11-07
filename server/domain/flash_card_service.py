@@ -56,7 +56,10 @@ class FlashCardService:
             self.record_change(conn, user_id, "server_tasks", task_id, "upsert", {"id": task_id, "source": "local"})
         return task_id
 
-    def _ensure_recommendations(self, conn: sqlite3.Connection, user_id: int, card_id: str, todos: list[dict], original_text: str = "") -> None:
+    def _ensure_recommendations(
+        self, conn: sqlite3.Connection, user_id: int, card_id: str,
+        todos: list[dict], original_text: str = "", create_direct_tasks: bool = True,
+    ) -> None:
         now = now_text()
         creation_mode = self._creation_mode(original_text, todos)
         for ordinal, todo in enumerate(todos):
@@ -69,7 +72,7 @@ class FlashCardService:
                 "INSERT OR IGNORE INTO server_flash_task_recommendations(id,user_id,flash_card_id,ordinal,title,reason,status,creation_mode,creation_idempotency_key,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
                 (recommendation_id, user_id, card_id, ordinal, title, str((todo or {}).get("reason") or "").strip(), "pending", creation_mode, creation_key, now, now),
             )
-            if creation_mode == "direct":
+            if creation_mode == "direct" and create_direct_tasks:
                 task_id = self._create_local_task(conn, user_id, card_id, recommendation_id, title, creation_key, now)
                 conn.execute("UPDATE server_flash_task_recommendations SET status='added',local_task_id=?,creation_mode='direct',creation_idempotency_key=?,updated_at=? WHERE id=? AND user_id=?", (task_id, creation_key, now, recommendation_id, user_id))
 
@@ -83,7 +86,11 @@ class FlashCardService:
                 try: todos = json.loads(card["task_recommendations_json"] or "[]")
                 except (TypeError, ValueError): todos = []
                 before = conn.total_changes
-                self._ensure_recommendations(conn, int(card["user_id"]), str(card["id"]), todos if isinstance(todos, list) else [], str(card["original_text"] or ""))
+                self._ensure_recommendations(
+                    conn, int(card["user_id"]), str(card["id"]),
+                    todos if isinstance(todos, list) else [], str(card["original_text"] or ""),
+                    create_direct_tasks=False,
+                )
                 if conn.total_changes > before:
                     created = conn.execute("SELECT id FROM server_flash_task_recommendations WHERE user_id=? AND flash_card_id=?", (card["user_id"], card["id"])).fetchall()
                     for recommendation in created:

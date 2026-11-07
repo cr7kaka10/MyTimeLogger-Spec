@@ -72,6 +72,7 @@ current_dir = os.path.dirname(os.path.abspath(__file__))
 root_dir = os.path.dirname(current_dir)
 if root_dir not in sys.path:
     sys.path.insert(0, root_dir)
+from server.domain.morning_motivation import PROMPT_VERSION, generate_week
 
 
 def _source_revision() -> str:
@@ -183,11 +184,16 @@ try:
     from .domain.atimelogger_final_backup import ATimeLoggerFinalBackupWorker
     from .domain.ticktick_task_mutation_service import TickTickTaskMutationService
     from .domain.habit_checkin_command_service import HabitCheckinCommandService
+    from .domain.habit_day_ignore_service import HabitDayIgnoreService
+    from .domain.habit_auto_failure_service import HabitAutoFailureService
+    from .domain.timed_habit_service import TimedHabitService
+    from .domain.diet_habit_migration_service import DietHabitMigrationService
     from .domain.management_plan_service import ManagementPlanError, ManagementPlanService
     from .domain.user_behavior_audit_service import UserBehaviorAuditService
     from .domain.management_planning_policy import system_policy_prompt
     from .domain.learning_plan_service import LearningPlanService
     from .domain.flash_card_service import FlashCardError, FlashCardService
+    from .domain.flash_task_pollution_repair import FlashTaskPollutionRepairService
     from .domain.flash_proofreading import validate_minimal_polish
     from .domain.flash_skill_feedback_service import FlashSkillFeedbackService
     from .domain.flash_processing_log_service import FlashProcessingLogService
@@ -205,9 +211,10 @@ try:
     from .statistics_start_date import get_user_statistics_start_date, resolve_statistics_start_date
     from .runtime_config import bootstrap_server_system_config, ensure_server_runtime_config
     from .analyzer import SleepAnalyzer
+    from . import analyzer as sleep_analyzer_module
     from .domain.sleep_automation_service import BEIJING, SleepAutomationService, STEP_BEDTIME_DEADLINE, STEP_TIMER_SWITCH, due_step, beijing_now
     from .domain.sleep_reward_service import BEDTIME_COIN_EFFECTIVE_DATE
-    from .domain.exercise_v4_service import ExerciseV4Service
+    from .domain.exercise_v4_service import PLAN_POLICIES, ExerciseV4Service, OPTIONAL_BODY_POLICY_KEY, optional_body_policy_active
     from .huawei_sleep_sync import (
         SleepDataSource,
         normalize_structured_sleep_payload,
@@ -222,11 +229,16 @@ except (ImportError, ValueError):
     from domain.atimelogger_final_backup import ATimeLoggerFinalBackupWorker
     from domain.ticktick_task_mutation_service import TickTickTaskMutationService
     from domain.habit_checkin_command_service import HabitCheckinCommandService
+    from domain.habit_day_ignore_service import HabitDayIgnoreService
+    from domain.habit_auto_failure_service import HabitAutoFailureService
+    from domain.timed_habit_service import TimedHabitService
+    from domain.diet_habit_migration_service import DietHabitMigrationService
     from domain.management_plan_service import ManagementPlanError, ManagementPlanService
     from domain.user_behavior_audit_service import UserBehaviorAuditService
     from domain.management_planning_policy import system_policy_prompt
     from domain.learning_plan_service import LearningPlanService
     from domain.flash_card_service import FlashCardError, FlashCardService
+    from domain.flash_task_pollution_repair import FlashTaskPollutionRepairService
     from domain.flash_proofreading import validate_minimal_polish
     from domain.flash_skill_feedback_service import FlashSkillFeedbackService
     from domain.flash_processing_log_service import FlashProcessingLogService
@@ -244,9 +256,10 @@ except (ImportError, ValueError):
     from statistics_start_date import get_user_statistics_start_date, resolve_statistics_start_date
     from runtime_config import bootstrap_server_system_config, ensure_server_runtime_config
     from analyzer import SleepAnalyzer
+    import analyzer as sleep_analyzer_module
     from domain.sleep_automation_service import BEIJING, SleepAutomationService, STEP_BEDTIME_DEADLINE, STEP_TIMER_SWITCH, due_step, beijing_now
     from domain.sleep_reward_service import BEDTIME_COIN_EFFECTIVE_DATE
-    from domain.exercise_v4_service import ExerciseV4Service
+    from domain.exercise_v4_service import PLAN_POLICIES, ExerciseV4Service, OPTIONAL_BODY_POLICY_KEY, optional_body_policy_active
     from huawei_sleep_sync import (
         SleepDataSource,
         normalize_structured_sleep_payload,
@@ -266,12 +279,12 @@ ensure_server_runtime_config()
 
 try:
     from .db_wrapper import ServerDBWrapper
-    from .sync_hub import SyncHub
+    from .sync_hub import SyncHub, TICKTICK_STAGING_MAX_AGE_SECONDS
     from .sync_constants import SSE_KEEPALIVE_INTERVAL_SEC
     from .webdav_backup import S3BackupConfig, S3BackupService, S3Client
 except (ImportError, ValueError):
     from db_wrapper import ServerDBWrapper
-    from sync_hub import SyncHub
+    from sync_hub import SyncHub, TICKTICK_STAGING_MAX_AGE_SECONDS
     from sync_constants import SSE_KEEPALIVE_INTERVAL_SEC
     from webdav_backup import S3BackupConfig, S3BackupService, S3Client
 
@@ -287,11 +300,20 @@ habit_checkin_command_store = HabitCheckinCommandStore(store._connect)
 habit_checkin_command_service = HabitCheckinCommandService(
     store._transact, store.habit_domain_service, habit_checkin_command_store
 )
+habit_day_ignore_service = HabitDayIgnoreService(store._transact, store._record_server_change, lambda: _beijing_now())
+habit_auto_failure_service = HabitAutoFailureService(store._transact, store.habit_domain_service)
+timed_habit_service = TimedHabitService(store._transact, store.habit_domain_service,
+    wallet=store.reward_wallet_service,
+    record_change=lambda conn, user_id, table, record_id: store._record_server_change(
+        conn, user_id, table, record_id, "upsert", {"id": record_id}))
 management_plan_service = ManagementPlanService(store._connect)
 def _behavior_audit_service() -> UserBehaviorAuditService:
     return UserBehaviorAuditService(store._connect)
 learning_plan_service = LearningPlanService(store._connect, store._record_server_change)
 flash_card_service = FlashCardService(store._connect, store._record_server_change)
+flash_task_pollution_repair_service = FlashTaskPollutionRepairService(
+    store._connect, store._record_server_change
+)
 flash_skill_feedback_service = FlashSkillFeedbackService(store._connect)
 flash_processing_log_service = FlashProcessingLogService(store._connect)
 source_reward_service = SourceRewardService(store._connect)
@@ -310,6 +332,18 @@ def _migrate_flash_recommendations_on_startup(max_attempts: int = 4) -> int:
                 return 0
             time.sleep(0.5 * (attempt + 1))
     return 0
+
+
+def _repair_flash_task_pollution_on_startup() -> dict:
+    """精确修复失败不得阻止服务启动，但必须保留明确诊断。"""
+    try:
+        result = flash_task_pollution_repair_service.repair()
+    except Exception as exc:
+        logger.warning("闪念任务污染精确修复暂缓 status=deferred error=%s", exc)
+        return {"status": "deferred", "error": type(exc).__name__}
+    log = logger.warning if result.get("status") == "blocked" else logger.info
+    log("闪念任务污染精确修复 status=%s details=%s", result.get("status"), result)
+    return result
 
 
 TIMER_STATE_CAPABILITY = "timer-current-state-v1"
@@ -335,6 +369,88 @@ def _repair_v4_diet_rule_keys_on_startup() -> int:
     repaired = sum(service.repair_v4_diet_rule_keys(user_id) for user_id in user_ids)
     logger.info("V4 diet rule identity repaired users=%s rows=%s", len(user_ids), repaired)
     return repaired
+
+
+def _migrate_v5_meal_rules_on_startup() -> int:
+    rules = [("breakfast_on_time", "08:30 前", "按时吃早饭"), ("lunch_on_time", "12:00–13:30", "按时吃午饭"), ("dinner_on_time", "18:00–19:00", "按时吃晚饭")]
+    with store._transact() as conn:
+        plans = conn.execute("SELECT user_id,version FROM server_exercise_plan_versions WHERE lower(version)='v5'").fetchall()
+        if not plans:
+            return 0
+        today = beijing_now().date()
+        conn.execute("INSERT OR IGNORE INTO server_exercise_policy_metadata VALUES('v5_meal_timing',?,?)",
+                     ((today + timedelta(days=1)).isoformat(), today.strftime("%Y-%m-%d %H:%M:%S")))
+        created = 0
+        for plan in plans:
+            user_id, version = int(plan["user_id"]), str(plan["version"])
+            order = int(conn.execute("SELECT COALESCE(MAX(sort_order),0) FROM server_exercise_plan_diet_rules WHERE user_id=? AND plan_version=?", (user_id, version)).fetchone()[0])
+            for key, time_text, content in rules:
+                row_id = f"{version}:{key}"
+                inserted = conn.execute("INSERT OR IGNORE INTO server_exercise_plan_diet_rules(id,user_id,plan_version,rule_key,sort_order,time,content,note,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                    (row_id, user_id, version, key, order + 1, time_text, content, "超时失败并扣20金币", today.strftime("%Y-%m-%d %H:%M:%S"), today.strftime("%Y-%m-%d %H:%M:%S")))
+                if inserted.rowcount:
+                    _exercise_write_change(conn, user_id, "exercise_plan_diet_rule", row_id, {"id": row_id, "user_id": user_id, "plan_version": version, "rule_key": key, "sort_order": order + 1, "time": time_text, "content": content, "note": "超时失败并扣20金币"})
+                    order += 1; created += 1
+        return created
+
+
+def _restore_v5_quality_rules_on_startup() -> int:
+    rules = (
+        ("protein_at_lunch_and_dinner", "no_sugary_drinks", "不喝含糖饮料"),
+        ("vegetables_at_lunch_and_dinner", "no_refined_staples", "不吃精米白面"),
+        ("controlled_staple_and_no_sugary_drink", "no_snacks", "不吃零食"),
+    )
+    with store._transact() as conn:
+        plans = conn.execute("SELECT user_id,version FROM server_exercise_plan_versions WHERE lower(version)='v5'").fetchall()
+        today = beijing_now().date()
+        stamp = today.strftime("%Y-%m-%d %H:%M:%S")
+        day = today.isoformat()
+        old_keys = tuple(rule[0] for rule in rules)
+        slots = ",".join("?" for _ in old_keys)
+        handled = conn.execute(f"""SELECT 1 FROM server_exercise_diet_checkins
+            WHERE date=? AND plan_version='v5' AND rule_key IN ({slots})
+              AND (status<>'pending' OR occurred_at IS NOT NULL OR penalty_source_id IS NOT NULL) LIMIT 1""",
+            (day, *old_keys)).fetchone()
+        scored = conn.execute(f"""SELECT 1 FROM server_exercise_item_scores
+            WHERE date=? AND plan_version='v5' AND item_key IN ({slots}) AND earned_points>0 LIMIT 1""",
+            (day, *(f"diet:{key}" for key in old_keys))).fetchone()
+        penalized = conn.execute("""SELECT 1 FROM server_reward_ledger
+            WHERE target_date=? AND source_type='exercise_diet_penalty' AND amount<0
+              AND (id LIKE ? OR id LIKE ? OR id LIKE ?) LIMIT 1""",
+            (day, *(f"%:{key}" for key in old_keys))).fetchone()
+        effective = (today + timedelta(days=1)).isoformat() if handled or scored or penalized else day
+        conn.execute("INSERT OR IGNORE INTO server_exercise_policy_metadata VALUES('v5_quality_restored',?,?)",
+                     (effective, stamp))
+        if effective == day:
+            conn.execute("""UPDATE server_exercise_policy_metadata SET effective_date=?
+                WHERE policy_key='v5_quality_restored' AND effective_date=?""",
+                (day, (today + timedelta(days=1)).isoformat()))
+        if not plans:
+            return 0
+        changed = 0
+        for plan in plans:
+            user_id, version = int(plan["user_id"]), str(plan["version"])
+            for order, (old_key, new_key, title) in enumerate(rules):
+                note = "训练日适用；逾期失败按现有V5规则扣20金币"
+                row = conn.execute("SELECT id,rule_key,time,content,note,sort_order FROM server_exercise_plan_diet_rules "
+                                   "WHERE user_id=? AND plan_version=? AND rule_key IN (?,?) "
+                                   "ORDER BY CASE WHEN rule_key=? THEN 0 ELSE 1 END LIMIT 1",
+                                   (user_id, version, new_key, old_key, new_key)).fetchone()
+                if row:
+                    row_id = row["id"]
+                    if (row["rule_key"], row["time"], row["content"], row["note"], row["sort_order"]) == (new_key, "全天", title, note, order):
+                        continue
+                    conn.execute("UPDATE server_exercise_plan_diet_rules SET rule_key=?,sort_order=?,time='全天',content=?,note=?,updated_at=? WHERE user_id=? AND id=?",
+                                 (new_key, order, title, note, stamp, user_id, row_id))
+                else:
+                    row_id = f"{version}-diet-{order}"
+                    conn.execute("INSERT OR IGNORE INTO server_exercise_plan_diet_rules(id,user_id,plan_version,rule_key,sort_order,time,content,note,created_at,updated_at) VALUES(?,?,?,?,?,'全天',?,?,?,?)",
+                                 (row_id, user_id, version, new_key, order, title, note, stamp, stamp))
+                _exercise_write_change(conn, user_id, "exercise_plan_diet_rule", row_id,
+                    {"id": row_id, "user_id": user_id, "plan_version": version, "rule_key": new_key,
+                     "sort_order": order, "time": "全天", "content": title, "note": note})
+                changed += 1
+        return changed
 
 
 def _retire_legacy_noon_bedtime_penalties_on_startup() -> dict:
@@ -393,7 +509,7 @@ def _backfill_exercise_score_snapshots_in_txn(conn: sqlite3.Connection, today: s
         # V4 snapshots are assembled from the three server-authoritative scopes
         # by ExerciseV4Service.  The legacy check-in backfill only understands
         # the old schedule/training model and must never overwrite that result.
-        if plan_version == "v4":
+        if plan_version in {"v4", "v5", "v6"}:
             continue
         current = conn.execute(
             """SELECT * FROM server_exercise_daily_logs
@@ -462,20 +578,61 @@ def _settle_completed_goal_periods() -> int:
     return changed
 
 
+def _settle_zero_exercise_checkin_penalty_in_txn(conn, user_id: int, target_date: str) -> bool:
+    """按当天最终训练打卡事实结算一次零运动处罚。"""
+    day = datetime.strptime(target_date, "%Y-%m-%d").date()
+    if day.weekday() == 0:
+        return False
+    active_plan = _exercise_active_plan(conn, user_id, target_date)
+    completed = conn.execute(
+        """SELECT 1 FROM server_exercise_checkins WHERE user_id=? AND date=?
+           AND status=1 AND item_key GLOB ? AND (?!='v6' OR plan_version='v6') LIMIT 1""",
+        (user_id, target_date, f"ex-{target_date}-[gr]-*", active_plan),
+    ).fetchone()
+    ledger_id = f"exercise-zero-checkin:{user_id}:{target_date}"
+    if completed or conn.execute(
+        "SELECT 1 FROM server_reward_ledger WHERE user_id=? AND id=?", (user_id, ledger_id)
+    ).fetchone():
+        return False
+    source_id = f"exercise-zero-checkin:{target_date}"
+    next_day = (day + timedelta(days=1)).isoformat()
+    store.reward_wallet_service.append_ledger_in_txn(
+        conn, user_id, -200, "exercise_zero_checkin_penalty", source_id,
+        f"运动漏打卡 · {target_date} · 当天无任何运动训练打卡 · -200🪙",
+        target_date, ledger_id, f"{next_day} 00:00:00",
+    )
+    return True
+
+
 def _settle_completed_exercise_days() -> int:
     """北京时间跨日后锁定昨天及更早的运动评分，并按总分写入一次账本。"""
     today = _beijing_today()
     changed_users: set[int] = set()
     with store._transact() as conn:
+        policy_start = (_beijing_now().date() + timedelta(days=1)).isoformat()
+        conn.execute("INSERT OR IGNORE INTO server_exercise_policy_metadata VALUES('zero_checkin_penalty_v1',?,?)",
+                     (policy_start, _exercise_now_str()))
+        policy_start = conn.execute("SELECT effective_date FROM server_exercise_policy_metadata WHERE policy_key='zero_checkin_penalty_v1'").fetchone()["effective_date"]
         changed_users.update(_backfill_exercise_score_snapshots_in_txn(conn, today))
         yesterday = datetime.strptime(today, "%Y-%m-%d").date() - timedelta(days=1)
         for user_row in conn.execute("SELECT id FROM users").fetchall():
             user_id = int(user_row["id"])
             start = datetime.strptime(get_user_statistics_start_date(conn, user_id).date, "%Y-%m-%d").date()
-            active_plan = _exercise_active_plan(conn, user_id)
-            if active_plan == "v4":
-                service = _exercise_v4()
-                v4_cursor = max(start, datetime.strptime("2026-09-10", "%Y-%m-%d").date())
+            active_plan = _exercise_active_plan(conn, user_id, today)
+            cutover_row = conn.execute("SELECT value FROM server_system_config WHERE user_id=? AND key='exercise_v6_effective_date'", (user_id,)).fetchone()
+            cutover = datetime.strptime(str(cutover_row["value"]), "%Y-%m-%d").date() if cutover_row and active_plan == "v6" else None
+            penalty_cursor = max(start, datetime.strptime(policy_start, "%Y-%m-%d").date())
+            if cutover:
+                penalty_cursor = max(penalty_cursor, cutover)
+            while penalty_cursor <= yesterday:
+                if _settle_zero_exercise_checkin_penalty_in_txn(conn, user_id, penalty_cursor.isoformat()):
+                    changed_users.add(user_id)
+                penalty_cursor += timedelta(days=1)
+            if active_plan in {"v4", "v5", "v6"}:
+                service = _exercise_authoritative(active_plan)
+                v4_cursor = max(start, datetime.strptime(PLAN_POLICIES[active_plan]["effective_from"], "%Y-%m-%d").date())
+                if cutover:
+                    v4_cursor = max(v4_cursor, cutover)
                 while v4_cursor <= yesterday:
                     overdue_date = v4_cursor.isoformat()
                     diet_changed = service.close_diet(conn, user_id, overdue_date, _beijing_now())
@@ -528,7 +685,7 @@ def _settle_completed_exercise_days() -> int:
                 cursor += timedelta(days=1)
         rows = conn.execute(
             """SELECT * FROM server_exercise_daily_logs
-               WHERE date<? AND score_snapshot IS NOT NULL AND plan_version!='v4'""",
+               WHERE date<? AND score_snapshot IS NOT NULL AND plan_version NOT IN ('v4','v5','v6')""",
             (today,),
         ).fetchall()
         grouped: dict[tuple[int, str], list[dict]] = {}
@@ -630,15 +787,46 @@ async def _run_goal_settlement_schedule():
         await asyncio.sleep(max(1, (next_midnight - now).total_seconds()))
         await asyncio.to_thread(_settle_completed_goal_periods)
 
+async def _run_habit_auto_failure_schedule():
+    while True:
+        try:
+            await asyncio.to_thread(_ensure_diet_habits)
+            await asyncio.to_thread(habit_auto_failure_service.run)
+            changed = await asyncio.to_thread(timed_habit_service.run)
+            for owner in changed:
+                sync_hub._notify_clients(["habit_checkins", "reward_ledger", "user_wallets"], owner)
+        except Exception as exc:
+            logger.error("习惯漏打卡结算失败，下一轮重试: %s", type(exc).__name__)
+            await asyncio.sleep(60)
+            continue
+        await asyncio.sleep(60)
+
+
+def _settle_v5_meal_deadlines() -> int:
+    today, now, changed_users = _beijing_today(), _beijing_now(), set()
+    with store._transact() as conn:
+        policy = conn.execute("SELECT effective_date FROM server_exercise_policy_metadata WHERE policy_key='v5_meal_timing'").fetchone()
+        if not policy or today < str(policy["effective_date"]):
+            return 0
+        for row in conn.execute("SELECT user_id FROM server_exercise_plan_versions WHERE version='v5' AND is_active=1"):
+            user_id = int(row["user_id"])
+            if _exercise_active_plan(conn, user_id) == "v5" and _exercise_authoritative("v5").close_diet(conn, user_id, today, now):
+                changed_users.add(user_id)
+    for user_id in changed_users:
+        sync_hub._notify_clients(["exercise_diet_checkins", "exercise_item_scores", "exercise_settlements", "reward_ledger", "user_wallets"], user_id)
+    return len(changed_users)
+
 
 async def _run_exercise_settlement_schedule():
-    """服务启动补偿一次，随后在每个北京时间零点后锁定运动日。"""
+    """每分钟处理 V5 餐次截止；跨日时补偿并锁定历史运动评分。"""
     await asyncio.to_thread(_settle_completed_exercise_days)
+    await asyncio.to_thread(_settle_v5_meal_deadlines); settled_date = _beijing_today()
     while True:
-        now = datetime.now(timezone(timedelta(hours=8)))
-        next_midnight = (now + timedelta(days=1)).replace(hour=0, minute=0, second=1, microsecond=0)
-        await asyncio.sleep(max(1, (next_midnight - now).total_seconds()))
-        await asyncio.to_thread(_settle_completed_exercise_days)
+        await asyncio.sleep(60); await asyncio.to_thread(_settle_v5_meal_deadlines)
+        today = _beijing_today()
+        if today != settled_date:
+            await asyncio.to_thread(_settle_completed_exercise_days)
+            settled_date = today
 
 
 async def _run_body_metric_deadline_schedule():
@@ -772,6 +960,8 @@ async def lifespan(app: FastAPI):
     exercise_settlement_task = None
     body_metric_deadline_task = None
     sleep_automation_task = None
+    habit_auto_failure_task = None
+    _repair_flash_task_pollution_on_startup()
     _migrate_flash_recommendations_on_startup()
     try:
         completed = sync_hub.run_startup_sync_migrations()
@@ -779,6 +969,19 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"❌ 服务端启动 core 同步历史版本迁移失败: {e}")
     _cleanup_stale_temp_upload_images(max_age_seconds=0)
+    with store._transact() as conn:
+        today = _beijing_now().date()
+        conn.execute("INSERT OR IGNORE INTO server_exercise_policy_metadata(policy_key,effective_date,created_at) VALUES(?,?,?)",
+                     (OPTIONAL_BODY_POLICY_KEY, (today + timedelta(days=1)).isoformat(), _exercise_now_str()))
+    _ensure_diet_habits()
+    try:
+        with store._connect() as conn:
+            exercise_users = [int(row[0]) for row in conn.execute("SELECT id FROM users")]
+        for exercise_user in exercise_users:
+            SampleDataInitializationService(store.db_path).ensure_v6_for_user(exercise_user)
+        logger.info("V6 exercise plan initialized users=%s", len(exercise_users))
+    except Exception as e:
+        logger.error("V6 exercise plan startup initialization failed: %s", e)
     try:
         time_logger_db.reload_category_cache()
         logger.info("✅ 已完成服务端 server_categories 缓存预热同步")
@@ -792,6 +995,14 @@ async def lifespan(app: FastAPI):
         _repair_v4_diet_rule_keys_on_startup()
     except Exception as e:
         logger.error(f"❌ 服务端启动 V4 饮食规则修复失败: {e}")
+    try:
+        _migrate_v5_meal_rules_on_startup()
+    except Exception as e:
+        logger.error(f"❌ 服务端启动 V5 三餐规则迁移失败: {e}")
+    try:
+        _restore_v5_quality_rules_on_startup()
+    except Exception as e:
+        logger.error(f"❌ 服务端启动 V5 饮食质量规则迁移失败: {e}")
     try:
         _retire_legacy_noon_bedtime_penalties_on_startup()
     except Exception as e:
@@ -813,6 +1024,7 @@ async def lifespan(app: FastAPI):
     exercise_settlement_task = asyncio.create_task(_run_exercise_settlement_schedule())
     body_metric_deadline_task = asyncio.create_task(_run_body_metric_deadline_schedule())
     sleep_automation_task = asyncio.create_task(_run_sleep_automation_schedule())
+    habit_auto_failure_task = asyncio.create_task(_run_habit_auto_failure_schedule())
     try:
         yield
     finally:
@@ -849,6 +1061,12 @@ async def lifespan(app: FastAPI):
                 await sleep_automation_task
             except asyncio.CancelledError:
                 logger.info("睡眠自动化调度已停止")
+        if habit_auto_failure_task:
+            habit_auto_failure_task.cancel()
+            try:
+                await habit_auto_failure_task
+            except asyncio.CancelledError:
+                logger.info("习惯漏打卡结算调度已停止")
 
 
 app = FastAPI(
@@ -1037,6 +1255,12 @@ def build_ai_cfg_for_user(user_id: int):
         "vision_base_url": cfg.get("vision_base_url", ""),
         "vision_api_key": cfg.get("vision_api_key", ""),
         "vision_model": cfg.get("vision_model", ""),
+        "vision_backup_1_base_url": cfg.get("vision_backup_1_base_url", ""),
+        "vision_backup_1_api_key": cfg.get("vision_backup_1_api_key", ""),
+        "vision_backup_1_model": cfg.get("vision_backup_1_model", ""),
+        "vision_backup_2_base_url": cfg.get("vision_backup_2_base_url", ""),
+        "vision_backup_2_api_key": cfg.get("vision_backup_2_api_key", ""),
+        "vision_backup_2_model": cfg.get("vision_backup_2_model", ""),
         "text_base_url": cfg.get("text_base_url", ""),
         "text_api_key": cfg.get("text_api_key", ""),
         "text_model": cfg.get("text_model", ""),
@@ -1620,6 +1844,7 @@ def _set_job_image_path(request_id, image_path):
 
 
 def _cleanup_temp_upload_image(request_id, image_path=None):
+    _cleanup_expired_failed_sleep_images()
     candidates = []
     if image_path:
         candidates.append(image_path)
@@ -1638,6 +1863,8 @@ def _cleanup_temp_upload_image(request_id, image_path=None):
         name = os.path.basename(path)
         if re.fullmatch(r"sleep_\d{4}-\d{2}-\d{2}\.jpg", name):
             continue
+        if re.fullmatch(r"failed_\d+_[0-9a-f]+_\d+\.jpg", name, re.I):
+            continue
         abs_path = os.path.abspath(path)
         try:
             is_attachment_file = os.path.commonpath([attachments_root, abs_path]) == attachments_root
@@ -1653,6 +1880,40 @@ def _cleanup_temp_upload_image(request_id, image_path=None):
                 logger.info("🧹 已清理临时上传图片: %s", name)
         except OSError as exc:
             logger.warning("清理临时上传图片失败: %s", exc)
+
+
+def _retain_failed_sleep_image(image_path, request_id, user_id, now_ts=None):
+    if not image_path or not os.path.exists(image_path):
+        return image_path
+    if re.fullmatch(r"sleep_\d{4}-\d{2}-\d{2}\.jpg", os.path.basename(image_path)):
+        return image_path
+    expires = int(now_ts or time.time()) + 72 * 60 * 60
+    os.makedirs(ATTACHMENTS_DIR, exist_ok=True)
+    target = os.path.join(ATTACHMENTS_DIR, f"failed_{int(user_id)}_{request_id}_{expires}.jpg")
+    try:
+        if os.path.abspath(image_path) != os.path.abspath(target):
+            os.replace(image_path, target)
+        _set_job_image_path(request_id, target)
+        return target
+    except OSError as exc:
+        logger.warning("保留失败睡眠图片失败: request_id=%s error=%s", request_id, exc)
+        return image_path
+
+
+def _cleanup_expired_failed_sleep_images(now_ts=None):
+    if not os.path.isdir(ATTACHMENTS_DIR):
+        return 0
+    now_value, removed = int(now_ts or time.time()), 0
+    for name in os.listdir(ATTACHMENTS_DIR):
+        match = re.fullmatch(r"failed_\d+_[0-9a-f]+_(\d+)\.jpg", name, re.I)
+        if not match or int(match.group(1)) > now_value:
+            continue
+        try:
+            os.remove(os.path.join(ATTACHMENTS_DIR, name))
+            removed += 1
+        except FileNotFoundError:
+            pass
+    return removed
 
 
 def _cleanup_stale_temp_upload_images(max_age_seconds=3600):
@@ -1781,6 +2042,7 @@ def _run_upload_validation(request_id, image_path, user_id):
         sleep_data["sleep_date"] = result_date
         sleep_data["source"] = SleepDataSource.SCREENSHOT_OCR.value
         sleep_data["sync_status"] = sleep_data.get("sync_status") or "success"
+        sleep_data["image_uploaded_at"] = store.record_valid_sleep_upload(user_id, result_date, job.get("created_at") or _now_str())
         image_path = _archive_sleep_image(image_path, result_date, request_id, user_id)
         _mark_upload_validated(request_id, result_date, sleep_data, image_path)
         logger.info(
@@ -1794,6 +2056,7 @@ def _run_upload_validation(request_id, image_path, user_id):
     except Exception as exc:
         logger.error("上传截图日期校验失败: request_id=%s error=%s", request_id, exc, exc_info=True)
         logger.error("[sleep-report] upload validation error request_id=%s user_id=%s date=%s error=%s", request_id, user_id, date_str if 'date_str' in locals() else None, exc, exc_info=True)
+        image_path = _retain_failed_sleep_image(image_path, request_id, user_id)
         store.mark_error(request_id, str(exc))
         _push_progress(request_id, {"status": "error", "msg": str(exc)})
     finally:
@@ -1907,6 +2170,9 @@ def _run_analysis(request_id, image_path, user_id, full=True, force_refresh=Fals
         if result.status == "done":
             progress("OCR 与睡眠指标校验完成，正在整理报告数据...")
             sleep_data = result.sleep_data or {}
+            is_valid, validation_reason = sleep_analyzer_module.SleepAnalyzer.validate_data(sleep_data)
+            if not is_valid:
+                raise ValueError(f"完整报告保存前严格校验失败：{validation_reason}")
             result_date = (
                 _normalize_sleep_date(result.date)
                 or _normalize_sleep_date(sleep_data.get("date"))
@@ -1924,6 +2190,8 @@ def _run_analysis(request_id, image_path, user_id, full=True, force_refresh=Fals
                 sleep_data["source"] = SleepDataSource.SCREENSHOT_OCR.value
             if not sleep_data.get("sync_status"):
                 sleep_data["sync_status"] = "success"
+            if job and image_path:
+                sleep_data["image_uploaded_at"] = store.record_valid_sleep_upload(user_id, result_date, job.get("created_at") or _now_str())
             # 双重回填保护，防止 Null 值覆写
             if morning_diary and not sleep_data.get("morning_diary"):
                 sleep_data["morning_diary"] = morning_diary
@@ -1995,6 +2263,7 @@ def _run_analysis(request_id, image_path, user_id, full=True, force_refresh=Fals
         else:
             if isinstance(result.error, str) and "aTimeLogger 授权已失效" in result.error:
                 _mark_atimelogger_auth_required(user_id)
+            image_path = _retain_failed_sleep_image(image_path, request_id, user_id)
             store.mark_error(request_id, result.error)
             logger.error("[sleep-report] analysis mark error request_id=%s user_id=%s date=%s error=%s", request_id, user_id, date_str, result.error)
             _push_progress(request_id, {"status": "error", "msg": result.error})
@@ -2006,6 +2275,7 @@ def _run_analysis(request_id, image_path, user_id, full=True, force_refresh=Fals
         logger.exception(f"_run_analysis 未预期异常: request_id={request_id}, error={exc}")
         logger.exception("[sleep-report] analysis unexpected error request_id=%s user_id=%s error=%s", request_id, user_id, exc)
         try:
+            image_path = _retain_failed_sleep_image(image_path, request_id, user_id)
             store.mark_error(request_id, f"内部错误: {exc}")
             _push_progress(request_id, {"status": "error", "msg": f"内部错误: {exc}"})
         except Exception:
@@ -2028,6 +2298,7 @@ async def register(request: Request):
         user_id = store.verify_user(username, password)
         if user_id:
             _ensure_sample_data_for_user(user_id)
+            _ensure_diet_habits(user_id)
             _bootstrap_private_config_for_user(user_id)
         logger.info(f"🆕 New user registered: {username}")
         return {"status": "ok", "msg": "Registration successful"}
@@ -2044,6 +2315,7 @@ async def login(request: Request):
     user_id = store.verify_user(username, password)
     if user_id:
         _ensure_sample_data_for_user(user_id)
+        _ensure_diet_habits(user_id)
         _bootstrap_private_config_for_user(user_id)
         token = store.create_session(user_id)
         store.cleanup_expired_sessions()
@@ -2104,10 +2376,25 @@ async def _run_reward_rebuild(user_id: int, job_id: str, start_date: str):
     pull = None
     job = reward_rebuild_service.get_job(user_id, job_id)
     trace_id = job["trace_id"]
-    stage = "ticktick_reset"
+    stage = "provider_preflight"
     try:
         log_event(logger, trace_id=trace_id, job_id=job_id, user_id=user_id,
                   stage="job_finish", event="start", outcome="running")
+        log_event(logger, trace_id=trace_id, job_id=job_id, user_id=user_id,
+                  stage=stage, event="start", outcome="running")
+        preflight = await sync_hub.force_pull_ticktick(
+            user_id, request_id=trace_id, job_id=job_id, manual=True, validate_only=True,
+        )
+        if not preflight.get("ok") or not preflight.get("complete"):
+            raise RuntimeError("provider_snapshot_incomplete")
+        staged_tasks = preflight.get("tasks") or {}
+        staged_at = datetime.fromisoformat(str(staged_tasks.get("staged_at") or ""))
+        if not staged_tasks.get("snapshot_digest") or (datetime.now(timezone(timedelta(hours=8))) - staged_at).total_seconds() > TICKTICK_STAGING_MAX_AGE_SECONDS:
+            raise RuntimeError("provider_snapshot_stale")
+        log_event(logger, trace_id=trace_id, job_id=job_id, user_id=user_id,
+                  stage=stage, event="finish", outcome="success",
+                  details={"request_id": preflight.get("request_id"), "complete": True})
+        stage = "ticktick_reset"
         log_event(logger, trace_id=trace_id, job_id=job_id, user_id=user_id,
                   stage=stage, event="start", outcome="running")
         reset_preview = preview_ticktick_reset(store.db_path, user_id, start_date)
@@ -2120,7 +2407,11 @@ async def _run_reward_rebuild(user_id: int, job_id: str, start_date: str):
         stage = "provider_pull"
         log_event(logger, trace_id=trace_id, job_id=job_id, user_id=user_id,
                   stage=stage, event="start", outcome="running")
-        pull = await sync_hub.force_pull_ticktick(user_id, request_id=trace_id, job_id=job_id)
+        pull = await sync_hub.force_pull_ticktick(user_id, request_id=trace_id, job_id=job_id, manual=True)
+        if not pull.get("ok") or not pull.get("complete"):
+            raise RuntimeError("provider_snapshot_incomplete")
+        if (pull.get("tasks") or {}).get("snapshot_digest") != staged_tasks.get("snapshot_digest"):
+            raise RuntimeError("provider_snapshot_changed")
         log_event(logger, trace_id=trace_id, job_id=job_id, user_id=user_id,
                   stage=stage, event="finish", outcome="success" if pull.get("ok") else "failure",
                   details={"merged_count": pull.get("merged_count"), "errors": pull.get("errors")})
@@ -2136,7 +2427,7 @@ async def _run_reward_rebuild(user_id: int, job_id: str, start_date: str):
                   stage="job_finish", event="finish", outcome="success",
                   details={"epoch": report.get("epoch"), "ledger_rows": report.get("ledger_rows"), "balance": report.get("balance")})
     except Exception as exc:
-        failed_stage = stage if stage in {"ticktick_reset", "provider_pull"} else None
+        failed_stage = stage if stage in {"provider_preflight", "ticktick_reset", "provider_pull"} else None
         report = await asyncio.to_thread(
             reward_rebuild_service.fail_and_restore, user_id, job_id, exc, pull, failed_stage,
         )
@@ -3425,19 +3716,23 @@ def _exercise_weight_window(date: str, existing_weight=None) -> dict:
     now = _beijing_now()
     today = now.strftime("%Y-%m-%d")
     hour = now.hour
+    with store._connect() as conn:
+        optional = optional_body_policy_active(conn, date)
     editable = date == today
     reason = ""
     if date < today:
         reason = "历史日期已锁定"
     elif date > today:
         reason = "未来日期不能录入体重"
+    elif optional:
+        reason = "体重和体脂率可自愿记录，不设 09:00 截止处罚"
     elif hour < 6:
         reason = "当前可记录体重；北京时间 06:00-09:00 计为按时称重"
     elif hour >= 9:
         reason = "已超过北京时间 09:00，仍可补录体重；守时结果保持逾期"
     return {
         "editable": editable,
-        "overdue": date == today and hour >= 9 and existing_weight is None,
+        "overdue": not optional and date == today and hour >= 9 and existing_weight is None,
         "reason": reason,
         "start_hour": 6,
         "end_hour": 9,
@@ -3456,12 +3751,26 @@ def _exercise_row_dict(row: sqlite3.Row | None) -> dict | None:
     return dict(row) if row else None
 
 
-def _exercise_active_plan(conn: sqlite3.Connection, user_id: int) -> str:
+def _exercise_active_plan(conn: sqlite3.Connection, user_id: int, business_date: str | None = None) -> str:
+    business_date = business_date or _beijing_today()
+    v6 = conn.execute(
+        "SELECT value FROM server_system_config WHERE user_id=? AND key='exercise_v6_effective_date'",
+        (user_id,),
+    ).fetchone()
+    if v6:
+        return "v6" if business_date >= str(v6["value"]) else "v5"
     row = conn.execute(
         "SELECT value FROM server_system_config WHERE user_id=? AND key='active_exercise_plan_version'",
         (user_id,),
     ).fetchone()
     return (row["value"] if row and row["value"] else "v1")
+
+
+def _exercise_require_writable_version(conn: sqlite3.Connection, user_id: int, date: str, version: str) -> None:
+    row = conn.execute("SELECT value FROM server_system_config WHERE user_id=? AND key='exercise_v6_effective_date'", (user_id,)).fetchone()
+    cutoff = str(row["value"]) if row else None
+    if (not cutoff and version == "v6") or (cutoff and version != ("v6" if date >= cutoff else "v5")):
+        raise HTTPException(status_code=409, detail="该日期的运动计划版本已切换，请刷新后按当日计划打卡")
 
 
 def _exercise_item_weight(item: dict) -> int:
@@ -3513,21 +3822,21 @@ def _exercise_score(items: list[dict], checkins: list[dict], plan_definition: di
     selected = sorted([item for item in items if str(item.get("variant") or "gym") == variant], key=lambda item: (int(item.get("sort_order") or 0), str(item.get("id") or "")))
     item_keys = [(item, f"ex-{date}-{'r' if variant == 'rain' else 'g'}-{int(item.get('sort_order') or 0)}") for item in selected]
     exercise_pool = int(plan_definition.get("exercisePoints") or 0)
-    is_v4 = str(plan_definition.get("version") or "") == "v4"
+    is_authoritative = str(plan_definition.get("version") or "") in {"v4", "v5"}
     item_points = []
     for item in selected:
         try:
             tags = json.loads(item.get("tags_json") or "{}")
         except (TypeError, ValueError, json.JSONDecodeError):
             tags = {}
-        item_points.append(int(tags.get("scorePoints") or 0) if is_v4 else 0)
-    if not is_v4:
+        item_points.append(int(tags.get("scorePoints") or 0) if is_authoritative else 0)
+    if not is_authoritative:
         item_points = _exercise_item_points(selected, exercise_pool)
     item_map = {key: (item, item_points[index]) for index, (item, key) in enumerate(item_keys)}
     completed_items = sum(1 for key in item_map if key in done_keys)
     score_rules = plan_definition.get("sundayScore") if day_key == "日" else plan_definition.get("saturdayScore") if day_key == "六" else plan_definition.get("weekdayScore")
     cats: dict[str, dict[str, float]] = {}; total_score = 0.0; schedule_scores: dict[str, dict] = {}
-    for rule in [] if is_v4 else score_rules or []:
+    for rule in [] if is_authoritative else score_rules or []:
         if len(rule) < 3: continue
         index, points, category = rule[0], float(rule[1] or 0), rule[2]
         if points <= 0: continue
@@ -3539,15 +3848,15 @@ def _exercise_score(items: list[dict], checkins: list[dict], plan_definition: di
         item_score["earned_points"] = round(item_score["earned_points"] + earned, 2)
         item_score["max_points"] = round(item_score["max_points"] + points, 2)
         if key in done_keys: item_score["score_reason"] = "completed"
-    if is_v4 or day_key not in ("六", "日"):
+    if is_authoritative or day_key not in ("六", "日"):
         exercise_points = int(plan_definition.get("exercisePoints") or 0)
         earned = sum(points for key, (_, points) in item_map.items() if key in done_keys)
-        category = "运动训练" if is_v4 else "运动"
+        category = "运动训练" if is_authoritative else "运动"
         cats.setdefault(category, {"s": 0, "m": 0}); cats[category]["s"] += earned; cats[category]["m"] += exercise_points; total_score += earned
     exercise_scores = [{"item_key": key, "earned_points": points if key in done_keys else 0, "max_points": points,
                         "difficulty": "hard" if points >= 6 else "normal" if points >= 4 else "easy", "score_rule_version": plan_definition.get("version") or "v1",
                         "score_reason": "completed" if key in done_keys else "not_completed",
-                        "score_scope": "training" if is_v4 else "training"} for key, (_, points) in item_map.items()]
+                        "score_scope": "training"} for key, (_, points) in item_map.items()]
     return {"total": round(total_score, 2), "cats": cats, "completed_items": completed_items, "total_items": len(item_map), "exercise_variant": variant,
             "item_scores": [*schedule_scores.values(), *exercise_scores]}
 
@@ -3665,12 +3974,15 @@ def _lock_overdue_body_metrics() -> int:
         return 0
     date, now_text, changed_users = now.strftime("%Y-%m-%d"), now.strftime("%Y-%m-%d %H:%M:%S"), set()
     with _exercise_conn() as conn:
+        if optional_body_policy_active(conn, date):
+            return 0
         for user_row in conn.execute("SELECT id FROM users").fetchall():
             user_id = int(user_row["id"])
             plan_version = _exercise_active_plan(conn, user_id)
-            if plan_version == "v4":
-                fact = _exercise_v4().settle_body_deadline(conn, user_id, date, now)
-                _exercise_v4().settle(conn, user_id, date, now)
+            if plan_version in {"v4", "v5"}:
+                service = _exercise_authoritative(plan_version)
+                fact = service.settle_body_deadline(conn, user_id, date, now)
+                service.settle(conn, user_id, date, now)
                 if fact and fact.get("_changed"):
                     changed_users.add(user_id)
                 continue
@@ -3734,8 +4046,38 @@ def _exercise_v4_record_change(conn, user_id: int, table: str, record_id: str, o
                table_name=table, device_id="server-exercise-v4", conn=conn)
 
 
+diet_habit_migration_service = DietHabitMigrationService(_exercise_v4_record_change)
+
+
+def _ensure_diet_habits(user_id: int | None = None) -> set[int]:
+    changed = set()
+    now = _beijing_now()
+    with store._transact() as conn:
+        users = [user_id] if user_id is not None else [int(row[0]) for row in conn.execute("SELECT id FROM users")]
+        for owner in users:
+            diet_habit_migration_service.switch_date(conn, owner, now)
+            if diet_habit_migration_service.ensure_definitions(conn, owner, now):
+                changed.add(owner)
+    for owner in changed:
+        sync_hub._notify_clients(["habits", "habit_windows"], owner)
+    return changed
+
+
+def _ensure_exercise_v6_for_user(user_id: int) -> None:
+    db_path = _exercise_db_path()
+    if db_path == store.db_path:
+        _ensure_diet_habits(user_id)
+    SampleDataInitializationService(db_path).ensure_v6_for_user(user_id)
+
+
 def _exercise_v4() -> ExerciseV4Service:
     return ExerciseV4Service(store.reward_wallet_service, _exercise_v4_record_change)
+
+
+def _exercise_authoritative(plan_version: str) -> ExerciseV4Service:
+    return _exercise_v4() if plan_version == "v4" else ExerciseV4Service(
+        store.reward_wallet_service, _exercise_v4_record_change, plan_version,
+    )
 
 
 def _persist_exercise_item_scores(conn: sqlite3.Connection, user_id: int, date: str, plan_version: str, score: dict, now: str) -> None:
@@ -3765,7 +4107,7 @@ def _exercise_completion_status_in_txn(conn: sqlite3.Connection, user_id: int, d
     rows = conn.execute(
         """SELECT earned_points,max_points FROM server_exercise_item_scores
            WHERE user_id=? AND date=? AND plan_version=? AND max_points>0
-             AND (?!='v4' OR score_scope IN ('training','diet','body'))""",
+             AND (? NOT IN ('v4','v5') OR score_scope IN ('training','diet','body'))""",
         (user_id, date, plan_version, plan_version),
     ).fetchall()
     if not rows:
@@ -3819,6 +4161,22 @@ def _exercise_history(conn: sqlite3.Connection, user_id: int, plan_version: str,
     return history
 
 
+@app.get("/api/morning-motivation/week")
+def get_morning_motivation_week(user: dict = Depends(get_current_user_optional)):
+    cfg = _load_user_provider_config(int(user["id"]), "ai_model_config")
+    try:
+        messages = generate_week(cfg)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    today = datetime.now(timezone(timedelta(hours=8))).date()
+    return {"version": PROMPT_VERSION, "items": [
+        {"date": (today + timedelta(days=index)).isoformat(), "message": message}
+        for index, message in enumerate(messages)
+    ]}
+
+
 @app.get("/api/exercise/state")
 def get_exercise_state(
     date: str | None = None,
@@ -3826,15 +4184,18 @@ def get_exercise_state(
     user: dict = Depends(get_current_user_optional),
 ):
     date = date or _beijing_today()
+    _ensure_exercise_v6_for_user(user["id"])
     if date == _beijing_today() and _beijing_now().hour >= 9:
         _lock_overdue_body_metrics()
     day_key = _exercise_day_key(date)
     locked = date < _beijing_today()
     v4_score = None
     with _exercise_conn() as conn:
-        active_plan = plan_version or _exercise_active_plan(conn, user["id"])
-        if active_plan == "v4":
-            service, now = _exercise_v4(), _beijing_now()
+        authoritative_plan = _exercise_active_plan(conn, user["id"], date)
+        active_plan = plan_version or authoritative_plan
+        locked = locked or active_plan != authoritative_plan
+        if (active_plan in {"v4", "v5"} and authoritative_plan != "v6") or active_plan == authoritative_plan == "v6":
+            service, now = _exercise_authoritative(active_plan), _beijing_now()
             service.ensure_diet_rows(conn, user["id"], date, now)
             service.close_diet(conn, user["id"], date, now)
             service.settle_body_deadline(conn, user["id"], date, now)
@@ -3877,6 +4238,21 @@ def get_exercise_state(
             (user["id"], date, active_plan),
         ).fetchone())
         plan_definition = _exercise_plan_definition(conn, user["id"], active_plan)
+        if active_plan == "v5":
+            policy = conn.execute("SELECT effective_date FROM server_exercise_policy_metadata WHERE policy_key='v5_meal_timing'").fetchone()
+            quality_policy = conn.execute("SELECT effective_date FROM server_exercise_policy_metadata WHERE policy_key='v5_quality_restored'").fetchone()
+            if policy:
+                current_policy = date >= str(policy["effective_date"])
+                plan_definition["policyEffectiveDate"] = str(policy["effective_date"])
+                quality_points = ({"no_sugary_drinks": 6, "no_refined_staples": 6, "no_snacks": 5}
+                    if quality_policy and date >= str(quality_policy["effective_date"]) else {
+                    "protein_at_lunch_and_dinner": 6, "vegetables_at_lunch_and_dinner": 6,
+                    "controlled_staple_and_no_sugary_drink": 5})
+                plan_definition["dietScorePoints"] = ({**quality_points, "breakfast_on_time": 11,
+                    "lunch_on_time": 11, "dinner_on_time": 11} if current_policy else {key: 5 for key in (
+                    "protein_at_lunch_and_dinner", "vegetables_at_lunch_and_dinner", "controlled_staple_and_no_sugary_drink")})
+                plan_definition["trainingPoints"] = 50 if current_policy else None
+                plan_definition["bodyPoints"] = 0 if current_policy else None
         item_scores = [dict(row) for row in conn.execute(
             "SELECT * FROM server_exercise_item_scores WHERE user_id=? AND date=? AND plan_version=? ORDER BY item_key",
             (user["id"], date, active_plan),
@@ -3887,16 +4263,16 @@ def get_exercise_state(
         diet_checkins = [dict(row) for row in conn.execute(
             "SELECT * FROM server_exercise_diet_checkins WHERE user_id=? AND date=? AND plan_version=? ORDER BY rule_key",
             (user["id"], date, active_plan),
-        ).fetchall()] if active_plan == "v4" else []
+        ).fetchall()] if active_plan in {"v4", "v5"} else []
         deadline_facts = [dict(row) for row in conn.execute(
             "SELECT * FROM server_exercise_deadline_facts WHERE user_id=? AND date=? AND plan_version=? ORDER BY fact_type",
             (user["id"], date, active_plan),
-        ).fetchall()] if active_plan == "v4" else []
+        ).fetchall()] if active_plan in {"v4", "v5"} else []
         history = _exercise_history(conn, user["id"], active_plan)
     score = _exercise_score(items, checkins, plan_definition, day_key, date)
     if v4_score is not None:
         score = v4_score
-    if active_plan != "v4" and locked and log and log.get("score_snapshot"):
+    if active_plan not in {"v4", "v5"} and locked and log and log.get("score_snapshot"):
         try:
             score = {**json.loads(log["score_snapshot"]), "completed_items": log.get("completed_items") or score.get("completed_items", 0), "total_items": log.get("total_items") or score.get("total_items", 0)}
         except (TypeError, ValueError):
@@ -3929,6 +4305,7 @@ def get_exercise_state(
 @app.post("/api/exercise/checkin")
 async def post_exercise_checkin(request: Request, user: dict = Depends(get_current_user_optional)):
     body = await request.json()
+    _ensure_exercise_v6_for_user(user["id"])
     date = body.get("date") or _beijing_today()
     if date == _beijing_today() and _beijing_now().hour >= 9:
         _lock_overdue_body_metrics()
@@ -3947,6 +4324,7 @@ async def post_exercise_checkin(request: Request, user: dict = Depends(get_curre
     if status_value == 1 and not completed_time:
         completed_time = now
     with _exercise_conn() as conn:
+        _exercise_require_writable_version(conn, user["id"], date, plan_version)
         locked_row = _body_metric_lock_in_txn(conn, user["id"], date)
         target = _body_metric_target_in_txn(conn, user["id"], date, plan_version)
         if locked_row and target and str(item_key) == target[0]:
@@ -3998,8 +4376,8 @@ async def post_exercise_checkin(request: Request, user: dict = Depends(get_curre
         ).fetchall()]
         definition = _exercise_plan_definition(conn, user["id"], plan_version)
         score = _exercise_score(items, [dict(item) for item in conn.execute("SELECT * FROM server_exercise_checkins WHERE user_id=? AND date=? AND plan_version=?", (user["id"], date, plan_version)).fetchall()], definition, _exercise_day_key(date), date)
-        if plan_version == "v4":
-            score = _exercise_v4().settle(conn, user["id"], date, _beijing_now())
+        if plan_version in {"v4", "v5", "v6"}:
+            score = _exercise_authoritative(plan_version).settle(conn, user["id"], date, _beijing_now())
         else:
             _persist_exercise_item_scores(conn, user["id"], date, plan_version, score, now)
         _exercise_write_change(conn, user["id"], "exercise_checkin", checkin_id, row)
@@ -4011,6 +4389,7 @@ async def post_exercise_checkin(request: Request, user: dict = Depends(get_curre
 @app.post("/api/exercise/daily")
 async def post_exercise_daily(request: Request, user: dict = Depends(get_current_user_optional)):
     body = await request.json()
+    _ensure_exercise_v6_for_user(user["id"])
     date = body.get("date") or _beijing_today()
     if date == _beijing_today() and _beijing_now().hour >= 9:
         _lock_overdue_body_metrics()
@@ -4041,6 +4420,7 @@ async def post_exercise_daily(request: Request, user: dict = Depends(get_current
     score_snapshot = body.get("score_snapshot")
     score_json = json.dumps(score_snapshot, ensure_ascii=False, sort_keys=True) if score_snapshot is not None else None
     with _exercise_conn() as conn:
+        _exercise_require_writable_version(conn, user["id"], date, plan_version)
         body_metric_lock = _body_metric_lock_in_txn(conn, user["id"], date, plan_version)
         if body_metric_lock:
             if weight is None and body_fat_rate is None:
@@ -4057,8 +4437,8 @@ async def post_exercise_daily(request: Request, user: dict = Depends(get_current
                 (user["id"], date, plan_version),
             ).fetchone())
             _exercise_write_change(conn, user["id"], "exercise_daily_log", row["id"], row)
-            if plan_version == "v4":
-                _exercise_v4().settle(conn, user["id"], date, _beijing_now())
+            if plan_version in {"v4", "v5", "v6"}:
+                _exercise_authoritative(plan_version).settle(conn, user["id"], date, _beijing_now())
             conn.commit()
             sync_hub._notify_clients(["exercise_daily_logs", "exercise_deadline_facts", "exercise_item_scores", "exercise_settlements", "reward_ledger", "user_wallets"], user["id"])
             return {"status": "ok", "daily_log": row}
@@ -4101,9 +4481,9 @@ async def post_exercise_daily(request: Request, user: dict = Depends(get_current
             (user["id"], date, plan_version),
         ).fetchone())
         _exercise_write_change(conn, user["id"], "exercise_daily_log", row["id"], row)
-        score = _exercise_v4().settle(conn, user["id"], date, _beijing_now()) if plan_version == "v4" else None
+        score = _exercise_authoritative(plan_version).settle(conn, user["id"], date, _beijing_now()) if plan_version in {"v4", "v5", "v6"} else None
         conn.commit()
-    if plan_version == "v4":
+    if plan_version in {"v4", "v5", "v6"}:
         sync_hub._notify_clients(["exercise_daily_logs", "exercise_deadline_facts", "exercise_item_scores", "exercise_settlements", "reward_ledger", "user_wallets"], user["id"])
     return {"status": "ok", "daily_log": row, "score": score}
 
@@ -4357,7 +4737,7 @@ async def generate_report(request: Request, user: dict = Depends(get_current_use
     )
 
     # 查找当天的任务（如果有）
-    job = store.get_job_by_date(date, user_id=user["id"])
+    job = store.get_job_by_date(date, user_id=user["id"]) or store.get_failed_job_by_date(date, user_id=user["id"])
     image_path = job.get("image_path") if job else None
     request_id = uuid.uuid4().hex if force else (job.get("request_id") if job else uuid.uuid4().hex)
     structured_data = store.get_huawei_sleep_data(user["id"], date)
@@ -4570,8 +4950,23 @@ def get_today_summary(date: str, user: dict = Depends(get_current_user_optional)
     return {"status": "ok", "summary": summary}
 
 # --- 3. 习惯管理 (Habits) ---
+@app.post("/api/habits/day-ignores")
+async def set_habit_day_ignore(request: Request, user: dict = Depends(get_current_user)):
+    body = await request.json()
+    try:
+        result = habit_day_ignore_service.set(int(user["id"]), str(body.get("habit_id") or ""),
+            str(body.get("date") or ""), str(body.get("idempotency_key") or ""), body.get("ignore"))
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    sync_hub._notify_clients(["habit_day_ignores"], int(user["id"]))
+    return result
+
 @app.get("/api/habits")
 def get_habits(user: dict = Depends(get_current_user_optional)):
+    _ensure_diet_habits(int(user["id"]))
+    habit_auto_failure_service.run(user_id=int(user["id"]))
+    if timed_habit_service.run(user_id=int(user["id"])):
+        sync_hub._notify_clients(["habit_checkins", "reward_ledger", "user_wallets"], int(user["id"]))
     return {"status": "ok", "habits": store.list_habits(user["id"])}
 
 @app.post("/api/habits")
@@ -4582,7 +4977,10 @@ async def create_habit(request: Request, user: dict = Depends(get_current_user_o
     difficulty = body.get("difficulty", "medium")
     if not name:
         raise HTTPException(status_code=400, detail="name is required")
-    hid = store.create_habit(user["id"], name, icon, difficulty)
+    try:
+        hid = store.create_habit(user["id"], name, icon, difficulty)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     if hid is None:
         raise HTTPException(status_code=400, detail="Habit name already exists for this user")
     return {"status": "ok", "habit_id": hid}
@@ -4594,13 +4992,53 @@ async def update_habit(habit_id: str, request: Request, user: dict = Depends(get
     icon = body.get("icon")
     difficulty = body.get("difficulty")
     is_active = body.get("is_active")
-    success = store.update_habit(user["id"], habit_id, name, icon, difficulty, is_active)
+    try:
+        success = store.update_habit(user["id"], habit_id, name, icon, difficulty, is_active)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     if not success:
         raise HTTPException(status_code=404, detail="Habit not found or update conflict")
     return {"status": "ok"}
 
+
+@app.put("/api/habits/{habit_id}/journal-prompt")
+async def update_habit_journal_prompt(habit_id: str, request: Request, user: dict = Depends(get_current_user)):
+    body = await request.json()
+    if type(body.get("enabled")) is not bool:
+        raise HTTPException(status_code=422, detail="invalid_journal_prompt")
+    owner, enabled = int(user["id"]), int(body["enabled"])
+    with store._transact() as conn:
+        row = conn.execute("SELECT * FROM server_habits WHERE user_id=? AND id=? AND source='local' AND is_active=0",
+                           (owner, habit_id)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="active_local_habit_not_found")
+        if int(row["journal_prompt_enabled"]) != enabled:
+            conn.execute("UPDATE server_habits SET journal_prompt_enabled=?,updated_at=? WHERE user_id=? AND id=?",
+                         (enabled, _exercise_now_str(), owner, habit_id))
+            updated = dict(conn.execute("SELECT * FROM server_habits WHERE user_id=? AND id=?", (owner, habit_id)).fetchone())
+            store._record_server_change(conn, owner, "server_habits", habit_id, "upsert", updated)
+    sync_hub._notify_clients(["habits"], owner)
+    return {"status": "ok", "habit_id": habit_id, "enabled": bool(enabled)}
+
+@app.put("/api/habits/{habit_id}/window")
+async def set_habit_window(habit_id: str, request: Request, user: dict = Depends(get_current_user)):
+    body = await request.json()
+    if "start_minute" not in body or "end_minute" not in body:
+        raise HTTPException(status_code=422, detail="invalid_habit_window")
+    try:
+        result = store.set_habit_window(int(user["id"]), habit_id, body["start_minute"], body["end_minute"])
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if result is None:
+        raise HTTPException(status_code=404, detail="Habit not found")
+    sync_hub._notify_clients(["habit_windows"], int(user["id"]))
+    return {"status": "ok", **result}
+
 @app.get("/api/habits/today_checkins")
 def get_today_checkins(date: str, user: dict = Depends(get_current_user_optional)):
+    habit_auto_failure_service.run(user_id=int(user["id"]))
+    if timed_habit_service.run(user_id=int(user["id"])):
+        sync_hub._notify_clients(["habit_checkins", "reward_ledger", "user_wallets"], int(user["id"]))
     checkins = store.list_today_checkins(user["id"], date)
     return {"status": "ok", "checkins": checkins}
 
@@ -4659,6 +5097,25 @@ async def retry_habit_checkin_command(idempotency_key: str, user: dict = Depends
         "idempotency_key": idempotency_key,
     })
 
+
+@app.put("/api/habits/{habit_id}/checkins/{checkin_date}/journal")
+async def save_habit_checkin_journal(habit_id: str, checkin_date: str, request: Request,
+                                    user: dict = Depends(get_current_user)):
+    try:
+        if datetime.strptime(checkin_date, "%Y-%m-%d").strftime("%Y-%m-%d") != checkin_date:
+            raise ValueError("invalid_date")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="invalid_checkin_date") from exc
+    body = await request.json()
+    note = body.get("note") if isinstance(body, dict) else None
+    if not isinstance(note, str) or len(note) > 2000:
+        raise HTTPException(status_code=400, detail="invalid_habit_journal")
+    saved = store.habit_domain_service.save_checkin_journal(int(user["id"]), habit_id, checkin_date, note)
+    if not saved:
+        raise HTTPException(status_code=404, detail="confirmed_local_checkin_not_found")
+    sync_hub._notify_clients(["habit_checkins"], int(user["id"]))
+    return saved
+
 @app.post("/api/habits/{habit_id}/checkin")
 async def checkin_habit(habit_id: str, request: Request, user: dict = Depends(get_current_user_optional)):
     body = await request.json()
@@ -4700,8 +5157,13 @@ async def create_goal(request: Request, user: dict = Depends(get_current_user_op
     operator = body.get("operator", ">=")
     penalty_coins = body.get("penalty_coins")
 
-    if not title or metric not in {"duration", "count"} or period not in {"daily", "weekly", "monthly", "per_session"}:
+    if not title or metric not in {"duration", "count"} or period not in {"daily", "weekly", "monthly", "per_session", "custom_weekdays"}:
         raise HTTPException(status_code=400, detail="title, metric, and period are invalid")
+    weekdays = body.get("weekdays", [])
+    if not isinstance(weekdays, list) or any(type(day) is not int or day < 1 or day > 7 for day in weekdays) or len(set(weekdays)) != len(weekdays):
+        raise HTTPException(status_code=400, detail="weekdays must be unique integers from 1 to 7")
+    if period == "custom_weekdays" and not weekdays:
+        raise HTTPException(status_code=400, detail="custom weekday goals require at least one weekday")
     if operator not in {">=", "<="} or target_value is None or reward_coins is None:
         raise HTTPException(status_code=400, detail="title, metric, target_value, period, and reward_coins are required")
     if category_ids is None:
@@ -4713,7 +5175,8 @@ async def create_goal(request: Request, user: dict = Depends(get_current_user_op
             raise ValueError
         gid = store.create_goal(
             user["id"], title.strip(), category_id, metric, float(target_value), period,
-            float(reward_coins), operator=operator, penalty_coins=penalty_coins, category_ids=category_ids
+            float(reward_coins), operator=operator, penalty_coins=penalty_coins, category_ids=category_ids,
+            weekdays=weekdays,
         )
     except (TypeError, ValueError):
         raise HTTPException(status_code=400, detail="目标数值必须有效且奖励/惩罚不可为负")
@@ -4738,8 +5201,13 @@ async def update_goal(goal_id: str, request: Request, user: dict = Depends(get_c
             raise HTTPException(status_code=400, detail="分类必须为不重复的列表")
     if "metric" in body and body["metric"] not in {"duration", "count"}:
         raise HTTPException(status_code=400, detail="metric is invalid")
-    if "period" in body and body["period"] not in {"daily", "weekly", "monthly", "per_session"}:
+    if "period" in body and body["period"] not in {"daily", "weekly", "monthly", "per_session", "custom_weekdays"}:
         raise HTTPException(status_code=400, detail="period is invalid")
+    weekdays = body.get("weekdays")
+    if weekdays is not None and (not isinstance(weekdays, list) or any(type(day) is not int or day < 1 or day > 7 for day in weekdays) or len(set(weekdays)) != len(weekdays)):
+        raise HTTPException(status_code=400, detail="weekdays must be unique integers from 1 to 7")
+    if body.get("period") == "custom_weekdays" and not weekdays:
+        raise HTTPException(status_code=400, detail="custom weekday goals require at least one weekday")
     if "operator" in body and body["operator"] not in {">=", "<="}:
         raise HTTPException(status_code=400, detail="operator is invalid")
     success = store.update_goal(user["id"], goal_id, **body)
@@ -4753,7 +5221,7 @@ async def update_goal(goal_id: str, request: Request, user: dict = Depends(get_c
 def auto_settle_goals(user: dict = Depends(get_current_user_optional)):
     settled = store.auto_settle_goals(user["id"])
     if settled:
-        sync_hub._notify_clients(["goals", "external_rewards", "reward_ledger", "user_wallets"], user["id"])
+        sync_hub._notify_clients(["goals", "external_rewards", "reward_ledger", "user_wallets", "reward_fragments"], user["id"])
     return {"status": "ok", "settled": settled}
 
 # --- 5. 奖励商品与商店 (Rewards) ---
@@ -4840,7 +5308,7 @@ async def update_reward(reward_id: str, request: Request, user: dict = Depends(g
         unlock_fields["unlock_source_type"] = body["unlock_source_type"]
     if "unlock_source_id" in body:
         unlock_fields["unlock_source_id"] = body["unlock_source_id"]
-    for field in ("inventory_mode", "inventory_limit", "unlock_required_count", "fulfillment_mode", "fragment_target_count"):
+    for field in ("inventory_mode", "inventory_limit", "unlock_required_count", "fulfillment_mode", "fragment_target_count", "convert_fragment_to_count"):
         if field in body:
             unlock_fields[field] = body[field]
     if "redemption_mode" in body:
@@ -4858,7 +5326,8 @@ async def update_reward(reward_id: str, request: Request, user: dict = Depends(g
     if not success:
         raise HTTPException(status_code=404, detail="Reward item not found")
     sync_hub._notify_clients(["rewards"], user["id"])
-    return {"status": "ok"}
+    reward = next((item for item in store.list_rewards(user["id"]) if str(item["id"]) == str(reward_id)), None)
+    return {"status": "ok", "reward": reward}
 
 @app.delete("/api/rewards/{reward_id}")
 def delete_reward(reward_id: str, user: dict = Depends(get_current_user_optional)):
@@ -4881,9 +5350,9 @@ def get_reward_ledger(limit: int = 30, user: dict = Depends(get_current_user_opt
 @app.post("/api/rewards/buy/{reward_id}")
 async def buy_reward(reward_id: str, request: Request, user: dict = Depends(get_current_user_optional)):
     body = await request.json() if request.headers.get("content-length") not in (None, "0") else {}
-    success, msg = store.buy_reward(user["id"], reward_id, body.get("amount"), body.get("note"))
+    success, msg = store.buy_reward(user["id"], reward_id, body.get("amount"), body.get("note"), body.get("request_id"))
     if not success:
-        raise HTTPException(status_code=409 if msg == "商品库存已用完" else 400, detail=msg)
+        raise HTTPException(status_code=409 if msg == "商品库存已用完" or "冲突" in msg else 400, detail=msg)
     sync_hub._notify_clients(["reward_ledger", "user_wallets"], user["id"])
     return {"status": "ok", "msg": msg}
 
@@ -4903,9 +5372,20 @@ async def claim_rewards(request: Request, user: dict = Depends(get_current_user_
 
 @app.get("/api/rewards/backpack")
 def get_backpack(user: dict = Depends(get_current_user_optional)):
+    with store._transact() as conn:
+        store.reward_settlement_service.reconcile_period_inventory_in_txn(conn, user["id"])
+        version_row = conn.execute(
+            "SELECT COALESCE(MAX(server_version),0) AS version FROM server_change_log WHERE user_id=?",
+            (user["id"],),
+        ).fetchone()
     backpack = store.list_backpack(user["id"])
     fragments = store.reward_wallet_service.list_backpack_fragments(user["id"])
-    return {"status": "ok", "backpack": backpack, "fragments": fragments}
+    expired = store.reward_wallet_service.list_expired_backpack_fragments(user["id"])
+    return {
+        "status": "ok", "userId": user["id"], "dataVersion": int(version_row["version"] or 0),
+        "generatedAt": _beijing_now().isoformat(timespec="seconds"), "serverBuild": BUILD_REVISION,
+        "backpack": backpack, "fragments": fragments, "expired_fragments": expired,
+    }
 
 @app.get("/api/rewards/backpack/events")
 def get_backpack_events(limit: int = 50, offset: int = 0, user: dict = Depends(get_current_user_optional)):
@@ -4987,7 +5467,10 @@ async def set_item_reward_config(request: Request, user: dict = Depends(get_curr
     penalty = body.get("penalty")
     if not item_type or not item_id or coins is None:
         raise HTTPException(status_code=400, detail="item_type, item_id, and coins are required")
-    success = store.set_item_reward(user["id"], item_type, item_id, coins, penalty)
+    try:
+        success = store.set_item_reward(user["id"], item_type, item_id, coins, penalty)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"status": "ok" if success else "error"}
 
 
@@ -5172,6 +5655,9 @@ async def sync_pull(
     )
     diagnostics = None
     try:
+        _ensure_diet_habits(int(user["id"]))
+        if timed_habit_service.run(user_id=int(user["id"])):
+            sync_hub._notify_clients(["habit_checkins", "reward_ledger", "user_wallets"], int(user["id"]))
         if refresh and scope == "checklist":
             provider_executed = True
             if provider_manual:
@@ -5281,20 +5767,21 @@ async def read_timer_state(request: Request, user: dict = Depends(get_current_us
 @app.post("/api/timer/current/{operation}")
 async def update_timer_state(operation: str, request: Request, user: dict = Depends(get_current_user_optional)):
     _require_timer_state_capability(request)
-    if operation not in {"start", "switch", "note", "pause", "resume", "stop"}:
+    if operation not in {"start", "switch", "handoff", "note", "pause", "resume", "stop",
+                       "request_summary", "resolve_summary", "skip_summary", "takeover_summary"}:
         raise HTTPException(status_code=404, detail="未知计时操作")
     body = await request.json()
     required = ("device_id", "observed_revision", "idempotency_key", "user_intent_id")
     if any(key not in body or (key != "observed_revision" and not str(body.get(key, "")).strip()) for key in required):
         raise HTTPException(status_code=400, detail="缺少当前计时字段")
-    if operation in {"start", "switch"} and not str(body.get("category_name", "")).strip():
+    if operation in {"start", "switch", "handoff"} and not str(body.get("category_name", "")).strip():
         raise HTTPException(status_code=400, detail="缺少计时分类")
     if operation == "note" and "current_note" not in body:
         raise HTTPException(status_code=400, detail="缺少当前计时备注")
     payload = {key: body.get(key) for key in (
         "session_id", "device_id", "observed_revision", "idempotency_key", "user_intent_id",
         "command_seq", "category_id", "category_name", "timer_mode", "duration_ms",
-        "session_summary", "current_note",
+        "session_summary", "summary_revision", "current_note",
     )}
     result = _live_timer_service().command(int(user["id"]), operation, payload)
     if result.get("status") == "accepted":
@@ -5323,9 +5810,20 @@ async def sync_events(request: Request, user: dict = Depends(get_current_user_op
     queue: asyncio.Queue = asyncio.Queue(maxsize=32)
     sync_hub.subscribe(queue, int(user["id"]))
 
+    def persisted_version():
+        conn = sync_hub._conn()
+        try:
+            row = conn.execute('SELECT current_version FROM server_version_counters WHERE user_id=?', (int(user['id']),)).fetchone()
+            return int(row[0]) if row else 0
+        finally:
+            conn.close()
+
     async def event_stream():
         try:
             yield "data: connected\n\n"
+            last_version = persisted_version()
+            if last_version:
+                yield f"event: changed\ndata: {json.dumps({'server_version': last_version})}\n\n"
             while True:
                 if await request.is_disconnected():
                     break
@@ -5333,6 +5831,10 @@ async def sync_events(request: Request, user: dict = Depends(get_current_user_op
                     msg = await asyncio.wait_for(queue.get(), timeout=SSE_KEEPALIVE_INTERVAL_SEC)
                     yield f"event: {msg['event']}\ndata: {msg['data']}\n\n"
                 except asyncio.TimeoutError:
+                    current_version = persisted_version()
+                    if current_version > last_version:
+                        last_version = current_version
+                        yield f"event: changed\ndata: {json.dumps({'server_version': current_version})}\n\n"
                     yield ": heartbeat\n\n"
         finally:
             sync_hub.unsubscribe(queue)

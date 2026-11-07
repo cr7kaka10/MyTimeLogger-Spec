@@ -2,70 +2,56 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { Habit, HabitCheckin } from '../types'
 import { getCurrentTimerClient, getDatabase, syncNow } from '../db'
-import { useSyncRefresh } from './useEventRefresh'
+import { useEventRefresh } from './useEventRefresh'
+import { LOCAL_HABITS_UPDATED } from './useLocalHabitMutation'
+import { isHabitScheduledForDate as scheduledForDate } from '@core/HabitSchedule'
+import { dateToShanghaiDateString } from '../utils/shanghaiDate'
 
 export interface UseHabitsReturn {
   habits: Habit[]
+  dietCatalogHabits: Habit[]
   todayCheckins: HabitCheckin[]
+  ignoredHabits: Habit[]
+  setHabitIgnored: (habitId: number | string, ignore: boolean) => Promise<boolean>
   selectedDate: string
   setSelectedDate: (date: string) => void
   streakMap: Record<number | string, number>
   weeklyMap: Record<number | string, number[]>
-  toggleCheckin: (habitId: number | string, date?: string, forceStatus?: number) => Promise<void>
+  toggleCheckin: (habitId: number | string, date?: string, forceStatus?: number) => Promise<{ confirmed: boolean; checkedIn: boolean; date: string }>
   habitCommandStatus: Record<string, 'syncing' | 'retryable_failed'>
   retryHabitCheckin: (habitId: number | string) => Promise<void>
-  addHabit: (name: string, icon: string, difficulty: string) => void
+  addHabit: (name: string, icon: string) => void
   deleteHabit: (id: number | string) => void
 }
 
 export function isHabitScheduledForDate(repeatRule: string | undefined | null, dateStr: string): boolean {
-  if (!repeatRule) return true // 默认每天出现
+  return scheduledForDate(repeatRule, dateStr)
+}
 
-  try {
-    const parts = dateStr.split('-')
-    const year = parseInt(parts[0], 10)
-    const month = parseInt(parts[1], 10) - 1
-    const day = parseInt(parts[2], 10)
-    const date = new Date(year, month, day)
-    const dayOfWeek = date.getDay() // 0 (周日) 到 6 (周六)
-
-    const weekdayMap = ["SU", "MO", "TU", "WE", "TH", "FR", "SA"]
-    const targetDay = weekdayMap[dayOfWeek]
-
-    const rrule = repeatRule.toUpperCase()
-    if (rrule.includes("FREQ=DAILY")) {
-      return true
-    }
-
-    if (rrule.includes("FREQ=WEEKLY")) {
-      const bydayMatch = rrule.match(/BYDAY=([^;]+)/)
-      if (bydayMatch) {
-        const activeDays = bydayMatch[1].split(",")
-        return activeDays.includes(targetDay)
-      }
-    }
-  } catch (e) {
-    console.error("Failed to parse repeat rule:", repeatRule, e)
-  }
-  return true
+export function timedHabitBlock(habit: Habit, date: string, status: number, now = new Date()): string | null {
+  if (habit.window_start_minute == null || habit.window_end_minute == null) return null
+  if (status === 1 || status === 2) return '定时习惯结果已锁定，不能修改'
+  if (date !== dateToShanghaiDateString(now)) return '定时习惯只能在当天时间段内打卡'
+  const parts = new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Shanghai', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(now)
+  const minutes = Number(parts.find(part => part.type === 'hour')?.value) * 60 + Number(parts.find(part => part.type === 'minute')?.value)
+  if (minutes < habit.window_start_minute) return '打卡时间未到'
+  if (minutes >= habit.window_end_minute) return '打卡已超时，等待自动判定失败'
+  return null
 }
 
 export const useHabits = (): UseHabitsReturn => {
   const [habits, setHabits] = useState<Habit[]>([])
+  const [dietCatalogHabits, setDietCatalogHabits] = useState<Habit[]>([])
   const [todayCheckins, setTodayCheckins] = useState<HabitCheckin[]>([])
+  const [ignoredHabits, setIgnoredHabits] = useState<Habit[]>([])
   const [streakMap, setStreakMap] = useState<Record<number | string, number>>({})
   const [weeklyMap, setWeeklyMap] = useState<Record<number | string, number[]>>({})
   const [refreshTrigger, setRefreshTrigger] = useState(0)
   const [habitCommandStatus, setHabitCommandStatus] = useState<Record<string, 'syncing' | 'retryable_failed'>>({})
   const commandKeys = useRef<Record<string, string>>({})
-  const syncRefresh = useSyncRefresh()
+  const syncRefresh = useEventRefresh(['sync-pull-complete', LOCAL_HABITS_UPDATED])
 
-  const getLocalYYYYMMDD = (d: Date = new Date()) => {
-    const year = d.getFullYear()
-    const month = String(d.getMonth() + 1).padStart(2, '0')
-    const day = String(d.getDate()).padStart(2, '0')
-    return `${year}-${month}-${day}`
-  }
+  const getLocalYYYYMMDD = (d: Date = new Date()) => dateToShanghaiDateString(d)
 
   const [selectedDate, setSelectedDate] = useState<string>(() => getLocalYYYYMMDD())
 
@@ -73,12 +59,29 @@ export const useHabits = (): UseHabitsReturn => {
     getDatabase().then(db => {
       // 获取所有习惯（不按日期过滤，习惯每天都显示）
       const all = db.getHabits() as any[]
+      const windows = db.getHabitWindowsForDate(selectedDate)
+      const definitions = db.getHabitWindowDefinitions()
+      setDietCatalogHabits(all.filter(h => h.source === 'system' && String(h.id).startsWith('diet-v5:')).map(h => ({
+        ...h, window_effective_from: definitions.get(String(h.id))?.effective_from,
+        window_start_minute: definitions.get(String(h.id))?.start_minute ?? null,
+        window_end_minute: definitions.get(String(h.id))?.end_minute ?? null,
+      })))
+      for (const habit of all) {
+        const window = windows.get(String(habit.id))
+        habit.window_start_minute = window?.start_minute ?? null
+        habit.window_end_minute = window?.end_minute ?? null
+      }
       
       // 获取选中日期的打卡记录
       const checkinsForSelectedDate = db.getTodayCheckins(selectedDate) as any[]
+      const ignoredIds = db.getIgnoredHabitIds(selectedDate)
+      setIgnoredHabits(all.filter(h => Number(h.is_active || 0) === 0 && ignoredIds.has(String(h.id))))
 
       // 过滤习惯：只显示今天有排期的，或者今天已经有打卡记录的（兜底展示）
       const filteredHabits = all.filter(h => {
+        if (Number(h.is_active || 0) !== 0) return false
+        if (h.source === 'system' && !windows.has(String(h.id))) return false
+        if (ignoredIds.has(String(h.id))) return false
         const rrule = h.repeat_rule || h.repeatRule
         const isScheduled = isHabitScheduledForDate(rrule, selectedDate)
         const hasCheckin = checkinsForSelectedDate.some(c => c.habit_id === h.id || c.habitId === h.id)
@@ -110,27 +113,55 @@ export const useHabits = (): UseHabitsReturn => {
     })
   }, [refreshTrigger, syncRefresh, selectedDate])
 
+  const setHabitIgnored = useCallback(async (habitId: number | string, ignore: boolean) => {
+    if (habits.concat(ignoredHabits).some(habit => String(habit.id) === String(habitId) && habit.window_start_minute != null)) return false
+    const api = getCurrentTimerClient()
+    if (!api) return false
+    const response = await api.post('/api/habits/day-ignores', {
+      habit_id: String(habitId), date: selectedDate, ignore,
+      idempotency_key: globalThis.crypto?.randomUUID?.() || `ignore-${Date.now()}`,
+    })
+    if (!response.ok || response.data?.status !== 'confirmed') return false
+    await syncNow({ reason: 'habit-day-ignore' })
+    setRefreshTrigger(previous => previous + 1)
+    return true
+  }, [selectedDate, habits, ignoredHabits])
+
 
   const submitHabitCommand = useCallback(async (habitId: number | string, date: string, desiredStatus: number, idempotencyKey: string, retry = false) => {
     const habitKey = String(habitId)
     const api = getCurrentTimerClient()
     if (!api) {
       setHabitCommandStatus(previous => ({ ...previous, [habitKey]: 'retryable_failed' }))
-      return
+      return false
     }
     commandKeys.current[habitKey] = idempotencyKey
     setHabitCommandStatus(previous => ({ ...previous, [habitKey]: 'syncing' }))
-    const response = retry
-      ? await api.retryHabitCheckin(idempotencyKey)
-      : await api.commandHabitCheckin({ habit_id: habitKey, date, desired_status: desiredStatus, idempotency_key: idempotencyKey })
+    let response
+    try {
+      response = retry
+        ? await api.retryHabitCheckin(idempotencyKey)
+        : await api.commandHabitCheckin({ habit_id: habitKey, date, desired_status: desiredStatus, idempotency_key: idempotencyKey })
+    } catch {
+      setHabitCommandStatus(previous => ({ ...previous, [habitKey]: 'retryable_failed' }))
+      return false
+    }
+    if (response.data?.status === 'failed') {
+      delete commandKeys.current[habitKey]
+      setHabitCommandStatus(previous => { const next = { ...previous }; delete next[habitKey]; return next })
+      await syncNow({ reason: 'habit-lifecycle-rejected' })
+      setRefreshTrigger(previous => previous + 1)
+      window.dispatchEvent(new CustomEvent('habit-lifecycle-error', { detail: response.data.error_code || 'habit_unavailable' }))
+      return false
+    }
     if (!response.ok || response.data?.status !== 'confirmed') {
       setHabitCommandStatus(previous => ({ ...previous, [habitKey]: 'retryable_failed' }))
-      return
+      return false
     }
-    const result = await syncNow({ reason: 'habit-checkin-command' })
+    const result = await syncNow({ reason: 'habit-checkin-command' }).catch(() => ({ ok: false }))
     if (!result.ok) {
       setHabitCommandStatus(previous => ({ ...previous, [habitKey]: 'retryable_failed' }))
-      return
+      return true
     }
     setHabitCommandStatus(previous => {
       const next = { ...previous }
@@ -138,19 +169,27 @@ export const useHabits = (): UseHabitsReturn => {
       return next
     })
     setRefreshTrigger(previous => previous + 1)
-    window.dispatchEvent(new CustomEvent('local-shortcut-trigger', { detail: 'balance-updated' }))
+    window.dispatchEvent(new CustomEvent('balance-updated'))
+    return true
   }, [])
 
   const toggleCheckin = useCallback(async (habitId: number | string, date?: string, forceStatus?: number) => {
     navigator.vibrate?.(10)
     const targetDate = date || getLocalYYYYMMDD()
     const existing = todayCheckins.find(item => String(item.habit_id) === String(habitId))
+    const habit = habits.find(item => String(item.id) === String(habitId))
+    const blocked = habit && timedHabitBlock(habit, targetDate, Number(existing?.status || 0))
+    if (blocked) {
+      window.dispatchEvent(new CustomEvent('habit-lifecycle-error', { detail: blocked }))
+      return { confirmed: false, checkedIn: false, date: targetDate }
+    }
     let desiredStatus = forceStatus ?? (existing?.status === 2 ? 0 : 2)
     if (forceStatus !== undefined && existing?.status === forceStatus) desiredStatus = 0
     const cryptoApi = globalThis.crypto
     const idempotencyKey = cryptoApi?.randomUUID?.() || `habit-${Date.now()}-${Math.random().toString(16).slice(2)}`
-    await submitHabitCommand(habitId, targetDate, desiredStatus, idempotencyKey)
-  }, [submitHabitCommand, todayCheckins])
+    const confirmed = await submitHabitCommand(habitId, targetDate, desiredStatus, idempotencyKey)
+    return { confirmed: Boolean(confirmed), checkedIn: desiredStatus === 2, date: targetDate }
+  }, [submitHabitCommand, todayCheckins, habits])
 
   const retryHabitCheckin = useCallback(async (habitId: number | string) => {
     const habitKey = String(habitId)
@@ -159,9 +198,9 @@ export const useHabits = (): UseHabitsReturn => {
     await submitHabitCommand(habitId, selectedDate, 0, idempotencyKey, true)
   }, [selectedDate, submitHabitCommand])
 
-  const addHabit = useCallback((name: string, icon: string, difficulty: string) => {
+  const addHabit = useCallback((name: string, icon: string) => {
     getDatabase().then(db => {
-      db.addHabit(name, icon, difficulty)
+      db.addHabit(name, icon)
       setRefreshTrigger(prev => prev + 1)
     })
   }, [])
@@ -175,9 +214,9 @@ export const useHabits = (): UseHabitsReturn => {
 
   return useMemo(
     () => ({
-      habits, todayCheckins, selectedDate, setSelectedDate, streakMap, weeklyMap,
+      habits, dietCatalogHabits, todayCheckins, ignoredHabits, setHabitIgnored, selectedDate, setSelectedDate, streakMap, weeklyMap,
       toggleCheckin, habitCommandStatus, retryHabitCheckin, addHabit, deleteHabit,
     }),
-    [habits, todayCheckins, selectedDate, setSelectedDate, streakMap, weeklyMap, toggleCheckin, habitCommandStatus, retryHabitCheckin, addHabit, deleteHabit],
+    [habits, dietCatalogHabits, todayCheckins, ignoredHabits, setHabitIgnored, selectedDate, setSelectedDate, streakMap, weeklyMap, toggleCheckin, habitCommandStatus, retryHabitCheckin, addHabit, deleteHabit],
   )
 }

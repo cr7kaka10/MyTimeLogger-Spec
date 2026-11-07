@@ -12,9 +12,9 @@ export interface UseRewardsReturn {
   rewards: Reward[]
   ledger: { id: number; amount: number; description: string; created_at: string }[]
   unclaimedRewards: any[]
-  buyReward: (id: string | number, amount?: number, note?: string) => Promise<void>
+  buyReward: (id: string | number, amount?: number, note?: string, requestId?: string) => Promise<void>
   addReward: (title: string, icon: string, price: number, description?: string, unlockTaskId?: string | null, unlockTaskTitle?: string | null, unlockSourceType?: string | null, unlockSourceId?: string | null, inventoryMode?: string, inventoryLimit?: number | null, unlockRequiredCount?: number, redemptionMode?: string, fulfillmentMode?: 'immediate' | 'fragment', fragmentTargetCount?: number) => Promise<any>
-  updateReward: (id: string | number, title: string, icon: string, price: number, description?: string, unlockTaskId?: string | null, unlockTaskTitle?: string | null, unlockSourceType?: string | null, unlockSourceId?: string | null, inventoryMode?: string, inventoryLimit?: number | null, unlockRequiredCount?: number, redemptionMode?: string, fulfillmentMode?: 'immediate' | 'fragment', fragmentTargetCount?: number) => Promise<any>
+  updateReward: (id: string | number, title: string, icon: string, price: number, description?: string, unlockTaskId?: string | null, unlockTaskTitle?: string | null, unlockSourceType?: string | null, unlockSourceId?: string | null, inventoryMode?: string, inventoryLimit?: number | null, unlockRequiredCount?: number, redemptionMode?: string, fulfillmentMode?: 'immediate' | 'fragment', fragmentTargetCount?: number, convertFragmentToCount?: boolean) => Promise<any>
   deleteReward: (id: string | number) => Promise<void>
   claimRewards: (ids: string[]) => void
   refresh: () => void
@@ -52,13 +52,13 @@ export const useRewards = (): UseRewardsReturn => {
     })
   }, [])
 
-  const buyReward = useCallback(async (id: string | number, amount?: number, note?: string) => {
+  const buyReward = useCallback(async (id: string | number, amount?: number, note?: string, requestId?: string) => {
     const db = await getDatabase()
     const runtime = requireActiveEnvironmentRuntimeConfig(db.getAllConfig(), 'rewards.buy')
     const resp = await fetch(`${runtime.serverUrl}/api/rewards/buy/${id}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${runtime.authToken}`, 'X-Auth-Token': runtime.authToken },
-      body: JSON.stringify(amount === undefined ? {} : { amount, note }),
+      body: JSON.stringify(amount === undefined ? {} : { amount, note, ...(requestId ? { request_id: requestId } : {}) }),
     })
     if (!resp.ok) {
       const body = await resp.json().catch(() => null)
@@ -106,11 +106,16 @@ export const useRewards = (): UseRewardsReturn => {
   const saveReward = useCallback(async (method: 'POST' | 'PUT' | 'DELETE', path: string, body?: Record<string, any>) => {
     const db = await getDatabase()
     const runtime = requireActiveEnvironmentRuntimeConfig(db.getAllConfig(), `rewards.${method.toLowerCase()}`)
-    const response = await fetch(`${runtime.serverUrl}${path}`, {
-      method,
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${runtime.authToken}`, 'X-Auth-Token': runtime.authToken },
-      body: body ? JSON.stringify({ ...body, inventory_mode: body.inventory_mode === 'weekly' ? 'unlimited' : body.inventory_mode }) : undefined,
-    })
+    let response: Response
+    try {
+      response = await fetch(`${runtime.serverUrl}${path}`, {
+        method,
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${runtime.authToken}`, 'X-Auth-Token': runtime.authToken },
+        body: body ? JSON.stringify(body) : undefined,
+      })
+    } catch {
+      throw new Error('无法连接服务器，请检查服务是否启动及网络设置')
+    }
     if (!response.ok) {
       const payload = await response.json().catch(() => null)
       throw new Error(payload?.detail || '奖励保存失败')
@@ -123,7 +128,7 @@ export const useRewards = (): UseRewardsReturn => {
   }, [])
 
   const addReward = useCallback((title: string, icon: string, price: number, description = '', _unlockTaskId: string | null = null, _unlockTaskTitle: string | null = null, _unlockSourceType: string | null = null, _unlockSourceId: string | null = null, inventoryMode = 'unlimited', inventoryLimit: number | null = null, unlockRequiredCount = 1, redemptionMode = 'coins', fulfillmentMode = 'immediate', fragmentTargetCount = 1) => saveReward('POST', '/api/rewards', { title, icon, price, description, inventory_mode: inventoryMode, inventory_limit: inventoryLimit, unlock_required_count: unlockRequiredCount, redemption_mode: redemptionMode, fulfillment_mode: fulfillmentMode, fragment_target_count: fragmentTargetCount }), [saveReward])
-  const updateReward = useCallback((id: string | number, title: string, icon: string, price: number, description = '', _unlockTaskId: string | null = null, _unlockTaskTitle: string | null = null, _unlockSourceType: string | null = null, _unlockSourceId: string | null = null, inventoryMode = 'unlimited', inventoryLimit: number | null = null, unlockRequiredCount = 1, redemptionMode = 'coins', fulfillmentMode = 'immediate', fragmentTargetCount = 1) => saveReward('PUT', `/api/rewards/${id}`, { title, icon, price, description, inventory_mode: inventoryMode, inventory_limit: inventoryLimit, unlock_required_count: unlockRequiredCount, redemption_mode: redemptionMode, fulfillment_mode: fulfillmentMode, fragment_target_count: fragmentTargetCount }), [saveReward])
+  const updateReward = useCallback((id: string | number, title: string, icon: string, price: number, description = '', _unlockTaskId: string | null = null, _unlockTaskTitle: string | null = null, _unlockSourceType: string | null = null, _unlockSourceId: string | null = null, inventoryMode = 'unlimited', inventoryLimit: number | null = null, unlockRequiredCount = 1, redemptionMode = 'coins', fulfillmentMode = 'immediate', fragmentTargetCount = 1, convertFragmentToCount = false) => saveReward('PUT', `/api/rewards/${id}`, { title, icon, price, description, inventory_mode: inventoryMode, inventory_limit: inventoryLimit, unlock_required_count: unlockRequiredCount, redemption_mode: redemptionMode, fulfillment_mode: fulfillmentMode, fragment_target_count: fragmentTargetCount, ...(convertFragmentToCount ? { convert_fragment_to_count: true } : {}) }), [saveReward])
   const deleteReward = useCallback((id: string | number) => saveReward('DELETE', `/api/rewards/${id}`), [saveReward])
 
   const refresh = useCallback(() => setRefreshTrigger(prev => prev + 1), [])

@@ -9,12 +9,13 @@ interface CategoryGridProps {
   categories: Category[]
   currentCategory: Category | null
   timerState: TimerState
+  isPaused?: boolean
   commandsEnabled?: boolean
   onStart: (id: number) => void
   onSwitch?: (id: number) => void
 }
 
-export const CategoryGrid = memo(({ categories, currentCategory, timerState, commandsEnabled = true, onStart, onSwitch }: CategoryGridProps) => {
+export const CategoryGrid = memo(({ categories, currentCategory, timerState, isPaused = false, commandsEnabled = true, onStart, onSwitch }: CategoryGridProps) => {
   const sortedCategories = useMemo(() => [...categories]
     .filter(category => (category as Category & { is_active?: number }).is_active !== 0)
     .sort((a, b) => a.sort_order - b.sort_order), [categories])
@@ -27,7 +28,8 @@ export const CategoryGrid = memo(({ categories, currentCategory, timerState, com
     (categoryId: number) => () => {
       // 休息状态下不响应点击
       if (!commandsEnabled || isBreaking) return
-      if (isTimerCategoryGridBlocked(currentCategory?.id, categoryId, currentCategory?.name, timerState)) return
+      const target = categories.find(category => category.id === categoryId)
+      if (isTimerCategoryGridBlocked(currentCategory?.id, categoryId, currentCategory?.name, timerState, target?.name, isPaused)) return
       
       // 如果点击的是当前分类，不触发任何操作
       if (categoryId === currentCategory?.id) return
@@ -40,18 +42,18 @@ export const CategoryGrid = memo(({ categories, currentCategory, timerState, com
         onStart(categoryId)
       }
     },
-    [commandsEnabled, isBreaking, currentCategory, timerState, onSwitch, onStart]
+    [commandsEnabled, isBreaking, currentCategory, timerState, isPaused, categories, onSwitch, onStart]
   )
   
   return (
-    <div className="grid grid-cols-5 gap-2">
+    <div className="grid grid-cols-5 gap-2 md:min-h-0 md:flex-1 md:content-evenly md:gap-x-1 md:gap-y-0">
       {sortedCategories.length === 0 ? (
         <div className="col-span-full flex min-h-32 items-center justify-center rounded-xl border border-dashed border-gray-200 px-4 text-center text-sm text-gray-400">
           暂无计时分类，请确认初始化示例数据已写入或当前环境已登录同步
         </div>
       ) : null}
       {sortedCategories.map((category) => {
-        const focusBlocked = isTimerCategoryGridBlocked(currentCategory?.id, category.id, currentCategory?.name, timerState)
+        const focusBlocked = isTimerCategoryGridBlocked(currentCategory?.id, category.id, currentCategory?.name, timerState, category.name, isPaused)
         const disabled = !commandsEnabled || isBreaking || focusBlocked
         return (
           <button
@@ -60,7 +62,7 @@ export const CategoryGrid = memo(({ categories, currentCategory, timerState, com
             onClick={handleClick(category.id)}
             disabled={disabled}
             aria-disabled={disabled}
-            className={`flex min-h-20 flex-col items-center justify-center gap-2 rounded-xl border border-transparent text-center text-sm font-semibold text-gray-900 transition-all dark:text-gray-100 ${
+            className={`flex min-h-20 flex-col items-center justify-center gap-2 rounded-xl border border-transparent text-center text-sm font-semibold text-gray-900 transition-all md:min-h-14 md:gap-1 dark:text-gray-100 ${
               disabled
                 ? 'cursor-not-allowed opacity-40 grayscale dark:opacity-35'
                 : 'active:bg-gray-100 dark:active:bg-gray-700 md:hover:bg-gray-50 dark:md:hover:bg-gray-800'

@@ -11,9 +11,17 @@ import com.getcapacitor.BridgeActivity;
 public class MainActivity extends BridgeActivity {
     private SqliteBridge sqliteBridge;
     private WidgetTimerBridge widgetTimerBridge;
+    private DailyWidgetBridge dailyWidgetBridge;
+    private SleepAutomationBridge sleepAutomationBridge;
 
     @Override protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        MorningDiaryReminderReceiver.scheduleInitial(this,System.currentTimeMillis());
+        EveningDiaryReminderReceiver.reconcile(this);
+        DietCheckinReminderReceiver.schedule(this,System.currentTimeMillis());
+        MealDeadlineReceiver.schedule(this,System.currentTimeMillis());
+        MorningMotivationReceiver.schedule(this,System.currentTimeMillis());
+        SleepAutomationAlarmReceiver.reconcile(this,System.currentTimeMillis());
         applySystemBars(getResources().getConfiguration());
         if (bridge == null) return;
         bridge.getWebView().setBackgroundColor(Color.WHITE);
@@ -25,6 +33,14 @@ public class MainActivity extends BridgeActivity {
             new WidgetTimerRuntimeStore(getApplicationContext()));
         WidgetTimerBridge.attach(widgetTimerBridge);
         bridge.getWebView().addJavascriptInterface(widgetTimerBridge, WidgetTimerBridge.JAVASCRIPT_NAME);
+        dailyWidgetBridge = new DailyWidgetBridge(this, script -> bridge.getWebView().post(
+            () -> bridge.getWebView().evaluateJavascript(script, null)));
+        DailyWidgetBridge.attach(dailyWidgetBridge);
+        bridge.getWebView().addJavascriptInterface(dailyWidgetBridge, DailyWidgetBridge.JAVASCRIPT_NAME);
+        sleepAutomationBridge = new SleepAutomationBridge(this);
+        bridge.getWebView().addJavascriptInterface(sleepAutomationBridge, SleepAutomationBridge.JAVASCRIPT_NAME);
+        bridge.getWebView().addJavascriptInterface(new EveningDiaryBridge(this), EveningDiaryBridge.JAVASCRIPT_NAME);
+        bridge.getWebView().addJavascriptInterface(new MorningMotivationBridge(this), MorningMotivationBridge.JAVASCRIPT_NAME);
         dispatchWidgetRoute(getIntent());
     }
 
@@ -34,18 +50,42 @@ public class MainActivity extends BridgeActivity {
         dispatchWidgetRoute(intent);
     }
 
+    @Override public void onResume() {
+        super.onResume();
+        EveningDiaryReminderReceiver.setForeground(true);
+        EveningDiaryReminderReceiver.reconcile(this);
+        DietCheckinReminderReceiver.schedule(this,System.currentTimeMillis());
+        MealDeadlineReceiver.schedule(this,System.currentTimeMillis());
+        MorningMotivationReceiver.schedule(this,System.currentTimeMillis());
+        if (dailyWidgetBridge != null) dailyWidgetBridge.setForeground(true);
+    }
+
+    @Override public void onPause() {
+        EveningDiaryReminderReceiver.setForeground(false);
+        if (dailyWidgetBridge != null) dailyWidgetBridge.setForeground(false);
+        super.onPause();
+    }
+
     private void dispatchWidgetRoute(Intent intent) {
-        if (bridge == null || intent == null || !"timer".equals(intent.getStringExtra("route"))) return;
+        if (bridge == null || intent == null) return;
+        String route = intent.getStringExtra("route");
+        if (!("timer".equals(route) || "checklist".equals(route) || "exercise".equals(route) || "sleep".equals(route))) return;
         boolean focusAi = intent.getBooleanExtra("focus_ai_prompt", false);
+        boolean focusEvening = intent.getBooleanExtra("evening_diary", false);
         bridge.getWebView().post(() -> bridge.getWebView().evaluateJavascript(
-                "window.__mtlPendingNavigation={route:'timer',focusAi:" + focusAi + "};" +
+                "window.__mtlPendingNavigation={route:'" + route + "',focusAi:" + focusAi + ",focusEvening:" + focusEvening + "};" +
                 "window.dispatchEvent(new CustomEvent('mtl:navigate',{detail:window.__mtlPendingNavigation}));", null));
     }
 
     @Override public void onDestroy() {
         if (bridge != null) bridge.getWebView().removeJavascriptInterface(SqliteBridge.JAVASCRIPT_NAME);
         if (bridge != null) bridge.getWebView().removeJavascriptInterface(WidgetTimerBridge.JAVASCRIPT_NAME);
+        if (bridge != null) bridge.getWebView().removeJavascriptInterface(DailyWidgetBridge.JAVASCRIPT_NAME);
+        if (bridge != null) bridge.getWebView().removeJavascriptInterface(SleepAutomationBridge.JAVASCRIPT_NAME);
+        if (bridge != null) bridge.getWebView().removeJavascriptInterface(EveningDiaryBridge.JAVASCRIPT_NAME);
+        if (bridge != null) bridge.getWebView().removeJavascriptInterface(MorningMotivationBridge.JAVASCRIPT_NAME);
         if (widgetTimerBridge != null) widgetTimerBridge.close();
+        if (dailyWidgetBridge != null) dailyWidgetBridge.close();
         if (sqliteBridge != null) sqliteBridge.close();
         super.onDestroy();
     }

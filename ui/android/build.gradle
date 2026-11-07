@@ -3,6 +3,7 @@
 buildscript {
     
     repositories {
+        maven { url 'https://mirrors.cloud.tencent.com/nexus/repository/maven-public/' }
         google()
         mavenCentral()
     }
@@ -19,6 +20,7 @@ apply from: "variables.gradle"
 
 allprojects {
     repositories {
+        maven { url 'https://mirrors.cloud.tencent.com/nexus/repository/maven-public/' }
         google()
         mavenCentral()
     }

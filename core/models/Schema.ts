@@ -76,6 +76,7 @@ export const DDL_STATEMENTS: string[] = [
     is_active INTEGER NOT NULL DEFAULT 0,         -- 是否归档（1归档,0未归档，正常显示）
     difficulty TEXT DEFAULT 'medium',             -- 习惯难度(trivial/easy/medium/hard)
     repeat_rule TEXT DEFAULT NULL,                -- 重复规则(如一周哪几天，RRULE)
+    journal_prompt_enabled INTEGER NOT NULL DEFAULT 1,
     raw_json TEXT,                                -- 滴答清单原始完整JSON数据
     source TEXT NOT NULL DEFAULT 'ticktick',      -- 来源(local/ticktick)
     source_etag TEXT,                             -- 滴答清单 etag 指纹
@@ -102,6 +103,27 @@ export const DDL_STATEMENTS: string[] = [
     pushed_at TEXT,                               -- 服务端同步时间戳
     FOREIGN KEY(habit_id) REFERENCES habits(id)
   )`,
+  `CREATE TABLE IF NOT EXISTS habit_day_ignores (
+    id TEXT PRIMARY KEY,
+    habit_id TEXT NOT NULL,
+    date TEXT NOT NULL,
+    is_ignored INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    pulled_at TEXT,
+    UNIQUE(habit_id, date)
+  )`,
+  `CREATE TABLE IF NOT EXISTS habit_windows (
+    id TEXT PRIMARY KEY,
+    habit_id TEXT NOT NULL,
+    effective_from TEXT NOT NULL,
+    start_minute INTEGER,
+    end_minute INTEGER,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    pulled_at TEXT,
+    UNIQUE(habit_id, effective_from)
+  )`,
 
   // 6. 目标挑战 (🔴 TEXT UUID)
   `CREATE TABLE IF NOT EXISTS goals (
@@ -110,7 +132,9 @@ export const DDL_STATEMENTS: string[] = [
     category_id INTEGER,                          -- 关联分类ID
     metric TEXT NOT NULL,                         -- 指标类型
     target_value REAL NOT NULL,                   -- 目标数值
-    period TEXT NOT NULL,                         -- 目标周期(daily/weekly/monthly)
+    period TEXT NOT NULL,                         -- 目标周期(daily/weekly/monthly/per_session/custom_weekdays)
+    weekdays TEXT,                                 -- 自定义执行星期JSON数组(周一=1..周日=7)
+    weekdays_effective_from TEXT,                 -- 当前排期生效日期(北京时间)
     reward_coins REAL DEFAULT 0,                  -- 达成奖励金币数
     reward_id TEXT DEFAULT NULL,                  -- 关联绑定的奖品ID
     operator TEXT DEFAULT '>=',                   -- 判定符号(>= / <=)
@@ -150,6 +174,7 @@ export const DDL_STATEMENTS: string[] = [
     unlock_threshold_started_at TEXT DEFAULT NULL,
     fulfillment_mode TEXT NOT NULL DEFAULT 'immediate',
     fragment_target_count INTEGER NOT NULL DEFAULT 1,
+    fragment_measure_mode TEXT NOT NULL DEFAULT 'count',
     fragment_rule_version INTEGER NOT NULL DEFAULT 1,
     is_active INTEGER DEFAULT 1,                  -- 是否在架(1在架,0下架)
     created_at TEXT NOT NULL,                     -- 商品创建时间
@@ -165,6 +190,7 @@ export const DDL_STATEMENTS: string[] = [
     source_id TEXT NOT NULL,
     completion_event_key TEXT NOT NULL,
     rule_version INTEGER NOT NULL,
+    fragment_measure_mode TEXT NOT NULL DEFAULT 'count',
     progress_units INTEGER NOT NULL DEFAULT 100,
     consumed_units INTEGER NOT NULL DEFAULT 0,
     issued_at TEXT NOT NULL,
@@ -205,6 +231,7 @@ export const DDL_STATEMENTS: string[] = [
     description TEXT,                             -- 交易流水描述信息
     target_date TEXT,                             -- 归属打卡日期(YYYY-MM-DD)
     occurred_at  TEXT,                            -- 业务实际发生时间（北京时间，可为空）
+    expires_at   TEXT,                            -- 周期商品不可变到期快照
     created_at  TEXT NOT NULL,                    -- 流水生成时间戳
     updated_at  TEXT NOT NULL,                    -- 最后修改时间戳
     pushed_at   TEXT                              -- 服务端同步时间戳
@@ -280,6 +307,7 @@ export const DDL_STATEMENTS: string[] = [
     synced_at TEXT,                               -- 外部来源同步时间
     sync_status TEXT DEFAULT 'success',           -- 外部同步状态
     sync_error TEXT,                              -- 外部同步错误信息
+    image_uploaded_at TEXT,                       -- 首次有效睡眠图片接收时间（北京时间）
     updated_at TEXT,                              -- 最后更新时间戳
     pushed_at TEXT                                -- 服务端同步时间戳
   )`,
@@ -836,7 +864,10 @@ function applyCompatibilityMigrations(db: SqlDB): void {
   }
   runIgnoreError(db, "ALTER TABLE external_rewards ADD COLUMN ext_id TEXT")
   runIgnoreError(db, "ALTER TABLE reward_ledger ADD COLUMN occurred_at TEXT")
+  runIgnoreError(db, "ALTER TABLE reward_ledger ADD COLUMN expires_at TEXT")
   runIgnoreError(db, "ALTER TABLE external_rewards ADD COLUMN updated_at TEXT")
+  runIgnoreError(db, "ALTER TABLE goals ADD COLUMN weekdays TEXT")
+  runIgnoreError(db, "ALTER TABLE goals ADD COLUMN weekdays_effective_from TEXT")
   runIgnoreError(db, "ALTER TABLE rewards ADD COLUMN unlock_source_type TEXT")
   runIgnoreError(db, "ALTER TABLE rewards ADD COLUMN unlock_source_id TEXT")
   runIgnoreError(db, "ALTER TABLE rewards ADD COLUMN inventory_mode TEXT NOT NULL DEFAULT 'unlimited'")
@@ -846,6 +877,7 @@ function applyCompatibilityMigrations(db: SqlDB): void {
   runIgnoreError(db, "ALTER TABLE rewards ADD COLUMN redemption_mode TEXT NOT NULL DEFAULT 'coins'")
   runIgnoreError(db, "ALTER TABLE rewards ADD COLUMN fulfillment_mode TEXT NOT NULL DEFAULT 'immediate'")
   runIgnoreError(db, "ALTER TABLE rewards ADD COLUMN fragment_target_count INTEGER NOT NULL DEFAULT 1")
+  runIgnoreError(db, "ALTER TABLE rewards ADD COLUMN fragment_measure_mode TEXT NOT NULL DEFAULT 'count'")
   runIgnoreError(db, "ALTER TABLE rewards ADD COLUMN fragment_rule_version INTEGER NOT NULL DEFAULT 1")
   runIgnoreError(db, "ALTER TABLE external_rewards ADD COLUMN pushed_at TEXT")
   runIgnoreError(db, "UPDATE external_rewards SET ext_id = id WHERE ext_id IS NULL OR ext_id = ''")
@@ -890,6 +922,7 @@ function applyCompatibilityMigrations(db: SqlDB): void {
   runIgnoreError(db, "ALTER TABLE sleep_score_settlements ADD COLUMN evening_diary_reward_rule_version TEXT")
   runIgnoreError(db, "ALTER TABLE reward_fragments ADD COLUMN progress_units INTEGER")
   runIgnoreError(db, "ALTER TABLE reward_fragments ADD COLUMN consumed_units INTEGER")
+  runIgnoreError(db, "ALTER TABLE reward_fragments ADD COLUMN fragment_measure_mode TEXT NOT NULL DEFAULT 'count'")
   runIgnoreError(db, "ALTER TABLE reward_source_bindings ADD COLUMN drop_mode TEXT")
   runIgnoreError(db, "ALTER TABLE reward_source_bindings ADD COLUMN drop_min_units INTEGER")
   runIgnoreError(db, "ALTER TABLE reward_source_bindings ADD COLUMN drop_max_units INTEGER")
@@ -918,6 +951,19 @@ function applyCompatibilityMigrations(db: SqlDB): void {
   runIgnoreError(db, "ALTER TABLE tasks ADD COLUMN source_modified_time TEXT")
   runIgnoreError(db, "ALTER TABLE tasks ADD COLUMN source TEXT NOT NULL DEFAULT 'ticktick'")
   runIgnoreError(db, "ALTER TABLE habits ADD COLUMN source TEXT NOT NULL DEFAULT 'ticktick'")
+  runIgnoreError(db, "ALTER TABLE habits ADD COLUMN is_active INTEGER NOT NULL DEFAULT 0")
+  runIgnoreError(db, "ALTER TABLE habits ADD COLUMN journal_prompt_enabled INTEGER NOT NULL DEFAULT 1")
+  for (const column of ['archived_at TEXT', 'archive_reason TEXT',
+    'lifecycle_version INTEGER NOT NULL DEFAULT 0', 'restored_version INTEGER NOT NULL DEFAULT 0', 'provider_binding_id TEXT', 'provider_id TEXT']) {
+    runIgnoreError(db, `ALTER TABLE habits ADD COLUMN ${column}`)
+  }
+  db.run("UPDATE habits SET archive_reason='legacy_archived' WHERE is_active=1 AND archive_reason IS NULL")
+  db.run(`CREATE TABLE IF NOT EXISTS habit_tombstones (
+    habit_id TEXT PRIMARY KEY, binding_id TEXT NOT NULL, provider_id TEXT NOT NULL,
+    deleted_at TEXT NOT NULL, evidence TEXT NOT NULL, server_version INTEGER NOT NULL)`)
+  db.run(`CREATE TABLE IF NOT EXISTS habit_lifecycle_outbox_audit (
+    outbox_id INTEGER PRIMARY KEY, habit_id TEXT NOT NULL, payload_json TEXT NOT NULL,
+    reason TEXT NOT NULL, server_version INTEGER NOT NULL, terminated_at TEXT NOT NULL)`)
   runIgnoreError(db, "UPDATE tasks SET source = 'local' WHERE id LIKE 'local_%'")
   runIgnoreError(db, "UPDATE habits SET source = 'local' WHERE id LIKE 'local_%'")
   runIgnoreError(db, "ALTER TABLE huawei_sleep_data ADD COLUMN source TEXT DEFAULT 'screenshot_ocr'")
@@ -932,6 +978,7 @@ function applyCompatibilityMigrations(db: SqlDB): void {
   runIgnoreError(db, "ALTER TABLE huawei_sleep_data ADD COLUMN evening_diary_written_at TEXT")
   runIgnoreError(db, "ALTER TABLE huawei_sleep_data ADD COLUMN full_report_state TEXT")
   runIgnoreError(db, "ALTER TABLE huawei_sleep_data ADD COLUMN tracked_duration_seconds INTEGER")
+  runIgnoreError(db, "ALTER TABLE huawei_sleep_data ADD COLUMN image_uploaded_at TEXT")
   runIgnoreError(db, "ALTER TABLE habits ADD COLUMN raw_json TEXT")
   runIgnoreError(db, "ALTER TABLE habits ADD COLUMN source_etag TEXT")
   runIgnoreError(db, "ALTER TABLE habits ADD COLUMN source_modified_time TEXT")

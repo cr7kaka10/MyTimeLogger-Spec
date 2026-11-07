@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { TaskItem } from '../types'
+import { parseChecklistItems } from '../utils/checklistItems'
 import type { TickTickTaskCommandResult } from '@core/ApiClient'
 import { formatSyncProgress, getCurrentTimerClient, getDatabase, syncChecklistNow, syncNow, pushChecklistOnly } from '../db'
+import { recordBehavior } from '../utils/behaviorAudit'
 import { getElectronApi } from '../platform'
 import { dateToShanghaiDateString, formatTickTickDueDate, normalizeShanghaiDateTime } from '../utils/shanghaiDate'
 import { parseBeijingDateTimeMs } from '@core/BeijingTime'
@@ -10,6 +12,7 @@ export interface UseChecklistReturn {
   tasks: TaskItem[]
   isLoading: boolean
   syncStatus: string
+  syncDetails: string
   unknownTaskRequestId: string | null
   addTask: (title: string, dueDate: string) => Promise<void>
   completeTask: (task: TaskItem) => Promise<void>
@@ -49,9 +52,31 @@ const formatSyncDiagnostics = (result: { merged?: number; diagnostics?: Record<s
   const progress = formatSyncProgress(result as any)
   const withProgress = (message: string) => progress ? `${progress} · ${message}` : message
   const providerRefresh = diagnostics.provider_refresh || {}
+  const lifecycle = diagnostics.habits || providerRefresh.habits || {}
+  if (lifecycle.complete === false) {
+    const stages = [lifecycle.lifecycle_committed ? '习惯状态已提交' : '习惯状态未提交']
+    if (lifecycle.lifecycle_error) stages.push('详情核对失败')
+    const pending = Number(lifecycle.unresolved_missing || 0) + Number(lifecycle.unknown_status || 0)
+    if (pending) stages.push(`${pending}项远端状态待核实`)
+    if (lifecycle.deferred_candidates) stages.push(`${lifecycle.deferred_candidates}项待续查`)
+    if (lifecycle.section_error) stages.push('分组失败，保留原分类')
+    if (lifecycle.checkin_pull_succeeded === false || lifecycle.missing_checkin_blocks) stages.push('打卡未完整返回，保留历史')
+    if (lifecycle.lifecycle_commit_version) stages.push(`v${lifecycle.lifecycle_commit_version}`)
+    if (lifecycle.observed_at) stages.push(`观察于${lifecycle.observed_at}`)
+    const errors = [...(providerRefresh.errors || []), ...(diagnostics.errors || [])].filter(Boolean)
+    if (result.error && !errors.length) errors.push(result.error)
+    return withProgress([...stages, ...errors.map(formatSyncError)].join(' · '))
+  }
   if (providerRefresh.status === 'degraded') {
     const retryAt = String(providerRefresh.retry_at || '').replace('T', ' ').slice(0, 16)
-    return `本地已同步，外部任务源部分更新，稍后重试${retryAt ? ` · 下次 ${retryAt}` : ''}`
+    const lastSuccess = String(providerRefresh.last_success_at || '').replace('T', ' ').slice(0, 16)
+    const published = Number(providerRefresh.tasks?.published_upserts || 0)
+    return `滴答旧快照${lastSuccess ? `（上次完整成功 ${lastSuccess}）` : ''} · 本次已安全更新${published}项 · 稍后重试${retryAt ? ` · 下次 ${retryAt}` : ''}`
+  }
+  if (providerRefresh.fresh === false && providerRefresh.status === 'error') {
+    const lastSuccess = String(providerRefresh.last_success_at || '').replace('T', ' ').slice(0, 16)
+    const stage = providerRefresh.failure_stage ? ` · 失败阶段 ${providerRefresh.failure_stage}` : ''
+    return `滴答旧快照${lastSuccess ? `（上次完整成功 ${lastSuccess}）` : ''}${stage}`
   }
   const providerErrors = Array.isArray(providerRefresh.errors) ? providerRefresh.errors.filter(Boolean) : []
   const errors = Array.isArray(diagnostics.errors) ? diagnostics.errors.filter(Boolean) : []
@@ -66,12 +91,14 @@ const formatSyncDiagnostics = (result: { merged?: number; diagnostics?: Record<s
   const habitsCount = Number(habits.habits ?? habits.active_habits ?? 0)
   const checkins = Number(habits.checkins ?? habits.habit_checkins ?? 0)
   const merged = Number(result.merged ?? 0)
+  const observedAt = String(providerRefresh.provider_observed_at || '').replace('T', ' ').slice(0, 16)
+  const observed = observedAt ? ` · 滴答观察 ${observedAt}` : ''
   const protocol = diagnostics.protocol ? ` · ${diagnostics.protocol}` : ''
   const range = typeof diagnostics.from_version === 'number' || typeof diagnostics.to_version === 'number'
     ? ` · v${diagnostics.from_version ?? '?'}→${diagnostics.to_version ?? '?'}`
     : ''
 
-  return withProgress(`任务 新${activeTasks}/完${completedTasks} · 习惯 ${habitsCount}/打卡${checkins} · 合并${merged}${range}${protocol}`)
+  return withProgress(`任务 新${activeTasks}/完${completedTasks} · 习惯 ${habitsCount}/打卡${checkins} · 合并${merged}${observed}${range}${protocol}`)
 }
 
 const isStaleSyncTime = (value: string | null | undefined, maxAgeMs = 5 * 60 * 1000): boolean => {
@@ -101,9 +128,24 @@ export const useChecklist = (): UseChecklistReturn => {
   const [tasks, setTasks] = useState<TaskItem[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [syncStatus, setSyncStatus] = useState('就绪')
+  const [syncDetails, setSyncDetails] = useState('')
   const [unknownTaskRequestId, setUnknownTaskRequestId] = useState<string | null>(null)
   const [refreshTrigger, setRefreshTrigger] = useState(0)
+  useEffect(() => {
+    let active = true
+    getDatabase().then(db => {
+      const rows = db.allRaw("SELECT table_name,status,COUNT(*) AS count FROM sync_outbox WHERE status IN ('pending','failed','exhausted','terminated') GROUP BY table_name,status ORDER BY table_name,status")
+      const issues = db.getOutboxIssues()
+      if (active) setSyncDetails([`构建 ${import.meta.env.VITE_BUILD_VERSION || '未知'}`, ...rows.map((row: any) => `${row.table_name} · ${row.status} ${row.count}项`), `首个完整错误码：${issues.firstError || '无'}`].join('\n'))
+    }).catch(error => { if (active) setSyncDetails(`诊断读取失败：${String(error)}`) })
+    return () => { active = false }
+  }, [syncStatus])
   const syncSeqRef = useRef(0)
+  const latestProviderRequestIdRef = useRef<string | null>(null)
+  const latestProviderSeqRef = useRef(0)
+  const providerRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const providerRetryAttemptRef = useRef(0)
+  const refreshFromTickTickRef = useRef<(forceRefresh?: boolean) => Promise<void>>(async () => {})
 
   const beginSyncStatus = useCallback((nextStatus?: string): number => {
     const seq = syncSeqRef.current + 1
@@ -137,7 +179,10 @@ export const useChecklist = (): UseChecklistReturn => {
 
       setTasks(raw.map((r: any) => {
         let source: any = {}
-        try { source = JSON.parse(r.raw_json || '{}') } catch { source = {} }
+        try {
+          const parsed = JSON.parse(r.raw_json || '{}')
+          source = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}
+        } catch { source = {} }
         const rewardCfg = db.getItemReward('task', r.ticktick_id || String(r.id), 0.1)
         const dueDate = normalizeShanghaiDateTime(r.due_date || '')
         const dueAt = dueDate ? new Date(dueDate.replace(' ', 'T') + '+08:00') : null
@@ -158,6 +203,7 @@ export const useChecklist = (): UseChecklistReturn => {
           time_zone: source.timeZone || 'Asia/Shanghai',
           is_all_day: Boolean(source.isAllDay),
           repeat_flag: source.repeatFlag || '',
+          items: parseChecklistItems(source.items),
           source: r.source || (String(r.id).startsWith('local_') ? 'local' : 'ticktick'),
         }
       }))
@@ -179,14 +225,17 @@ export const useChecklist = (): UseChecklistReturn => {
   }, [loadLocal, refreshTrigger])
 
   useEffect(() => {
-    const handleSyncPullComplete = () => {
+    window.addEventListener('mtl:daily-widget-task-complete', loadLocal)
+    return () => window.removeEventListener('mtl:daily-widget-task-complete', loadLocal)
+  }, [loadLocal])
+
+  useEffect(() => {
+    const handleSyncPullComplete = (event: Event) => {
+      const detail = (event as CustomEvent<Record<string, any>>).detail || {}
       console.info('[useChecklist] sync-pull-complete: reload local tasks')
       loadLocal()
-      setSyncStatus(prev => {
-        if (prev.startsWith('同步中')) return prev
-        const now = new Date()
-        return `已同步 · 后台更新 · ${now.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Shanghai' })}`
-      })
+      // 该事件只触发本地数据重载；成功/失败必须由带 request_id 的同步结果决定。
+      void detail
     }
 
     window.addEventListener('sync-pull-complete', handleSyncPullComplete)
@@ -197,6 +246,8 @@ export const useChecklist = (): UseChecklistReturn => {
     const seq = beginSyncStatus('同步中...')
     try {
       const result = await syncNow({ reason })
+      const diagnostics: any = result.diagnostics?.provider_refresh || result.diagnostics || {}
+      recordBehavior('checklist.sync.completed', { scope: 'checklist', task_stage: diagnostics.tasks?.status || 'unknown', habit_sync: diagnostics.habits?.status || 'disabled', task_count: diagnostics.tasks?.merged || 0, duration_ms: result.diagnostics?.client_elapsed_ms || 0, result: result.ok ? 'succeeded' : 'failed', error_code: result.error || '' })
       if (!result.ok) {
         setLatestSyncStatus(seq, `同步失败 · ${formatSyncDiagnostics(result)}`)
         return
@@ -325,12 +376,29 @@ export const useChecklist = (): UseChecklistReturn => {
       const shouldRefreshProvider = forceRefresh || isStaleSyncTime(db.getConfig('ticktick_to_server_synced_at'))
       const result = await syncChecklistNow({
         providerRefresh: shouldRefreshProvider,
-        reason: forceRefresh ? 'checklist-refresh' : 'checklist-enter',
+        reason: providerRetryAttemptRef.current > 0 ? 'checklist-auto-retry' : forceRefresh ? 'checklist-refresh' : 'checklist-enter',
       })
-      if (!result.ok) {
-        setLatestSyncStatus(seq, `同步失败 · ${formatSyncDiagnostics(result)}`)
+      const provider = result.diagnostics?.provider_refresh || result.diagnostics || {}
+      if (seq !== syncSeqRef.current || seq < latestProviderSeqRef.current) {
+        console.info('[useChecklist] discard stale provider result', { request_id: provider.request_id, seq, latest: syncSeqRef.current })
         return
       }
+      latestProviderSeqRef.current = seq
+      if (provider.request_id) latestProviderRequestIdRef.current = provider.request_id
+      if (!result.ok) {
+        setLatestSyncStatus(seq, `同步失败 · ${formatSyncDiagnostics(result)}`)
+        if (providerRetryAttemptRef.current < 3) {
+          const attempt = ++providerRetryAttemptRef.current
+          const retryAt = parseBeijingDateTimeMs(provider.retry_at || '')
+          const delay = Number.isFinite(retryAt) ? Math.max(1_000, retryAt - Date.now()) : Math.min(30_000, 1_000 * 2 ** attempt)
+          if (providerRetryTimerRef.current) clearTimeout(providerRetryTimerRef.current)
+          providerRetryTimerRef.current = setTimeout(() => void refreshFromTickTickRef.current(true), delay)
+        }
+        return
+      }
+      providerRetryAttemptRef.current = 0
+      if (providerRetryTimerRef.current) clearTimeout(providerRetryTimerRef.current)
+      providerRetryTimerRef.current = null
       // Electron 使用 better-sqlite3 直连磁盘，此调用保持兼容。
       await getElectronApi()?.reloadDb?.()
       await loadLocal()
@@ -340,6 +408,11 @@ export const useChecklist = (): UseChecklistReturn => {
       setLatestSyncStatus(seq, `同步失败 · ${formatSyncError(e?.message || e)}`)
     }
   }, [beginSyncStatus, formatResultStatus, loadLocal, setLatestSyncStatus])
+
+  refreshFromTickTickRef.current = refreshFromTickTick
+  useEffect(() => () => {
+    if (providerRetryTimerRef.current) clearTimeout(providerRetryTimerRef.current)
+  }, [])
 
   // 独立 Push 按钮：仅推送本地 Outbox 到服务端（服务端自动同步到 TickTick）
   const pushOnlyAction = useCallback(async () => {
@@ -370,9 +443,9 @@ export const useChecklist = (): UseChecklistReturn => {
   }, [beginSyncStatus, setLatestSyncStatus])
 
   return useMemo(() => ({
-    tasks, isLoading, syncStatus, unknownTaskRequestId,
+    tasks, isLoading, syncStatus, syncDetails, unknownTaskRequestId,
     addTask, completeTask, deleteTask, updateTaskTitle, updateTask,
     refreshFromTickTick, updateTaskPriority,
     pushOnly: pushOnlyAction, reconcileUnknownTask,
-  }), [tasks, isLoading, syncStatus, unknownTaskRequestId, addTask, completeTask, deleteTask, updateTaskTitle, updateTask, refreshFromTickTick, updateTaskPriority, pushOnlyAction, reconcileUnknownTask])
+  }), [tasks, isLoading, syncStatus, syncDetails, unknownTaskRequestId, addTask, completeTask, deleteTask, updateTaskTitle, updateTask, refreshFromTickTick, updateTaskPriority, pushOnlyAction, reconcileUnknownTask])
 }

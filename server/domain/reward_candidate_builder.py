@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import json
 import re
+from .habit_frozen_rewards import preserve_frozen_habits
+from .reward_fragment_provenance import RewardFragmentProvenance
+from .exercise_v4_service import optional_body_policy_active
 from datetime import date, datetime, timedelta, timezone
 
 try:
@@ -18,6 +21,8 @@ class RewardCandidateBuilder:
     PROJECTION_TABLES = (
         "server_reward_ledger", "server_user_wallets",
         "server_backpack_events", "server_reward_fragments",
+        "server_reward_fragment_batches", "server_reward_fragment_contributions",
+        "server_reward_fragment_debts",
     )
     REPLAYED_LEDGER_TYPES = frozenset({
         "task_complete", "habit_checkin", "habit_fail", "learning_checkin", "learning_objective_complete",
@@ -53,7 +58,7 @@ class RewardCandidateBuilder:
         })
 
     def _clear(self, conn, user_id, start_date):
-        for table in self.PROJECTION_TABLES:
+        for table in reversed(self.PROJECTION_TABLES):
             conn.execute(f"DELETE FROM {table} WHERE user_id=?", (user_id,))
         conn.execute(
             """INSERT INTO server_system_config(user_id,key,value,updated_at)
@@ -402,6 +407,8 @@ class RewardCandidateBuilder:
         ).fetchall()
         for row in rows:
             target_date = str(row["date"])[:10]
+            if optional_body_policy_active(conn, target_date):
+                continue
             amount = float(row["deadline_penalty_amount"] or 0)
             if amount:
                 source_id = str(row["deadline_penalty_source_id"])
@@ -420,6 +427,8 @@ class RewardCandidateBuilder:
         ).fetchall()
         for row in v4_rows:
             target_date = str(row["date"])[:10]
+            if optional_body_policy_active(conn, target_date):
+                continue
             self.store.reward_wallet_service.append_ledger_in_txn(
                 conn, user_id, float(row["penalty_amount"]), "body_metric_deadline_penalty",
                 f"body-metric-deadline:{target_date}", "体重体脂逾期未填写（09:00）", target_date,
@@ -449,6 +458,8 @@ class RewardCandidateBuilder:
         expected = []
         for row in rows:
             target_date, version, log_id = str(row["date"])[:10], str(row["plan_version"] or ""), str(row["id"])
+            if optional_body_policy_active(conn, target_date):
+                continue
             complete = conn.execute("SELECT 1 FROM server_exercise_daily_logs WHERE user_id=? AND date=? AND weight IS NOT NULL AND body_fat_rate IS NOT NULL", (user_id, target_date)).fetchone()
             items = conn.execute("SELECT item FROM server_exercise_plan_schedule_items WHERE user_id=? AND plan_version=? AND schedule_type=? ORDER BY sort_order", (user_id, version, "rest" if self._day_name(target_date) in {"六", "日"} else "weekday")).fetchall()
             index = next((i for i, item in enumerate(items) if "体重" in str(item["item"] or "") and "体脂" in str(item["item"] or "")), None)
@@ -544,10 +555,22 @@ class RewardCandidateBuilder:
                 )
 
     def build(self, user_id: int, start_date: str) -> dict:
-        with self.store._transact() as conn:
+        with self.store._transact() as conn, preserve_frozen_habits(conn, user_id, start_date) as restore_frozen:
             task_and_habit_events = self._task_and_habit_events(conn, user_id, start_date)
             covered_sources = self._assert_ledger_coverage(conn, user_id, start_date)
+            # 撤销已使用合成卡产生的欠额是权威调整事实，重建投影时不能丢失。
+            fragment_debts = [dict(row) for row in conn.execute(
+                "SELECT * FROM server_reward_fragment_debts WHERE user_id=?", (user_id,),
+            ).fetchall()]
             self._clear(conn, user_id, start_date)
+            for debt in fragment_debts:
+                columns = list(debt)
+                conn.execute(
+                    f"INSERT INTO server_reward_fragment_debts ({','.join(columns)}) "
+                    f"VALUES ({','.join('?' for _ in columns)})",
+                    [debt[column] for column in columns],
+                )
+            restore_frozen()
             expected_facts = self._materialize_historical_body_metric_penalties(conn, user_id, start_date)
             self._replay_task_and_habit(conn, user_id, task_and_habit_events)
             self._replay_learning(conn, user_id, start_date)
@@ -566,6 +589,9 @@ class RewardCandidateBuilder:
         with self.store._transact() as conn:
             self._replay_actions(conn, user_id, start_date)
             self.store.reward_settlement_service.expire_fragments_for_user_in_txn(conn, user_id)
+            RewardFragmentProvenance.migrate_user(
+                conn, user_id, self.store.reward_wallet_service._now(),
+            )
             wallet = self.store.reward_wallet_service.rebuild_wallet_snapshot_in_txn(conn, user_id, self.store.reward_wallet_service._now)
             ledger_total = conn.execute(
                 "SELECT COALESCE(SUM(amount),0) FROM server_reward_ledger WHERE user_id=?", (user_id,),

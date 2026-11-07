@@ -299,6 +299,7 @@ export const ChecklistPage = memo(({
 
                 {/* 右侧动作区 (播放计时联动) */}
                 <div className="flex items-center gap-2">
+                  <button type="button" disabled={isCompleted || Boolean(task.repeat_flag) || !task.project_id} onClick={() => setEditingTask(task)} aria-label={`更新任务：${task.title}`} title={isCompleted ? '已完成任务需在滴答清单中调整' : task.repeat_flag ? '重复任务需在滴答清单中调整' : !task.project_id ? '任务同步信息不完整' : '更新任务'} className="rounded-lg border px-2 py-1 text-xs text-blue-600 disabled:text-gray-400 dark:border-gray-700 dark:text-blue-400">✎</button>
                   {!isCompleted ? (
                     <button
                       type="button"

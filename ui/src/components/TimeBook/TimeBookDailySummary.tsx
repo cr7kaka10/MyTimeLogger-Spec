@@ -1,0 +1,133 @@
+import { useEffect, useRef, useState } from 'react'
+import type { MainTab, SourceRewardType, TaskItem } from '../../types'
+import type { UseTimeBookReturn } from '../../hooks/useTimeBook'
+import { SourceRewardSummary } from '../Rewards/SourceRewardSummary'
+import { isHabitScheduledForDate } from '@core/HabitSchedule'
+import { filterTasksForChecklistDate } from '../../utils/checklistFilter'
+import type { ExercisePlanDefinition } from '@models/ExercisePlanSampleDataInitializer'
+import { planDayForDate } from '../../utils/exerciseDate'
+
+export type DailySummaryStatus = 'pending' | 'in_progress' | 'completed' | 'failed' | 'overdue' | 'plan_only'
+export type DailySummaryTarget = 'morning-diary' | 'evening-diary'
+export type DailySummaryNavigationIntent = { tab: MainTab; date: string; target?: DailySummaryTarget; nonce: number }
+export type DailySummaryLedger = { id: string | number; source_type: string; source_id?: string | number; amount: number; description?: string; occurred_at?: string | null }
+export type DailySummaryGoal = { id: string | number; title: string; period: string; operator: string; current: number; target: number; periodKey?: string; periodEnd?: string; rewardCoins: number; penaltyCoins: number }
+export type DailySummaryHabit = { id: string | number; name: string; icon?: string; repeatRule?: string | null; status: number; source?: string }
+export type DailySummaryItem = { key: string; label: string; status: DailySummaryStatus; tab: MainTab; target?: DailySummaryTarget; consequence: 'penalty' | 'sleep_risk' | 'reward_only'; ruleAmount?: number; actualAmount?: number | null; actualTime?: string; subLabel?: string; rewardSource?: { sourceType: SourceRewardType; sourceId: string }; sourceIds: string[] }
+
+const DIET_RULES = [['no_snacks', '不吃零食'], ['no_sugary_drinks', '不喝含糖饮料'], ['no_refined_staples', '不吃精制主食']] as const
+const DIET_POINTS: Record<string, number> = { no_sugary_drinks: 6, no_refined_staples: 6, no_snacks: 5, breakfast_on_time: 11, lunch_on_time: 11, dinner_on_time: 11 }
+const SLEEP_LEDGER_RULES: Array<[string, string, number | undefined]> = [
+  ['sleep_bedtime_adjustment', '按时入睡', undefined], ['sleep_cycle_penalty', '睡眠周期达标', -50],
+  ['sleep_deep_penalty', '深睡时长达标', undefined], ['sleep_no_sleep_penalty', '存在有效主睡眠', undefined],
+  ['sleep_settlement_reward', '睡眠评分奖励', undefined], ['sleep_completion_reward', '睡眠指标全完成奖励', undefined],
+]
+const timeMs = (value?: string | null) => value ? Date.parse(/[zZ]|[+-]\d\d:\d\d$/.test(value) ? value : `${value.replace(' ', 'T')}+08:00`) : Number.NaN
+const clock = (value?: string | null) => value?.match(/\d{2}:\d{2}/)?.[0]
+const signed = (value: number) => value > 0 ? `+${value}` : String(value)
+const coins = (value: number) => `${signed(value)}🪙`
+const summaryOrder = (item: DailySummaryItem) => item.key === 'sleep-upload' ? 10
+  : item.key === 'sleep-report' ? 20
+    : item.key.startsWith('sleep_') ? 30
+      : item.key === 'morning-diary' ? 40
+        : item.key === 'body-metrics' ? 50
+          : item.key.startsWith('goal-') ? 60
+            : item.key.startsWith('diet-') ? 70
+              : item.key === 'evening-diary' ? 90
+                : item.key.startsWith('habit-') ? 100
+                  : item.key.startsWith('task-') ? 110 : 80
+const sumMatches = (ledger: DailySummaryLedger[], source: string, token?: string) => {
+  const rows = ledger.filter(entry => entry.source_type === source && (!token || String(entry.source_id || '').includes(token) || String(entry.description || '').includes(token)))
+  return { amount: rows.length ? rows.reduce((sum, row) => sum + Number(row.amount || 0), 0) : null, ids: rows.map(row => String(row.id)) }
+}
+
+export function buildDailySummary({ date, diary, planVersion, planDefinition, planReady, exerciseReady = true, summaryReady = true, dietRulesValid, dietCheckins, bodyMetrics, dailyGoals = [], ledger = [], dailyHabits = [], checklistTasks = [], nowMs = Date.now() }: {
+  date: string; diary: UseTimeBookReturn['diary']; planVersion: string; planDefinition?: ExercisePlanDefinition | null; planReady?: boolean; exerciseStatus?: 'loading' | 'ready' | 'error'; exerciseReady?: boolean; summaryReady?: boolean; dietRulesValid?: boolean; dietCheckins: Record<string, any>
+  bodyMetrics?: { weight?: number | null; body_fat_rate?: number | null; updated_at?: string | null }; dailyGoals?: DailySummaryGoal[]; ledger?: DailySummaryLedger[]; dailyHabits?: DailySummaryHabit[]; checklistTasks?: TaskItem[]; nowMs?: number
+}): DailySummaryItem[] {
+  const deadline = Date.parse(`${date}T09:00:00+08:00`)
+  const timedStatus = (actual?: string, explicitFailure = false): DailySummaryStatus => {
+    if (explicitFailure) return 'failed'
+    const actualMs = timeMs(actual)
+    if (Number.isFinite(actualMs)) return actualMs <= deadline ? 'completed' : 'failed'
+    return nowMs >= deadline ? 'overdue' : 'pending'
+  }
+  const bodyActual = sumMatches(ledger, 'body_metric_deadline_penalty')
+  const bodyComplete = bodyMetrics?.weight != null && bodyMetrics?.body_fat_rate != null
+  const items: DailySummaryItem[] = [
+    { key: 'sleep-upload', label: '09:00 前上传睡眠图片', status: timedStatus(diary?.image_uploaded_at), tab: 'sleep', consequence: 'sleep_risk', actualTime: clock(diary?.image_uploaded_at), sourceIds: [] },
+    { key: 'sleep-report', label: '09:00 前完成完整睡眠报告', status: timedStatus(diary?.report_completed_at, diary?.full_report_state === 'insufficient_time_records'), tab: 'sleep', consequence: 'sleep_risk', actualTime: clock(diary?.report_completed_at), sourceIds: [] },
+    { key: 'body-metrics', label: bodyActual.amount != null && bodyActual.amount < 0 ? '体重和体脂率（历史截止处罚）' : '体重和体脂率（自愿记录）', status: bodyActual.amount != null && bodyActual.amount < 0 ? 'failed' : bodyComplete ? 'completed' : 'pending', tab: 'exercise', consequence: bodyActual.amount != null && bodyActual.amount < 0 ? 'penalty' : 'reward_only', actualAmount: bodyActual.amount, sourceIds: bodyActual.ids },
+    { key: 'morning-diary', label: '晨间日记', status: diary?.morning_diary?.trim() ? 'completed' : 'pending', tab: 'sleep', target: 'morning-diary', consequence: 'reward_only', actualAmount: diary?.morning_diary_reward_status ? Number(diary.morning_diary_reward_amount || 0) : null, sourceIds: [] },
+    { key: 'evening-diary', label: '晚间日记', status: diary?.evening_diary?.trim() ? 'completed' : 'pending', tab: 'sleep', target: 'evening-diary', consequence: 'reward_only', actualAmount: diary?.evening_diary_reward_status ? Number(diary.evening_diary_reward_amount || 0) : null, sourceIds: [] },
+  ]
+  if (!summaryReady) items.length = 0
+  else if (!exerciseReady) items.splice(2, 1)
+  const dietMigrated = dailyHabits.some(habit => habit.source === 'system' && String(habit.id).startsWith('diet-v5:'))
+  if (summaryReady) for (const habit of dailyHabits) {
+    if (!isHabitScheduledForDate(habit.repeatRule, date) && !habit.status) continue
+    if (habit.source === 'system' && String(habit.id).startsWith('diet-v5:')) {
+      const rule = String(habit.id).split(':')[1], points = DIET_POINTS[rule] || 0
+      const actual = sumMatches(ledger, 'exercise_diet_penalty', rule)
+      items.push({ key: `habit-${habit.id}`, label: `${habit.icon?.trim() ? `${habit.icon} ` : ''}${habit.name}`, status: habit.status === 2 ? 'completed' : habit.status === 1 ? 'failed' : 'pending', tab: 'checklist', consequence: actual.amount != null && actual.amount < 0 ? 'penalty' : 'reward_only', ruleAmount: ['breakfast_on_time', 'lunch_on_time', 'dinner_on_time'].includes(rule) ? -20 : 0, actualAmount: actual.amount, subLabel: `${habit.status === 2 ? points : 0}/${points}分`, sourceIds: actual.ids })
+      continue
+    }
+    items.push({ key: `habit-${habit.id}`, label: `${habit.icon?.trim() ? `${habit.icon} ` : ''}${habit.name}`, status: habit.status === 2 ? 'completed' : habit.status === 1 ? 'failed' : 'pending', tab: 'checklist', consequence: 'reward_only', rewardSource: { sourceType: 'habit', sourceId: String(habit.id) }, sourceIds: [] })
+  }
+  const dueTasks = filterTasksForChecklistDate(checklistTasks, new Date(`${date}T12:00:00+08:00`))
+  if (summaryReady) for (const task of dueTasks) items.push({ key: `task-${task.id}`, label: `${task.is_overdue && task.status !== 2 ? '【超期】' : ''}${task.title}`, status: task.status === 2 ? 'completed' : task.is_overdue ? 'overdue' : 'pending', tab: 'checklist', consequence: 'reward_only', rewardSource: { sourceType: 'checklist_task', sourceId: task.id }, sourceIds: [] })
+  const dayPlan = planDefinition?.exercisePlan[planDayForDate(date)]
+  const v5RestDay = planVersion === 'v5' && dayPlan && !dayPlan.gym.length && !dayPlan.rain.length
+  const dietRules: ReadonlyArray<readonly [string, string]> = planVersion === 'v4' ? DIET_RULES : planVersion === 'v5' && planReady && !v5RestDay
+    ? (planDefinition?.diet || []).map(rule => [rule.ruleKey || '', rule.time ? `${rule.time} ${rule.content}` : rule.content]) : []
+  if (dietRulesValid && !dietMigrated) for (const [key, label] of dietRules) {
+    const fact = exerciseReady ? dietCheckins[key] : null, value = fact?.status, actual = sumMatches(ledger, 'exercise_diet_penalty', key)
+    items.push({ key: `diet-${key}`, label, status: planVersion === 'v5' && !fact ? 'plan_only' : value === 'completed' ? 'completed' : value === 'failed' || (actual.amount != null && actual.amount < 0) ? 'failed' : 'pending', tab: 'exercise', consequence: planVersion === 'v4' ? 'penalty' : 'reward_only', ruleAmount: planVersion === 'v4' ? -20 : 0, actualAmount: actual.amount, sourceIds: actual.ids })
+  }
+  if (summaryReady) for (const goal of dailyGoals) {
+    const met = goal.operator === '<=' ? goal.current <= goal.target : goal.current >= goal.target
+    const claimId = `goal_${goal.id}_${goal.periodKey || date.replace(/-/g, '')}`
+    const rows = ledger.filter(entry => (entry.source_type === 'goal_reward' || entry.source_type === 'goal_penalty') && String(entry.source_id || '') === claimId)
+    const actualAmount = rows.length ? rows.reduce((sum, entry) => sum + Number(entry.amount || 0), 0) : null
+    const succeeded = actualAmount != null ? actualAmount >= 0 : met
+    const ongoing = ['weekly', 'monthly'].includes(goal.period) && actualAmount == null && nowMs < Date.parse(`${goal.periodEnd || date}T23:59:59+08:00`)
+    const label = goal.period === 'weekly' ? `【周目标】${goal.title}` : goal.period === 'monthly' ? `【月目标】${goal.title}` : goal.period === 'per_session' ? `【单次】${goal.title}` : goal.title
+    items.push({ key: goal.period === 'per_session' ? `goal-${goal.id}-${goal.periodKey || date}` : `goal-${goal.id}`, label,
+      status: actualAmount != null ? succeeded ? 'completed' : 'failed' : ongoing ? 'in_progress' : met ? 'completed' : 'pending',
+      tab: 'timebook', consequence: succeeded ? 'reward_only' : 'penalty', ruleAmount: succeeded ? goal.rewardCoins : -Math.abs(goal.penaltyCoins),
+      actualAmount, subLabel: `进度 ${goal.current}/${goal.target} · ${actualAmount == null ? '未结算' : `实际 ${coins(actualAmount)}`}`, sourceIds: rows.map(row => String(row.id)) })
+  }
+  if (summaryReady) for (const [source, label, ruleAmount] of SLEEP_LEDGER_RULES) {
+    const actual = sumMatches(ledger, source)
+    if (actual.amount == null) continue
+    items.push({ key: source, label, status: actual.amount < 0 ? 'failed' : 'completed', tab: 'sleep', consequence: actual.amount < 0 ? 'penalty' : 'reward_only', ruleAmount, actualAmount: actual.amount, sourceIds: actual.ids })
+  }
+  return items.sort((left, right) => Number(left.status === 'completed' || left.status === 'failed') - Number(right.status === 'completed' || right.status === 'failed') || summaryOrder(left) - summaryOrder(right))
+}
+
+const statusView: Record<DailySummaryStatus, [string, string]> = {
+  pending: ['待完成', 'border-slate-200 bg-white text-slate-600 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300'], completed: ['已完成', 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900 dark:bg-emerald-950/30 dark:text-emerald-300'],
+  in_progress: ['进行中', 'border-blue-200 bg-blue-50 text-blue-700 dark:border-blue-900 dark:bg-blue-950/30 dark:text-blue-300'],
+  failed: ['失败', 'border-red-200 bg-red-50 text-red-700 dark:border-red-900 dark:bg-red-950/30 dark:text-red-300'], overdue: ['已逾期', 'border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-300'],
+  plan_only: ['仅展示计划', 'border-slate-200 bg-slate-50 text-slate-500 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-400'],
+}
+
+export function TimeBookDailySummary(props: Parameters<typeof buildDailySummary>[0] & { onNavigate: (intent: DailySummaryNavigationIntent) => void }) {
+  const nonce = useRef(0), [nowMs, setNowMs] = useState(() => Date.now())
+  useEffect(() => { const timer = window.setInterval(() => setNowMs(Date.now()), 30_000); return () => window.clearInterval(timer) }, [])
+  const items = buildDailySummary({ ...props, nowMs: props.nowMs ?? nowMs })
+  const dayPlan = props.planDefinition?.exercisePlan[planDayForDate(props.date)]
+  const restDay = props.planVersion === 'v5' && dayPlan && !dayPlan.gym.length && !dayPlan.rain.length
+  const unique = new Map((props.ledger || []).map(row => [String(row.id), row]))
+  const rewards = [...unique.values()].reduce((sum, row) => sum + Math.max(0, Number(row.amount || 0)), 0)
+  const penalties = [...unique.values()].reduce((sum, row) => sum + Math.min(0, Number(row.amount || 0)), 0)
+  return <aside aria-label="每日摘要" className="min-w-0 self-start p-2 lg:sticky lg:top-2 lg:max-h-[calc(100vh-7rem)] lg:overflow-y-auto lg:p-3">
+    <h3 className="mb-1 truncate text-xs font-bold text-slate-700 dark:text-slate-200">每日摘要</h3>
+    <p className="mb-2 text-[10px] text-slate-500">{props.summaryReady === false ? '正在读取所选日期摘要…' : `奖励 ${coins(rewards)} · 处罚 ${coins(penalties)} · 净额 ${coins(rewards + penalties)}`}</p>
+    {props.exerciseReady === false && <p className="mb-2 text-[10px] text-slate-500">正在读取运动状态…</p>}
+    {props.diary?.sync_status === 'error' && <p className="mb-2 text-[10px] text-amber-600">睡眠数据同步失败，以下显示本机状态</p>}
+    {props.planVersion === 'v5' && !props.planReady && <p className="mb-2 text-[10px] text-amber-600">{props.exerciseStatus === 'error' ? '第五版饮食计划同步失败，请到运动模块重试' : '第五版饮食计划同步中…'}</p>}
+    {restDay && <p className="mb-2 text-[10px] text-slate-500">今日运动休息 · 饮食约束豁免</p>}
+    <div className="space-y-1.5">{items.map(item => { const [label, tone] = statusView[item.status]; return <button key={item.key} type="button" onClick={() => props.onNavigate({ tab: item.tab, date: props.date, target: item.target, nonce: ++nonce.current })} className={`grid w-full min-w-0 grid-cols-[1fr_auto] items-center gap-2 rounded-lg border px-2 py-2 text-left text-[11px] ${tone}`}><span className="min-w-0"><span className="block break-words leading-4">{item.label}{item.ruleAmount != null ? `（规则 ${coins(item.ruleAmount)}）` : ''}</span>{(item.subLabel || !item.rewardSource) && <span className="block text-[10px] opacity-80">{item.subLabel ?? `实际 ${item.actualAmount == null ? '未结算' : coins(item.actualAmount)}${item.actualTime ? ` · ${item.actualTime}` : ''}`}</span>}{item.rewardSource && <SourceRewardSummary {...item.rewardSource} compact displayOnly compactSummary />}</span><span aria-label={label} className="whitespace-nowrap font-semibold">{label}</span></button> })}</div>
+  </aside>
+}

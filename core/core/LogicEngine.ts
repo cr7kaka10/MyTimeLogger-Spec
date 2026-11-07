@@ -8,6 +8,7 @@
 import { Timer, TimerMode } from './Timer'
 import { LOGIC_SNAPSHOT_VERSION, type LogicSnapshot, validateLogicSnapshot } from './LogicSnapshot'
 import { beijingDayName, formatBeijingDate, formatBeijingDateTime } from './BeijingTime'
+import { canHandoffFocusCategory, focusCategoryPolicy } from './FocusCategoryPolicy'
 
 // ======================== 类型 ========================
 
@@ -38,6 +39,9 @@ export interface SessionSegment {
   startTime: string
   endTime: string
   note: string
+  categoryId?: number | null
+  categoryName?: string
+  focusCycleId?: string
 }
 
 export interface LogicConfig {
@@ -56,7 +60,7 @@ export interface StartOptions {
 export interface CategorySwitchResult {
   ok: boolean
   status: 'started' | 'switched' | 'recovered' | 'failed'
-  errorCode?: 'missing-session-context' | 'commit-failed' | 'target-not-running'
+  errorCode?: 'missing-session-context' | 'commit-failed' | 'target-not-running' | 'focus_group_mismatch' | 'invalid_state'
   record?: SessionRecord | null
 }
 
@@ -143,6 +147,8 @@ export class LogicEngine {
   private _microBreakEndTimer: ReturnType<typeof setTimeout> | null = null
   private _activeTraceId = ''
   private _appliedSleepCommandIds = new Set<string>()
+  private _snapshotRevision = 0
+  private _focusCycleId = ''
 
   constructor(config?: Partial<LogicConfig>) {
     this._config = normalizeConfig(config)
@@ -183,12 +189,14 @@ export class LogicEngine {
   exportSnapshot(): LogicSnapshot {
     const elapsedMs = this._timer.getElapsed()
     const isCountup = this.state === 'countup_studying'
-    const active = this._activeSegmentStart ? [{ key: 'active', startEpochMs: this._activeSegmentStart.getTime(), endEpochMs: null, note: '' }] : []
+    const segmentContext = { categoryId: this.currentCategoryId, categoryName: this.currentCategoryName, focusCycleId: this._focusCycleId }
+    const active = this._activeSegmentStart ? [{ key: 'active', startEpochMs: this._activeSegmentStart.getTime(), endEpochMs: null, note: '', ...segmentContext }] : []
     return {
       version: LOGIC_SNAPSHOT_VERSION, capturedAtEpochMs: Date.now(), state: this.state, isPaused: this.isPaused,
+      revision: this._snapshotRevision, focusCycleId: this._focusCycleId,
       category: { id: this.currentCategoryId, name: this.currentCategoryName, task: this.currentFocusTask },
       pause: { count: this._pauseCount, reasons: [...this._pauseReasons], startedAtEpochMs: this._pauseStart?.getTime() ?? null },
-      segments: [...this._sessionSegments.map(segment => ({ key: segment.localSegmentKey, startEpochMs: new Date(segment.startTime).getTime(), endEpochMs: new Date(segment.endTime).getTime(), note: segment.note })), ...active],
+      segments: [...this._sessionSegments.map(segment => ({ key: segment.localSegmentKey, startEpochMs: new Date(segment.startTime).getTime(), endEpochMs: new Date(segment.endTime).getTime(), note: segment.note, categoryId: segment.categoryId, categoryName: segment.categoryName, focusCycleId: segment.focusCycleId })), ...active],
       session: { startedAtEpochMs: this._sessionStart?.getTime() ?? null, largeStartedAtEpochMs: this._largeSessionStart?.getTime() ?? null, durationSeconds: this._sessionDuration, totalStudySeconds: this.totalStudySeconds, currentCycleStudySeconds: this.currentCycleStudySeconds, netDurationSeconds: this.largeSessionNetDuration },
       timing: { mode: isCountup ? 'countup' : 'countdown', elapsedMs, deadlineEpochMs: !isCountup && !this.isPaused && this._timer.running ? Date.now() + Math.max(0, (this._timer as any)._totalMs - elapsedMs) : null },
     }
@@ -209,10 +217,11 @@ export class LogicEngine {
     this._timer.stop()
     if (!sameStructuredSession) this._clearMicroBreakTimer()
     this.state = snapshot.state; this.isPaused = snapshot.isPaused; this.currentCategoryId = snapshot.category.id; this.currentCategoryName = snapshot.category.name; this.currentFocusTask = snapshot.category.task
+    this._snapshotRevision = snapshot.revision || 0; this._focusCycleId = snapshot.focusCycleId || `legacy:${snapshot.session.largeStartedAtEpochMs || snapshot.capturedAtEpochMs}`
     this._pauseCount = snapshot.pause.count; this._pauseReasons = [...snapshot.pause.reasons]; this._pauseStart = snapshot.pause.startedAtEpochMs ? new Date(snapshot.pause.startedAtEpochMs) : null
     this._sessionStart = snapshot.session.startedAtEpochMs ? new Date(snapshot.session.startedAtEpochMs) : null; this._largeSessionStart = snapshot.session.largeStartedAtEpochMs ? new Date(snapshot.session.largeStartedAtEpochMs) : null
     this._sessionDuration = snapshot.session.durationSeconds; this.totalStudySeconds = snapshot.session.totalStudySeconds; this.currentCycleStudySeconds = snapshot.session.currentCycleStudySeconds; this.largeSessionNetDuration = snapshot.session.netDurationSeconds
-    this._sessionSegments = snapshot.segments.filter(segment => segment.key !== 'active').map(segment => ({ localSegmentKey: segment.key, startTime: new Date(segment.startEpochMs).toISOString(), endTime: new Date(segment.endEpochMs!).toISOString(), note: segment.note })); this._activeSegmentStart = snapshot.segments.find(segment => segment.key === 'active')?.startEpochMs ? new Date(snapshot.segments.find(segment => segment.key === 'active')!.startEpochMs) : null
+    this._sessionSegments = snapshot.segments.filter(segment => segment.key !== 'active').map(segment => ({ localSegmentKey: segment.key, startTime: new Date(segment.startEpochMs).toISOString(), endTime: new Date(segment.endEpochMs!).toISOString(), note: segment.note, categoryId: segment.categoryId ?? snapshot.category.id, categoryName: segment.categoryName || snapshot.category.name, focusCycleId: segment.focusCycleId || this._focusCycleId })); this._activeSegmentStart = snapshot.segments.find(segment => segment.key === 'active')?.startEpochMs ? new Date(snapshot.segments.find(segment => segment.key === 'active')!.startEpochMs) : null
     const elapsedMs = snapshot.timing.elapsedMs + (snapshot.isPaused ? 0 : Math.max(0, Date.now() - snapshot.capturedAtEpochMs)); const totalMs = snapshot.timing.mode === 'countdown' ? Math.max(elapsedMs, snapshot.session.durationSeconds * 1000) : 0
     this._timer.start(totalMs, snapshot.timing.mode, { onTick: (elapsed, remaining) => this._callbacks?.onTick(elapsed, remaining), onFinish: elapsed => { if (this.state === 'studying') this._onTimerFinish(elapsed); else if (this.state === 'long_breaking') this._finishConfiguredLongBreakCycle(elapsed) } }); (this._timer as any)._accumulatedMs = elapsedMs
     if (snapshot.isPaused) this._timer.pause()
@@ -242,7 +251,7 @@ export class LogicEngine {
       this.resetCycle()
     }
 
-    const isCountup = !['输入', '输出'].includes(categoryName)
+    const isCountup = focusCategoryPolicy(categoryName).timerMode === 'countup'
 
     if (this.state === 'stopped' && !isCountup) {
       this._log('structured-session-boundary:before', { targetCategoryId: categoryId, targetCategoryName: categoryName })
@@ -256,6 +265,8 @@ export class LogicEngine {
       this._sessionSegments = []
       this._activeSegmentStart = null
       this._pendingPauseSegmentIndex = null
+      this._snapshotRevision = 1
+      this._focusCycleId = `focus:${Date.now()}:${categoryId}`
       this._log('structured-session-boundary:after', { targetCategoryId: categoryId, targetCategoryName: categoryName, result: 'cleared' })
     }
 
@@ -289,6 +300,23 @@ export class LogicEngine {
     } else {
       this._log('switchCategory:pending-without-immediate-end', { targetCategoryId: categoryId, targetCategoryName: categoryName })
     }
+  }
+
+  handoffWithinFocusGroup(categoryId: number, categoryName: string, taskName = ''): CategorySwitchResult {
+    if (this.state !== 'studying' || this.isPaused) return { ok: false, status: 'failed', errorCode: 'invalid_state' }
+    if (!canHandoffFocusCategory(this.state, this.isPaused, this.currentCategoryName, categoryName)) {
+      return { ok: false, status: 'failed', errorCode: 'focus_group_mismatch' }
+    }
+    const now = new Date()
+    this._finishStructuredSegment(now, '')
+    this.currentCategoryId = categoryId
+    this.currentCategoryName = categoryName.trim()
+    this.currentFocusTask = taskName
+    this._snapshotRevision += 1
+    this._startStructuredSegment(now)
+    this._callbacks?.onStateChange('学习中...', 'studying')
+    this._log('focus.handoff.completed', { targetCategoryId: categoryId, targetCategoryName: categoryName, revision: this._snapshotRevision })
+    return { ok: true, status: 'switched' }
   }
 
   switchCategoryNow(categoryId: number, categoryName: string, taskName = '', summary = '状态切换', traceId = ''): CategorySwitchResult {
@@ -778,7 +806,7 @@ export class LogicEngine {
   }
 
   private _usesStructuredSegments(): boolean {
-    return ['输入', '输出'].includes(this.currentCategoryName)
+    return focusCategoryPolicy(this.currentCategoryName).structured
   }
 
   private _startStructuredSegment(startedAt: Date): void {
@@ -793,6 +821,9 @@ export class LogicEngine {
       startTime: this._formatDt(this._activeSegmentStart),
       endTime: this._formatDt(finishedAt),
       note,
+      categoryId: this.currentCategoryId,
+      categoryName: this.currentCategoryName,
+      focusCycleId: this._focusCycleId,
     }
     this._sessionSegments.push(segment)
     this._activeSegmentStart = null

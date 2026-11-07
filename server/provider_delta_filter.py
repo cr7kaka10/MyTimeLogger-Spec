@@ -80,7 +80,7 @@ def classify_provider_records(
     *,
     include_deleted_candidates: bool = False,
 ) -> ProviderDeltaResult:
-    """Classify provider records using only etag for tasks/habits and opTime for checkins."""
+    """Lifecycle divergence overrides etag; fingerprints optimize unchanged content."""
 
     result = ProviderDeltaResult()
     seen_keys: set[str] = set()
@@ -98,6 +98,9 @@ def classify_provider_records(
             result.new.append(record)
             continue
         if record_type == "task" and local_row.get("deleted_at"):
+            result.changed.append(record)
+            continue
+        if record_type == "habit" and "status" in record and record["status"] != local_row.get("status"):
             result.changed.append(record)
             continue
         if remote_fp == local_fingerprint(local_row, record_type):

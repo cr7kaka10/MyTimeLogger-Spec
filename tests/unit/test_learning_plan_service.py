@@ -57,6 +57,49 @@ def test_learning_commands_update_and_delete_only_current_user(tmp_path):
     conn.close()
 
 
+def test_kr_edit_delete_is_scoped_atomic_and_preserves_checklist(tmp_path):
+    path = tmp_path / "kr-edit-delete.db"
+    conn = sqlite3.connect(path); ensure_server_schema(conn)
+    conn.execute("INSERT INTO users(id,username,password_hash,created_at) VALUES(1,'owner','x','2026-11-06'),(2,'other','x','2026-11-06')")
+    conn.execute("INSERT INTO server_categories(user_id,name,group_name) VALUES(1,'输入','增益')")
+    conn.commit(); conn.close()
+    def connect():
+        db = sqlite3.connect(path); db.row_factory = sqlite3.Row; return db
+    changes, fail_delete = [], [False]
+    def record_change(_conn, _user, table, record_id, operation, _fields):
+        changes.append((table, record_id, operation))
+        if fail_delete[0] and table == "server_learning_krs" and operation == "delete":
+            raise RuntimeError("simulated sync log failure")
+    service = LearningPlanService(connect, record_change)
+    objective = service.command(1, {"action": "create_objective", "title": "博客"})["objective_id"]
+    kr = service.command(1, {"action": "create_kr", "objective_id": objective, "title": "重复"})["kr_id"]
+    task = service.command(1, {"action": "create_task", "kr_id": kr, "title": "写文章", "category_id": 1})["task_id"]
+    conn = connect()
+    conn.execute("INSERT INTO server_tasks(id,user_id,title,updated_at) VALUES('checklist-1',1,'独立清单','2026-11-06')")
+    conn.execute("INSERT INTO server_learning_checklist_links(user_id,learning_task_id,checklist_task_id,created_at) VALUES(1,?, 'checklist-1','2026-11-06')", (task,))
+    conn.commit(); conn.close()
+    assert service.command(1, {"action": "update_kr", "id": kr, "title": "  正确标题  "})["title"] == "正确标题"
+    for user_id, payload in [(1, {"action": "update_kr", "id": kr, "title": " "}), (2, {"action": "update_kr", "id": kr, "title": "越权"}), (2, {"action": "delete_kr", "id": kr})]:
+        with pytest.raises(ManagementPlanError): service.command(user_id, payload)
+    fail_delete[0] = True
+    with pytest.raises(RuntimeError): service.command(1, {"action": "delete_kr", "id": kr})
+    conn = connect()
+    assert conn.execute("SELECT COUNT(*) FROM server_learning_tasks WHERE id=?", (task,)).fetchone()[0] == 1
+    assert conn.execute("SELECT COUNT(*) FROM server_learning_krs WHERE id=?", (kr,)).fetchone()[0] == 1
+    conn.close()
+    fail_delete[0] = False
+    assert service.command(1, {"action": "delete_kr", "id": kr})["deleted_tasks"] == 1
+    conn = connect()
+    for table in ("server_learning_tasks", "server_learning_krs", "server_learning_checklist_links"):
+        assert conn.execute(f"SELECT COUNT(*) FROM {table} WHERE user_id=1").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM server_tasks WHERE id='checklist-1'").fetchone()[0] == 1
+    assert conn.execute("SELECT COUNT(*) FROM server_reward_config WHERE item_type='learning' AND item_id=?", (task,)).fetchone()[0] == 0
+    conn.close()
+    assert ("server_learning_krs", kr, "upsert") in changes
+    assert ("server_learning_tasks", task, "delete") in changes
+    assert ("server_learning_krs", kr, "delete") in changes
+
+
 def test_invalid_learning_category_rolls_back_whole_tree(tmp_path):
     path = tmp_path / "invalid-learning.db"; conn = sqlite3.connect(path); ensure_server_schema(conn)
     conn.execute("INSERT INTO users(username,password_hash,created_at) VALUES('learn','x','2026-08-14')")

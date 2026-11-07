@@ -106,3 +106,37 @@ function playFileCue(type: AudioCue): void {
 export function playAudioCue(type: AudioCue) {
   playFileCue(type)
 }
+
+let mealWheelAudio: AudioContext | null = null
+
+export function prepareMealWheelChime(): void {
+  if (audioFiles.victory === 'none' || typeof AudioContext === 'undefined') return
+  try {
+    mealWheelAudio ??= new AudioContext()
+    if (mealWheelAudio.state === 'suspended') void mealWheelAudio.resume().catch(error => {
+      console.warn('Meal wheel audio unlock failed:', error)
+    })
+  } catch (error) { console.warn('Meal wheel audio unavailable:', error) }
+}
+
+export function playMealWheelChime(): void {
+  const context = mealWheelAudio
+  if (audioFiles.victory === 'none' || !context || context.state !== 'running') return
+  try {
+    for (const [frequency, delay] of [[660, 0], [880, .11]]) {
+      const oscillator = context.createOscillator()
+      const envelope = context.createGain()
+      const start = context.currentTime + delay
+      oscillator.type = 'sine'
+      oscillator.frequency.setValueAtTime(frequency, start)
+      envelope.gain.setValueAtTime(.0001, start)
+      envelope.gain.exponentialRampToValueAtTime(.075, start + .018)
+      envelope.gain.exponentialRampToValueAtTime(.0001, start + .27)
+      oscillator.connect(envelope)
+      envelope.connect(context.destination)
+      oscillator.onended = () => { oscillator.disconnect(); envelope.disconnect() }
+      oscillator.start(start)
+      oscillator.stop(start + .28)
+    }
+  } catch (error) { console.warn('Meal wheel chime failed:', error) }
+}

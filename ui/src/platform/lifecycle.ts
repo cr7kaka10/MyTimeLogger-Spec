@@ -120,3 +120,31 @@ export function installAndroidTimerWidgetLifecycle(
   })
   return () => { if (!closed) { closed = true; unsubscribe() } }
 }
+
+type VisibilityHost = Pick<Document, 'hidden' | 'addEventListener' | 'removeEventListener'>
+type FocusHost = Pick<Window, 'addEventListener' | 'removeEventListener'>
+export function installSleepAutomationStatusLifecycle(
+  lifecycle: LifecycleService,
+  refresh: () => void,
+  visibility: VisibilityHost = document,
+  focus: FocusHost = window,
+  schedule: (callback: () => void) => void = queueMicrotask,
+): () => void {
+  let closed = false; let queued = false
+  const request = () => {
+    if (closed || queued) return
+    queued = true
+    schedule(() => { queued = false; if (!closed) refresh() })
+  }
+  const onVisibility = () => { if (!visibility.hidden) request() }
+  const removeLifecycle = lifecycle.subscribe(event => { if (event === 'foreground') request() })
+  visibility.addEventListener('visibilitychange', onVisibility)
+  focus.addEventListener('focus', request)
+  request()
+  return () => {
+    if (closed) return
+    closed = true; removeLifecycle()
+    visibility.removeEventListener('visibilitychange', onVisibility)
+    focus.removeEventListener('focus', request)
+  }
+}

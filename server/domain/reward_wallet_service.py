@@ -17,6 +17,9 @@
 import json
 import re
 import uuid
+from datetime import datetime, timedelta
+
+from .reward_period import period_end, period_window
 
 try:
     from ..statistics_start_date import is_user_statistics_date_eligible
@@ -150,6 +153,7 @@ class RewardWalletService:
         target_date=None,
         ledger_id=None,
         occurred_at=None,
+        expires_at=None,
     ) -> str:
         """在调用方事务内追加事实流水，并同步更新钱包快照。
 
@@ -165,10 +169,10 @@ class RewardWalletService:
         cur = conn.execute(
             """
             INSERT OR IGNORE INTO server_reward_ledger
-                (id, user_id, amount, source_type, source_id, description, target_date, occurred_at, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (id, user_id, amount, source_type, source_id, description, target_date, occurred_at, expires_at, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (ledger_id, user_id, amount, source_type, source_id, description, target_date, occurred_at, now_ts, now_ts),
+            (ledger_id, user_id, amount, source_type, source_id, description, target_date, occurred_at, expires_at, now_ts, now_ts),
         )
         if cur.rowcount > 0:
             self._update_wallet_in_txn(conn, user_id, amount, ledger_uuid=ledger_id)
@@ -288,6 +292,7 @@ class RewardWalletService:
                 desc,
                 occurred_at.split(" ")[0],
                 occurred_at=occurred_at,
+                expires_at=period_end(occurred_at, str(reward["inventory_mode"] or "unlimited")),
             )
             self.record_action_event_in_txn(
                 conn, user_id, f"action:{ledger_id}", "reward_purchase", -price,
@@ -389,6 +394,7 @@ class RewardWalletService:
                     l.source_id,
                     COALESCE(CAST(r.id AS TEXT), l.source_id) as reward_id,
                     l.created_at,
+                    l.expires_at,
                     COALESCE(r.title, '已下架奖励') AS title,
                     COALESCE(r.icon, '🎁') AS icon,
                     COALESCE(r.description, l.description) AS description,
@@ -417,6 +423,8 @@ class RewardWalletService:
                     "icon": p["icon"],
                     "description": p["description"],
                     "created_at": p["created_at"],
+                    "expires_at": p["expires_at"],
+                    "is_expired": bool(p["expires_at"] and p["expires_at"] <= self._now()),
                     "is_used": bool(p["used_at"]),
                     "used_at": p["used_at"],
                 }
@@ -431,13 +439,15 @@ class RewardWalletService:
         try:
             rows = conn.execute(
                 """
-                SELECT f.reward_id, f.rule_version, SUM(f.progress_units-f.consumed_units) AS active_units,
+                SELECT f.reward_id, MAX(f.rule_version) AS rule_version, SUM(f.progress_units-f.consumed_units) AS active_units,
                        MIN(f.expires_at) AS earliest_expires_at,
-                       r.title, r.icon, r.description, r.inventory_mode, r.inventory_limit
+                       r.title, r.icon, r.description, r.inventory_mode, r.inventory_limit,
+                       r.fragment_target_count,'count' AS fragment_measure_mode
                 FROM server_reward_fragments f
                 JOIN server_rewards r ON r.id=f.reward_id AND r.user_id=f.user_id
-                WHERE f.user_id=? AND f.status='active' AND f.expires_at>?
-                GROUP BY f.reward_id, f.rule_version
+                WHERE f.user_id=? AND f.fragment_measure_mode='count'
+                  AND f.status='active' AND f.expires_at>?
+                GROUP BY f.reward_id
                 ORDER BY earliest_expires_at ASC, f.reward_id ASC
                 """, (user_id, self._now()),
             ).fetchall()
@@ -445,14 +455,17 @@ class RewardWalletService:
             for row in rows:
                 reward_id, mode, limit = str(row["reward_id"]), str(row["inventory_mode"] or "unlimited"), int(row["inventory_limit"] or 0)
                 today, used = self._now()[:10], 0
-                if mode in {"daily", "monthly"} and limit > 0:
-                    clause, value = ("target_date=?", today) if mode == "daily" else ("substr(target_date,1,7)=?", today[:7])
-                    used = int(conn.execute(f"""SELECT COUNT(*) count FROM server_reward_ledger WHERE user_id=? AND source_type='reward_buy'
-                        AND (source_id LIKE ? OR source_id LIKE ?) AND {clause}""", (user_id, f"{reward_id}:%", f"unlock:{reward_id}:%", value)).fetchone()["count"] or 0)
+                if mode in {"daily", "weekly", "monthly"} and limit > 0:
+                    start, end = period_window(today, mode)
+                    used = int(conn.execute("""SELECT COUNT(*) count FROM server_reward_ledger WHERE user_id=? AND source_type='reward_buy'
+                        AND (source_id LIKE ? OR source_id LIKE ?) AND target_date BETWEEN ? AND ?""",
+                        (user_id, f"{reward_id}:%", f"unlock:{reward_id}:%", start, end)).fetchone()["count"] or 0)
                 units = int(row["active_units"] or 0)
-                result.append({"id": f"fragment:{reward_id}:{row['rule_version']}", "reward_id": reward_id,
+                target = int(row["fragment_target_count"] or 1) if row["fragment_measure_mode"] == "count" else 100
+                result.append({"id": f"fragment:{reward_id}", "reward_id": reward_id,
                     "title": row["title"], "icon": row["icon"] or "🧩", "description": row["description"],
-                    "current_count": units, "target_count": 100, "progress_percent": units,
+                    "current_count": units, "target_count": target, "progress_percent": min(100, round(units * 100 / target)),
+                    "measure_mode": row["fragment_measure_mode"],
                     "inventory_used": used, "inventory_limit": limit or None,
                     "inventory_limit_reached": mode != "unlimited" and limit > 0 and used >= limit,
                     "earliest_expires_at": row["earliest_expires_at"], "rule_version": int(row["rule_version"])})
@@ -460,14 +473,45 @@ class RewardWalletService:
         finally:
             conn.close()
 
+    def list_expired_backpack_fragments(self, user_id, days=30, limit=100) -> list[dict]:
+        """返回最近过期碎片；只读追溯，不允许再次合成或使用。"""
+        cutoff = (datetime.fromisoformat(self._now()[:19]) - timedelta(days=max(1, int(days)))).strftime("%Y-%m-%d %H:%M:%S")
+        conn = self._connect()
+        try:
+            rows = conn.execute(
+                """SELECT f.id,f.reward_id,f.rule_version,f.progress_units,f.consumed_units,f.expires_at,
+                          f.fragment_measure_mode,r.fragment_target_count,r.title,r.icon,r.description
+                   FROM server_reward_fragments f
+                   JOIN server_rewards r ON r.id=f.reward_id AND r.user_id=f.user_id
+                   WHERE f.user_id=? AND f.status='expired' AND f.expires_at>=?
+                   ORDER BY f.expires_at DESC,f.id DESC LIMIT ?""",
+                (user_id, cutoff, min(100, max(1, int(limit)))),
+            ).fetchall()
+            return [{"id": f"expired:{row['id']}", "fragment_id": str(row["id"]),
+                "reward_id": str(row["reward_id"]), "title": row["title"], "icon": row["icon"] or "🧩",
+                "description": row["description"], "current_count": max(0, int(row["progress_units"] or 0) - int(row["consumed_units"] or 0)),
+                "target_count": int(row["fragment_target_count"] or 1) if row["fragment_measure_mode"] == "count" else 100,
+                "progress_percent": min(100, round(max(0, int(row["progress_units"] or 0) - int(row["consumed_units"] or 0)) * 100 /
+                    (int(row["fragment_target_count"] or 1) if row["fragment_measure_mode"] == "count" else 100))),
+                "earliest_expires_at": row["expires_at"], "expired_at": row["expires_at"],
+                "rule_version": int(row["rule_version"]), "status": "expired"} for row in rows]
+        finally:
+            conn.close()
+
     def use_backpack_item(self, user_id, ledger_id):
         with self._transact() as conn:
             purchase = conn.execute(
-                "SELECT id, description FROM server_reward_ledger WHERE id=? AND user_id=? AND source_type='reward_buy'",
+                "SELECT id,description,expires_at FROM server_reward_ledger WHERE id=? AND user_id=? AND source_type='reward_buy'",
                 (ledger_id, user_id),
             ).fetchone()
             if not purchase:
                 return False, "未找到该背包物品"
+            if purchase["expires_at"] and purchase["expires_at"] <= self._now():
+                self.record_backpack_event_in_txn(
+                    conn, user_id, ledger_id, "backpack_expired",
+                    event_id=f"backpack:expired:{ledger_id}", occurred_at=self._now(),
+                )
+                return False, "商品已过期"
             used = conn.execute(
                 "SELECT 1 FROM server_reward_ledger WHERE user_id=? AND source_type IN ('backpack_use','backpack_discard') AND source_id=?",
                 (user_id, str(ledger_id)),
@@ -490,6 +534,25 @@ class RewardWalletService:
             )
             self.record_backpack_event_in_txn(conn, user_id, ledger_id, "used")
         return True, "使用成功"
+
+    def expire_backpack_items_in_txn(self, conn, user_id):
+        """为到期且未使用的完整商品补写幂等审计事件。"""
+        now_text = self._now()
+        rows = conn.execute(
+            """SELECT l.id FROM server_reward_ledger l
+               WHERE l.user_id=? AND l.source_type='reward_buy' AND l.expires_at IS NOT NULL AND l.expires_at<=?
+                 AND NOT EXISTS(SELECT 1 FROM server_reward_ledger a WHERE a.user_id=l.user_id
+                     AND a.source_type IN ('backpack_use','backpack_discard') AND a.source_id=l.id)
+                 AND NOT EXISTS(SELECT 1 FROM server_backpack_events e WHERE e.user_id=l.user_id
+                     AND e.ledger_id=l.id AND e.event_type='backpack_expired')""",
+            (user_id, now_text),
+        ).fetchall()
+        for row in rows:
+            self.record_backpack_event_in_txn(
+                conn, user_id, row["id"], "backpack_expired",
+                event_id=f"backpack:expired:{row['id']}", occurred_at=now_text,
+            )
+        return [str(row["id"]) for row in rows]
 
     def discard_backpack_item(self, user_id, ledger_id):
         with self._transact() as conn:

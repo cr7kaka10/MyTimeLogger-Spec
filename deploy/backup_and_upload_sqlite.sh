@@ -34,6 +34,6 @@ test "$integrity" = "ok" || fail integrity_check
 log "stage=integrity result=ok snapshot=$filename"
 rclone copyto "$snapshot" "$S3_DIR/$filename" || fail s3_upload
 log "stage=s3_upload result=ok remote=$S3_DIR/$filename"
-listing="$(rclone lsf --files-only "$S3_DIR")" || fail s3_verify_list
+listing="$(rclone lsf --files-only "$S3_DIR/$filename")" || fail s3_verify_object_lookup
 printf '%s\n' "$listing" | grep -Fx "$filename" >/dev/null || fail s3_verify_object
 log "stage=s3_verify result=ok remote=$S3_DIR/$filename integrity=$integrity"

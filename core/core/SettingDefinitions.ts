@@ -3,6 +3,7 @@ export type SettingScope = 'syncable' | 'device-local'
 const deviceLocalPatterns = [
   /(?:password|token|api_key|refresh_token)$/,
   /^env_(?:development|testing|production)_auth_token$/,
+  /^sleep_automation_consent$/,
 ]
 
 export const getSettingScope = (key: string): SettingScope =>

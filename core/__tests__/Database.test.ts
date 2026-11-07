@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll } from 'vitest'
+import { describe, it, expect, beforeAll, vi } from 'vitest'
 import { createBetterSqliteAdapter } from '../models/BetterSqliteAdapter'
 import { Database } from '../models/Database'
 import { initDatabase as initSchema } from '../models/Schema'
@@ -12,6 +12,25 @@ describe('Database', () => {
   })
 
   const createIsolatedDb = () => new Database(createBetterSqliteAdapter())
+
+  it('午餐截止前打卡保留原始时间与 outbox，截止后不倒填完成', () => {
+    const local = createIsolatedDb()
+    try {
+      vi.useFakeTimers()
+      vi.setSystemTime(new Date('2026-10-28T13:30:00+08:00'))
+      local.toggleExerciseDietCheckin('2026-10-28', 'lunch_on_time', 'completed', 'v5')
+      const row = local.allRaw("SELECT status,occurred_at FROM exercise_diet_checkins WHERE date='2026-10-28' AND rule_key='lunch_on_time'")[0]
+      const queued = local.getPendingOutbox(20).find(item => item.table_name === 'exercise_diet_checkins')
+      expect(row.status).toBe('completed')
+      expect(row.occurred_at).toBe('2026-10-28 13:30:00')
+      expect(JSON.parse(String(queued?.payload_json)).occurred_at).toBe(row.occurred_at)
+      vi.setSystemTime(new Date('2026-10-28T13:31:00+08:00'))
+      local.toggleExerciseDietCheckin('2026-10-28', 'lunch_on_time', 'completed', 'v5')
+      expect(local.allRaw("SELECT occurred_at FROM exercise_diet_checkins WHERE date='2026-10-28' AND rule_key='lunch_on_time'")[0].occurred_at).toBe(row.occurred_at)
+      local.toggleExerciseDietCheckin('2026-10-28', 'breakfast_on_time', 'completed', 'v5')
+      expect(local.allRaw("SELECT id FROM exercise_diet_checkins WHERE date='2026-10-28' AND rule_key='breakfast_on_time'")).toHaveLength(0)
+    } finally { vi.useRealTimers() }
+  })
 
   it('空PC库只初始化一次默认分类且不预填登录凭据', () => {
     const sqlDb = createBetterSqliteAdapter()
@@ -64,6 +83,18 @@ describe('Database', () => {
       name: '晨间拉伸', source: 'local', repeat_rule: 'FREQ=DAILY', is_active: 1,
     })
     expect(local.allRaw('SELECT * FROM habit_checkins WHERE habit_id = ?', [id])).toHaveLength(1)
+  })
+
+  it('习惯日志偏好默认开启且镜像习惯仅推送偏好字段', () => {
+    const local = createIsolatedDb()
+    const localId = local.addHabit('晨间拉伸')
+    expect(local.getRecordById('habits', localId)?.journal_prompt_enabled).toBe(1)
+    local.setHabitJournalPrompt(localId, false)
+    expect(local.getRecordById('habits', localId)?.journal_prompt_enabled).toBe(0)
+    local.runRaw("INSERT INTO habits(id,name,icon,color,sort_order,is_active,difficulty,source,created_at) VALUES('provider-1','签到','✅','#A3BE8C',0,0,'easy','ticktick','2026-10-31')")
+    local.setHabitJournalPrompt('provider-1', false)
+    const entry = local.getPendingOutbox(20).find(item => item.record_id === 'provider-1')
+    expect(JSON.parse(String(entry?.payload_json))).toEqual({ id: 'provider-1', source: 'ticktick', journal_prompt_enabled: 0 })
   })
 
   it('管理方案本地缓存可写入读取但不创建 outbox', () => {
@@ -260,6 +291,16 @@ describe('Database', () => {
     expect(isolated.getDiaryForDate('2026-06-26')?.morning_diary_written_at).toBeUndefined()
   })
 
+  it('日记投影独立返回图片与完整报告事实', () => {
+    const isolated = createIsolatedDb()
+    isolated.saveSleepData('2026-10-03', { source: 'screenshot_ocr', sync_status: 'success', report_status: 2, full_report_state: 'generated' } as any)
+    ;(isolated as any)._run(`INSERT INTO sleep_score_settlements
+      (id,sleep_date,metrics_snapshot,score_breakdown,score_total,reward_amount,cycle_penalty,net_amount,settlement_status,missing_fields,rule_version,occurred_at,created_at,updated_at,report_completed_at)
+      VALUES ('summary','2026-10-03','{}','{}',0,0,0,0,'scored','[]','sleep-score-v2','2026-10-03 08:59:00','2026-10-03 08:59:00','2026-10-03 08:59:00','2026-10-03 08:59:00')`)
+
+    expect(isolated.getDiaryForDate('2026-10-03')).toMatchObject({ source: 'screenshot_ocr', sync_status: 'success', report_status: 2, full_report_state: 'generated', report_completed_at: '2026-10-03 08:59:00' })
+  })
+
   it('日记专用保存只入队本次字段并返回可确认 change_id', () => {
     const isolated = createIsolatedDb()
     isolated.saveSleepData('2026-09-08', { evening_diary: '原晚记' })
@@ -366,6 +407,24 @@ describe('Database', () => {
     expect(isolated.getExercisePlanDefinition('v4').dietRulesValid).toBe(false)
   })
 
+  it('V5 完整包才可激活且同日饮食事实按版本隔离', () => {
+    const isolated = createIsolatedDb(), date = '2099-10-18'
+    isolated.runRaw("INSERT INTO exercise_plan_versions (version,title,is_active,exercise_points,created_at,updated_at) VALUES ('v5','V5',1,75,?,?)", [date, date])
+    expect(isolated.setActiveExercisePlanVersion('v5')).toEqual({ ok: false, error: 'exercise_plan_version_incomplete' })
+    for (let i=0;i<3;i++) isolated.runRaw("INSERT INTO exercise_plan_schedule_items (id,plan_version,schedule_type,sort_order,time,item,created_at,updated_at) VALUES (?, 'v5','weekday',?,'','',?,?)", [`v5-s-${i}`,i,date,date])
+    for (let i=0;i<41;i++) isolated.runRaw("INSERT INTO exercise_plan_items (id,plan_version,day_key,variant,section,sort_order,name,created_at,updated_at) VALUES (?,'v5','周二','gym','力量',?,'动作',?,?)", [`v5-i-${i}`,i,date,date])
+    for (let i=0;i<10;i++) isolated.runRaw("INSERT INTO exercise_plan_progress_items (id,plan_version,sort_order,when_text,text,created_at,updated_at) VALUES (?,'v5',?,'阶段','说明',?,?)", [`v5-p-${i}`,i,date,date])
+    for (const [i,key] of ['protein_at_lunch_and_dinner','vegetables_at_lunch_and_dinner','controlled_staple_and_no_sugary_drink'].entries()) isolated.runRaw("INSERT INTO exercise_plan_diet_rules (id,plan_version,rule_key,sort_order,time,content,created_at,updated_at) VALUES (?,'v5',?,?,'全天','规则',?,?)", [`v5-d-${i}`,key,i,date,date])
+    for (let i=0;i<3;i++) isolated.runRaw("INSERT INTO exercise_plan_category_rules (id,plan_version,sort_order,category,created_at,updated_at) VALUES (?,'v5',?,'分类',?,?)", [`v5-c-${i}`,i,date,date])
+    expect(isolated.setActiveExercisePlanVersion('v5')).toEqual({ ok: true })
+    isolated.toggleExerciseDietCheckin(date, 'protein_at_lunch_and_dinner', 'completed', 'v5')
+    isolated.toggleExerciseDietCheckin(date, 'no_snacks', 'completed', 'v4')
+    expect(isolated.getExerciseDietCheckins(date, 'v5').map(row => row.rule_key)).toEqual(['protein_at_lunch_and_dinner'])
+    expect(isolated.getExerciseDietCheckins(date, 'v4').map(row => row.rule_key)).toEqual(['no_snacks'])
+    isolated.runRaw("DELETE FROM exercise_plan_items WHERE id='v5-i-0'")
+    expect(isolated.setActiveExercisePlanVersion('v5')).toEqual({ ok: false, error: 'exercise_plan_version_incomplete' })
+  })
+
   it('饮食中断事实仅补偿一次且既有服务端 ID 可单条同步', () => {
     const sqlDb = createBetterSqliteAdapter()
     const initial = new Database(sqlDb)
@@ -425,7 +484,7 @@ describe('Database', () => {
     for (let i=1;i<6;i++) isolated.runRaw(`INSERT INTO exercise_plan_category_rules (id,plan_version,sort_order,category,created_at,updated_at) VALUES ('v2-c${i}','v2',${i},'分类${i}',datetime('now','localtime'),datetime('now','localtime'))`)
     expect(isolated.setActiveExercisePlanVersion('v2')).toEqual({ ok: true })
     expect(isolated.getActiveExercisePlanVersion()).toBe('v2')
-    const date = '2026-08-28'
+    const date = '2099-08-28'
     isolated.toggleExerciseCheckin(date, 'item', 1, undefined, '08:00', undefined, undefined, 'v0')
     isolated.toggleExerciseCheckin(date, 'item', 1, undefined, '09:00', undefined, undefined, 'v1')
     isolated.toggleExerciseCheckin(date, 'item', 1, undefined, '10:00', undefined, undefined, 'v2')
@@ -739,6 +798,35 @@ describe('Database', () => {
     expect(isolated.getPendingOutbox(10).find(item => item.id === outbox.id)?.status).toBe('pending')
   })
 
+  it('保留首次编辑基线并在首次失败加三次重试后只读回查', () => {
+    const isolated = createIsolatedDb()
+    isolated.setLastServerVersion(12)
+    const id = isolated.addCategory('基线测试', 'B', '#000', '输入')
+    const first = isolated.getPendingOutbox(10).find(item => item.record_id === String(id))!
+    expect(first.base_version).toBe('12')
+    isolated.setLastServerVersion(13)
+    ;(isolated as any)._enqueueOutbox('categories', id, 'upsert', { id, name: '新内容' }, '2026-10-28 10:00:00')
+    expect(isolated.getPendingOutbox(10).find(item => item.id === first.id)?.base_version).toBe('12')
+    for (let attempt = 1; attempt <= 4; attempt++) isolated.markOutboxFailed([first.id], 'push_failed')
+    const exhausted = isolated.getPendingOutbox(10).find(item => item.id === first.id)!
+    expect(exhausted.retry_count).toBe(4)
+    expect(exhausted.status).toBe('exhausted')
+    isolated.markOutboxSending([first.id])
+    isolated.markOutboxFailed([first.id], 'network_offline')
+    expect(isolated.getPendingOutbox(10).find(item => item.id === first.id)?.retry_count).toBe(4)
+    isolated.resolveOutbox(first.id, 'terminated', 'authority_missing')
+    expect(isolated.getPendingOutbox(10).some(item => item.id === first.id)).toBe(false)
+    expect((isolated as any)._get('SELECT payload_json FROM sync_outbox WHERE id=?', [first.id]).payload_json).toContain('新内容')
+  })
+
+  it('普通同步不把第三方清单队列计作待处理', () => {
+    const isolated = createIsolatedDb()
+    isolated.createOutboxOperation('tasks', 'provider', 'upsert', { id: 'provider', source: 'ticktick' })
+    isolated.createOutboxOperation('tasks', 'local', 'upsert', { id: 'local', source: 'local' })
+    expect(isolated.getPendingOutbox(10, 'core').filter(item => item.table_name === 'tasks').map(item => item.record_id)).toEqual(['local'])
+    expect(isolated.getPendingOutbox(10, 'checklist').filter(item => item.table_name === 'tasks')).toHaveLength(2)
+  })
+
   it('aTimeLogger 同步开关默认关闭', () => {
     expect(db.getConfig('atimelogger_enabled')).toBe('false')
   })
@@ -1042,5 +1130,20 @@ describe('Database', () => {
     expect(row.sleep_date).toBeUndefined()
     expect(row.analysis_html).toBe('<h1>extra</h1>')
     expect(row.extracted_by).toBeUndefined()
+  })
+
+  it('睡眠摘要投影包含首次有效图片上传时间', () => {
+    const isolated = createIsolatedDb()
+    isolated.saveSleepData('2026-10-03', { image_uploaded_at: '2026-10-03 16:29:10', report_status: 1 } as any)
+    expect(isolated.getDiaryForDate('2026-10-03')?.image_uploaded_at).toBe('2026-10-03 16:29:10')
+  })
+
+  it('每日摘要流水只包含当天权威来源并兼容目标业务日期', () => {
+    const isolated = createIsolatedDb()
+    isolated.addLedgerEntry(-50, 'body_metric_deadline_penalty', 'body:2026-10-03', '身体指标', '2026-10-03')
+    isolated.addLedgerEntry(-15, 'goal_penalty', 'goal_g1_20261003', '每日目标', '2026-10-04')
+    isolated.addLedgerEntry(-99, 'reward_buy', 'shop', '无关购物', '2026-10-03')
+    const rows = isolated.getDailySummaryLedger('2026-10-03')
+    expect(rows.map(row => row.source_type).sort()).toEqual(['body_metric_deadline_penalty', 'goal_penalty'])
   })
 })

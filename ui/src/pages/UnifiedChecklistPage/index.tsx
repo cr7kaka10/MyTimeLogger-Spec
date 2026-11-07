@@ -5,17 +5,20 @@ import { WeekCalendar } from './WeekCalendar'
 import { CalendarView } from './CalendarView'
 import { TaskSection } from './TaskSection'
 import { HabitSection } from './HabitSection'
+import { HabitJournalSheet } from './HabitJournalSheet'
 import { useChecklist } from '../../hooks/useChecklist'
 import type { UseHabitsReturn } from '../../hooks/useHabits'
 import type { UseTimeBookReturn } from '../../hooks/useTimeBook'
 import { dateToShanghaiDateString } from '../../utils/shanghaiDate'
 import { syncAfterDateSwitch } from '../../db'
+import { dismissDailyWidgetHabitJournal, pendingDailyWidgetHabitJournals } from '../../platform/dailyWidget'
 
 interface UnifiedChecklistPageProps {
   habits: UseHabitsReturn
   timeBook: UseTimeBookReturn
   timer: any
   onNavigate: (tab: any) => void
+  verifiedUserId?: string | number | null
 }
 
 export const UnifiedChecklistPage = memo(({
@@ -23,9 +26,23 @@ export const UnifiedChecklistPage = memo(({
   timeBook,
   timer,
   onNavigate,
+  verifiedUserId,
 }: UnifiedChecklistPageProps) => {
   // 状态管理：月历展开状态（false=周历，true=月历）
   const [isCalendarExpanded, setIsCalendarExpanded] = useState(false)
+  const [journal, setJournal] = useState<{ habitId: string; name: string; date: string } | null>(null)
+  const pendingHabit = useRef(new Set<string>())
+  const toggleHabit = useCallback(async (habitId: string | number, date?: string, status?: number) => {
+    const key = String(habitId)
+    if (pendingHabit.current.has(key)) return
+    pendingHabit.current.add(key)
+    try {
+      const result = await habits.toggleCheckin(habitId, date, status)
+      if (result.confirmed && result.checkedIn && habits.habits.find(item => String(item.id) === key)?.journal_prompt_enabled !== 0) {
+        setJournal({ habitId: key, name: habits.habits.find(item => String(item.id) === key)?.name || '习惯', date: result.date })
+      }
+    } finally { pendingHabit.current.delete(key) }
+  }, [habits])
   // 使用北京时间初始化 selectedDate
   const [selectedDate, setSelectedDate] = useState(() => {
     const now = new Date()
@@ -50,6 +67,27 @@ export const UnifiedChecklistPage = memo(({
     selectDateWithSync(new Date(year, month - 1, day))
     setIsCalendarExpanded(false)
   }, [selectDateWithSync])
+  useEffect(() => {
+    if (verifiedUserId == null || journal) return
+    const consume = () => {
+      for (const intent of pendingDailyWidgetHabitJournals()) {
+        if (intent.userId !== String(verifiedUserId) || intent.date !== dateToShanghaiDateString(new Date())) {
+          dismissDailyWidgetHabitJournal(intent.commandId); continue
+        }
+        if (habits.selectedDate !== intent.date) { returnToToday(); return }
+        const habit = habits.habits.find(item => String(item.id) === intent.habitId)
+        const checkin = habits.todayCheckins.find(item => String(item.habit_id) === intent.habitId)
+        if (!habit || !checkin) return
+        dismissDailyWidgetHabitJournal(intent.commandId)
+        if (Number(checkin.status) === 2 && habit.journal_prompt_enabled !== 0)
+          setJournal({ habitId: intent.habitId, name: habit.name || '习惯', date: intent.date })
+        return
+      }
+    }
+    window.addEventListener('mtl:daily-widget-habit-journal', consume)
+    consume()
+    return () => window.removeEventListener('mtl:daily-widget-habit-journal', consume)
+  }, [verifiedUserId, journal, habits, returnToToday])
   const syncTone = checklist.syncStatus?.includes('失败')
     ? 'border-red-100 bg-red-50 text-red-600'
     : checklist.syncStatus?.includes('同步中')
@@ -148,6 +186,10 @@ export const UnifiedChecklistPage = memo(({
           >
             {checklist.syncStatus} · {checklist.tasks.length}任务
           </div>
+          <details className="relative shrink-0 text-xs">
+            <summary className="theme-surface flex h-9 cursor-pointer items-center rounded-lg border px-2 text-blue-600 dark:text-blue-400" aria-label="展开同步诊断">详情</summary>
+            <pre className="theme-surface absolute right-0 top-10 z-30 w-72 max-w-[85vw] whitespace-pre-wrap break-all rounded-lg border p-3 text-left text-xs shadow-lg">{checklist.syncStatus}{'\n'}{checklist.syncDetails}</pre>
+          </details>
           {checklist.unknownTaskRequestId && (
             <button
               type="button"
@@ -229,13 +271,16 @@ export const UnifiedChecklistPage = memo(({
       {/* 习惯分组（未完成） */}
       <HabitSection
         habits={habits.habits}
+        dietCatalogHabits={habits.dietCatalogHabits}
+        ignoredHabits={habits.ignoredHabits}
+        onSetIgnored={habits.setHabitIgnored}
         todayCheckins={habits.todayCheckins}
         selectedDate={selectedDate}
         streakMap={habits.streakMap}
         categories={timeBook.categories}
         timer={timer}
         onNavigate={onNavigate}
-        onToggleCheckin={habits.toggleCheckin}
+        onToggleCheckin={toggleHabit}
         onDateChange={habits.setSelectedDate}
         mode="incomplete"
       />
@@ -262,13 +307,15 @@ export const UnifiedChecklistPage = memo(({
           {/* 习惯分组（已完成） */}
           <HabitSection
             habits={habits.habits}
+            ignoredHabits={habits.ignoredHabits}
+            onSetIgnored={habits.setHabitIgnored}
             todayCheckins={habits.todayCheckins}
             selectedDate={selectedDate}
             streakMap={habits.streakMap}
             categories={timeBook.categories}
             timer={timer}
             onNavigate={onNavigate}
-            onToggleCheckin={habits.toggleCheckin}
+            onToggleCheckin={toggleHabit}
             onDateChange={habits.setSelectedDate}
             mode="completed"
           />
@@ -279,6 +326,7 @@ export const UnifiedChecklistPage = memo(({
       <div className="text-center text-xs text-gray-400 mt-2 font-medium">
         {checklist.tasks.length} 条任务 · {habits.habits.length} 个习惯
       </div>
+      {journal && <HabitJournalSheet habitId={journal.habitId} name={journal.name} date={journal.date} onClose={() => setJournal(null)} />}
     </div>
   )
 })

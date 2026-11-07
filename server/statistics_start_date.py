@@ -14,14 +14,19 @@ class StatisticsStartDate:
     utc_start_for_ticktick_completed: str
 
 
-def parse_statistics_start_date(value: object, *, reject_future: bool = False) -> date:
+def maximum_statistics_start_date(*, future_days: int = 1) -> date:
+    return datetime.now(BEIJING_TIMEZONE).date() + timedelta(days=max(0, future_days))
+
+
+def parse_statistics_start_date(value: object, *, reject_future: bool = False, allowed_future_days: int = 0) -> date:
     if not isinstance(value, str) or len(value) != 10:
         raise ValueError("统计起始日期格式必须为 YYYY-MM-DD")
     parsed = date.fromisoformat(value)
     if parsed.isoformat() != value:
         raise ValueError("统计起始日期无效")
-    if reject_future and parsed > datetime.now(BEIJING_TIMEZONE).date():
-        raise ValueError("统计起始日期不能晚于今天")
+    if reject_future and parsed > maximum_statistics_start_date(future_days=allowed_future_days):
+        boundary = "明天" if allowed_future_days == 1 else "今天"
+        raise ValueError(f"统计起始日期不能晚于{boundary}")
     return parsed
 
 

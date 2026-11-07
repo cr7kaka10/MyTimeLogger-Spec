@@ -32,6 +32,40 @@ class HabitDomainService:
                 conn, user_id, "server_habit_checkins", record_id, operation, fields or {"id": str(record_id)}
             )
 
+    def timed_checkin_guard(self, conn, user_id, habit_id, date_str, desired_status, automatic=False):
+        if habit_id.startswith("diet-v5:"):
+            from .diet_habit_migration_service import DietHabitMigrationService
+            from .exercise_v4_service import is_exercise_rest_day
+            if not DietHabitMigrationService.active(conn, user_id, date_str) or is_exercise_rest_day(conn, user_id, "v5", date_str):
+                raise ValueError("timed_habit_inactive_day")
+            if desired_status == 1 and not automatic:
+                raise ValueError("timed_habit_system_manual_failure")
+        window = conn.execute("""SELECT start_minute,end_minute FROM server_habit_windows
+            WHERE user_id=? AND habit_id=? AND effective_from<=? ORDER BY effective_from DESC LIMIT 1""",
+            (user_id, habit_id, date_str)).fetchone()
+        if not window or window["start_minute"] is None:
+            return None
+        if desired_status == 0:
+            raise ValueError("timed_habit_immutable")
+        existing = conn.execute("""SELECT id,status FROM server_habit_checkins
+            WHERE user_id=? AND habit_id=? AND COALESCE(checkin_date,date)=?""",
+            (user_id, habit_id, date_str)).fetchone()
+        if existing:
+            if int(existing["status"] or 0) == desired_status:
+                return existing["id"]
+            raise ValueError("timed_habit_final")
+        if automatic:
+            return None
+        today, clock = self._now().split(" ", 1)
+        if date_str != today:
+            raise ValueError("timed_habit_wrong_day")
+        minute = int(clock[:2]) * 60 + int(clock[3:5])
+        if minute < window["start_minute"]:
+            raise ValueError("timed_habit_before_window")
+        if minute >= window["end_minute"]:
+            raise ValueError("timed_habit_after_window")
+        return None
+
     def checkin_habit(self, user_id, habit_id, date_str) -> bool:
         """习惯打卡。
 
@@ -49,35 +83,73 @@ class HabitDomainService:
         except sqlite3.IntegrityError:
             return False
 
-    def checkin_habit_in_txn(self, conn, user_id, habit_id, date_str) -> str | None:
+    def save_checkin_journal(self, user_id: int, habit_id: str, date_str: str, note: str) -> dict | None:
+        """只修改当前账号本地习惯已确认的打卡日志，不触碰奖励。"""
+        with self._transact() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute("""SELECT c.id,c.note FROM server_habit_checkins c
+                JOIN server_habits h ON h.user_id=c.user_id AND h.id=c.habit_id
+                WHERE c.user_id=? AND c.habit_id=? AND COALESCE(c.checkin_date,c.date)=? AND c.status=2
+                  AND h.source='local' AND h.is_active=0""",
+                (user_id, habit_id, date_str)).fetchone()
+            if not row:
+                return None
+            if (row["note"] or "") != note:
+                conn.execute("UPDATE server_habit_checkins SET note=?,updated_at=? WHERE user_id=? AND id=?",
+                             (note, self._now(), user_id, row["id"]))
+                self._record_change(conn, user_id, row["id"], "upsert")
+            return {"id": row["id"], "habit_id": habit_id, "date": date_str, "note": note}
+
+    def checkin_habit_in_txn(self, conn, user_id, habit_id, date_str, replace_failed=False) -> str | None:
         """在调用方事务内登记服务端确认的打卡和全部派生奖励事实。"""
+        if not self._active_in_txn(conn, user_id, habit_id):
+            return None
+        duplicate = self.timed_checkin_guard(conn, user_id, habit_id, date_str, 2)
+        if duplicate:
+            return duplicate
         habit = conn.execute(
-            "SELECT name, difficulty, icon FROM server_habits WHERE id=? AND user_id=?",
+            "SELECT name, difficulty, icon, source FROM server_habits WHERE id=? AND user_id=?",
             (habit_id, user_id),
         ).fetchone()
         if not habit:
             return None
         now_ts = self._now()
-        checkin_id = uuid.uuid4().hex
+        existing = conn.execute(
+            "SELECT id,status FROM server_habit_checkins WHERE user_id=? AND habit_id=? AND COALESCE(checkin_date,date)=?",
+            (user_id, habit_id, date_str),
+        ).fetchone() if replace_failed else None
+        if existing and int(existing["status"] or 0) == 2:
+            return existing["id"]
+        checkin_id = existing["id"] if existing else uuid.uuid4().hex
         checkin_time = now_ts.split(" ")[1] if " " in now_ts else "12:00:00"
-        conn.execute(
-            """INSERT INTO server_habit_checkins
-               (id,user_id,habit_id,date,checkin_date,checkin_time,status,created_at,updated_at)
-               VALUES (?,?,?,?,?,?,2,?,?)""",
-            (checkin_id, user_id, habit_id, date_str, date_str, checkin_time, now_ts, now_ts),
-        )
-        reward = self._reward_rules.calculate_habit_success(
-            user_id, habit_id, habit["name"], habit["difficulty"] or "easy", date_str, now_ts
-        )
-        self._reward_settlement.reconcile_habit_success_in_txn(
-            conn, user_id, habit_id, reward.title, reward.amount, date_str, now_ts
-        )
-        event_key = self._reward_settlement.completion_event_key("habit", habit_id, date_str)
-        self._reward_settlement.grant_task_unlocks_in_txn(conn, user_id, "habit", habit_id, event_key, habit["name"], date_str)
+        if existing:
+            self._reward_settlement.remove_state_ledgers_in_txn(
+                conn, user_id, habit_id, ("habit_fail", "habit_cancel"), date_str
+            )
+            conn.execute("UPDATE server_habit_checkins SET status=2,checkin_time=?,updated_at=? WHERE id=?",
+                         (checkin_time, now_ts, checkin_id))
+        else:
+            conn.execute(
+                """INSERT INTO server_habit_checkins
+                   (id,user_id,habit_id,date,checkin_date,checkin_time,status,created_at,updated_at)
+                   VALUES (?,?,?,?,?,?,2,?,?)""",
+                (checkin_id, user_id, habit_id, date_str, date_str, checkin_time, now_ts, now_ts),
+            )
+        if habit["source"] != "system":
+            reward = self._reward_rules.calculate_habit_success(
+                user_id, habit_id, habit["name"], habit["difficulty"] or "easy", date_str, now_ts
+            )
+            self._reward_settlement.reconcile_habit_success_in_txn(
+                conn, user_id, habit_id, reward.title, reward.amount, date_str, now_ts
+            )
+            event_key = self._reward_settlement.completion_event_key("habit", habit_id, date_str)
+            self._reward_settlement.grant_task_unlocks_in_txn(conn, user_id, "habit", habit_id, event_key, habit["name"], date_str)
         self._record_change(conn, user_id, checkin_id, "upsert")
         return checkin_id
 
     def can_mark_failed_in_txn(self, conn, user_id, habit_id, date_str) -> bool:
+        if not self._active_in_txn(conn, user_id, habit_id):
+            return False
         habit = conn.execute("SELECT id FROM server_habits WHERE user_id=? AND id=?", (user_id, habit_id)).fetchone()
         if not habit:
             return False
@@ -87,12 +159,15 @@ class HabitDomainService:
         ).fetchone()
         return not checkin or int(checkin["status"] or 0) != 2 or self.can_cancel_checkin_in_txn(conn, user_id, habit_id, date_str)
 
-    def mark_failed_habit_in_txn(self, conn, user_id, habit_id, date_str) -> str | None:
+    def mark_failed_habit_in_txn(self, conn, user_id, habit_id, date_str, automatic=False) -> str | None:
         """记录失败状态，并用既有奖励规则结算失败流水。"""
+        duplicate = self.timed_checkin_guard(conn, user_id, habit_id, date_str, 1, automatic)
+        if duplicate:
+            return duplicate
         if not self.can_mark_failed_in_txn(conn, user_id, habit_id, date_str):
             return None
         habit = conn.execute(
-            "SELECT name,difficulty FROM server_habits WHERE user_id=? AND id=?", (user_id, habit_id)
+            "SELECT name,difficulty,source FROM server_habits WHERE user_id=? AND id=?", (user_id, habit_id)
         ).fetchone()
         if not habit:
             return None
@@ -108,7 +183,7 @@ class HabitDomainService:
         now_ts = self._now()
         checkin_id = existing["id"] if existing else uuid.uuid4().hex
         if existing:
-            conn.execute("UPDATE server_habit_checkins SET status=1,updated_at=? WHERE id=?", (now_ts, checkin_id))
+            conn.execute("UPDATE server_habit_checkins SET status=1,note=NULL,updated_at=? WHERE id=?", (now_ts, checkin_id))
         else:
             conn.execute(
                 """INSERT INTO server_habit_checkins
@@ -116,8 +191,11 @@ class HabitDomainService:
                    VALUES (?,?,?,?,?,?,1,?,?)""",
                 (checkin_id, user_id, habit_id, date_str, date_str, now_ts.split(" ")[1], now_ts, now_ts),
             )
-        reward = self._reward_rules.calculate_habit_fail(user_id, habit_id, habit["name"], habit["difficulty"] or "easy")
-        self._reward_settlement.settle_habit_fail_in_txn(conn, user_id, habit_id, reward.title, reward.amount, date_str)
+        configured = conn.execute("SELECT penalty FROM server_reward_config WHERE user_id=? AND item_type='habit' AND item_id=?",
+                                  (user_id, habit_id)).fetchone() if automatic else None
+        if habit["source"] != "system" and (not automatic or (configured and configured["penalty"] is not None and float(configured["penalty"]) > 0)):
+            reward = self._reward_rules.calculate_habit_fail(user_id, habit_id, habit["name"], habit["difficulty"] or "easy")
+            self._reward_settlement.settle_habit_fail_in_txn(conn, user_id, habit_id, reward.title, reward.amount, date_str)
         self._record_change(conn, user_id, checkin_id, "upsert")
         return checkin_id
 
@@ -137,14 +215,24 @@ class HabitDomainService:
 
     def can_cancel_checkin_in_txn(self, conn, user_id, habit_id, date_str) -> bool:
         """在调用 Provider 前确认目标日期存在可撤销的习惯状态。"""
+        if not self._active_in_txn(conn, user_id, habit_id):
+            return False
         checkin = conn.execute(
             "SELECT id FROM server_habit_checkins WHERE user_id=? AND habit_id=? AND COALESCE(checkin_date,date)=?",
             (user_id, habit_id, date_str),
         ).fetchone()
         return checkin is not None
 
+    @staticmethod
+    def _active_in_txn(conn, user_id, habit_id):
+        if not conn.in_transaction:
+            conn.execute('BEGIN IMMEDIATE')
+        return bool(conn.execute("SELECT 1 FROM server_habits WHERE user_id=? AND id=? AND is_active=0",
+                                 (user_id, habit_id)).fetchone())
+
     def cancel_checkin_habit_in_txn(self, conn, user_id, habit_id, date_str) -> bool:
         """在调用方事务内撤销打卡、金币、自动商品及其使用流水。"""
+        self.timed_checkin_guard(conn, user_id, habit_id, date_str, 0)
         if not self.can_cancel_checkin_in_txn(conn, user_id, habit_id, date_str):
             return False
         checkin = conn.execute(

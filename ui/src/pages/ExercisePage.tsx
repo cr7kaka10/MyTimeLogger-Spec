@@ -6,7 +6,10 @@ import {
 import { useExercise } from '../hooks/useExercise'
 import { beijingDateHour, dateForTab, todayTab, weekOfYear } from '../utils/exerciseDate'
 import { calcScore, formatScore } from '../utils/exerciseScore'
-import { projectV4Score } from '../utils/exerciseV4Score'
+import { currentV5ExerciseScore, isAuthoritativeExercisePlan, projectAuthoritativeScore, projectV5ScoreView } from '../utils/exerciseAuthoritativeScore'
+import { useSyncRefresh } from '../hooks/useEventRefresh'
+import { getDatabase } from '../db'
+import { sortExercisePlanVersions } from '../utils/exercisePlanVersionOrder'
 import { ExercisePanel } from '../components/Exercise/ExercisePanel'
 import { ExerciseHistory } from '../components/Exercise/ExerciseHistory'
 import { requestCapacitorInputFocus } from '../platform/keyboard'
@@ -52,10 +55,19 @@ export const ExercisePage = memo(({ theme, onToggleTheme, onStartFocus }: Props)
   const [showVersions, setShowVersions] = useState(false)
   const [beijingNow, setBeijingNow] = useState(() => beijingDateHour())
   const date = dateForTab(day)
+  const syncRefresh = useSyncRefresh()
+  const [dietMigrated, setDietMigrated] = useState(false)
   const x = useExercise(date)
+  useEffect(() => {
+    if (x.planVersion !== 'v5') { setDietMigrated(false); return }
+    let active = true
+    void getDatabase().then(db => { if (active) setDietMigrated(db.getHabitWindowsForDate(date).has('diet-v5:no_snacks')) })
+    return () => { active = false }
+  }, [date, syncRefresh, x.planVersion])
   const def = x.planDefinition || EMPTY_PLAN_DEFINITION
   const score = useMemo(() => calcScore(day, date, rain, x.checkins, def), [day, date, rain, x.checkins, def])
   const plan = def.exercisePlan[day]
+  const isRestPlanDay = Boolean(plan && plan.gym.length === 0 && plan.rain.length === 0)
   const sched = day === '六' ? def.restSchedule : day === '日' ? [...def.restSchedule, def.sundayExtra] : def.weekdaySchedule
   const total = sched.length + (plan ? plan[rain ? 'rain' : 'gym'].length : 0)
   const done = Object.entries(x.checkins).filter(([k, v]) =>
@@ -66,15 +78,14 @@ export const ExercisePage = memo(({ theme, onToggleTheme, onStartFocus }: Props)
   const isPastDate = date < dateForTab(todayTab())
   const isBeijingToday = date === beijingNow.date
   useEffect(() => { setRain(x.log?.exercise_variant === 'rain') }, [date, x.log?.exercise_variant])
-  const isWeightWindow = isBeijingToday && beijingNow.hour >= 6 && beijingNow.hour < 9
-  const isWeightOverdue = isBeijingToday && beijingNow.hour >= 9
   const bodyDeadlineFact = x.deadlineFacts.find((fact: any) => fact.fact_type === 'body_metrics')
   const isBodyMetricLocked = bodyDeadlineFact?.status === 'failed'
   const canEditWeight = isBeijingToday && !x.locked
   const weightFact = x.deadlineFacts.find((fact: any) => fact.fact_type === 'body_weight')
   const bodyFatFact = x.deadlineFacts.find((fact: any) => fact.fact_type === 'body_fat_rate')
-  const weightScore = x.planVersion === 'v4' ? Number(x.itemScores['body:weight']?.earned_points || 0) : log?.weight == null ? 0 : 5
-  const bodyFatScore = x.planVersion === 'v4' ? Number(x.itemScores['body:body_fat_rate']?.earned_points || 0) : log?.body_fat_rate == null ? 0 : 5
+  const authoritative = isAuthoritativeExercisePlan(x.planVersion)
+  const weightScore = authoritative ? Number(x.itemScores['body:weight']?.earned_points || 0) : log?.weight == null ? 0 : 5
+  const bodyFatScore = authoritative ? Number(x.itemScores['body:body_fat_rate']?.earned_points || 0) : log?.body_fat_rate == null ? 0 : 5
   const metricStatus = (value: unknown, fact: any, scoreValue: number) => value == null ? '尚未保存' : fact?.status === 'failed' ? '已补录，截止后不得分' : scoreValue ? '✓ 已得分' : '已保存，等待服务端确认'
   const savedScore = useMemo(() => {
     if (!log?.score_snapshot) return null
@@ -84,16 +95,23 @@ export const ExercisePage = memo(({ theme, onToggleTheme, onStartFocus }: Props)
       return null
     }
   }, [log?.score_snapshot])
-  const authoritativeV4Score = useMemo(() => {
-    if (x.planVersion !== 'v4' || !x.settlement?.score_snapshot) return null
+  const authoritativeScore = useMemo(() => {
+    if (!authoritative || !x.settlement?.score_snapshot) return null
     try { return typeof x.settlement.score_snapshot === 'string' ? JSON.parse(x.settlement.score_snapshot) : x.settlement.score_snapshot } catch { return null }
-  }, [x.planVersion, x.settlement?.score_snapshot])
-  const displayScore = x.planVersion === 'v4' ? projectV4Score(authoritativeV4Score) : (isPastDate && savedScore ? savedScore : score)
+  }, [authoritative, x.settlement?.score_snapshot])
+  const actualScore = authoritative ? projectAuthoritativeScore(authoritativeScore, x.planVersion as 'v4' | 'v5' | 'v6') : null
+  const v5ScoreView = projectV5ScoreView(authoritativeScore)
+  const hasCurrentV5Score = x.planVersion === 'v5' && v5ScoreView.current && (!dietMigrated || v5ScoreView.planScore.cats['饮食约束'].m === 0)
+  const historicalV5Score = x.planVersion === 'v5' ? v5ScoreView.historicalScore : null
+  const displayScore = x.planVersion === 'v6' && isRestPlanDay ? { total: 0, cats: { 运动训练: { s: 0, m: 0 } }, plan_version: 'v6' }
+    : x.planVersion === 'v5' ? dietMigrated && !hasCurrentV5Score ? currentV5ExerciseScore() : v5ScoreView.planScore : authoritative ? actualScore! : (isPastDate && savedScore ? savedScore : score)
+  const scoreMaximum = dietMigrated && x.planVersion === 'v5' ? 50 : 100
+  const bodyPoints = displayScore.cats['身体记录']?.m === 0 ? 0 : (def as any).bodyPoints
   const displayScoreCategories = useMemo(() => {
     const cats = displayScore.cats || {}
     const ordered = (def.categoryOrder || []).filter(c => cats[c])
-    return [...ordered, ...Object.keys(cats).filter(c => !ordered.includes(c))]
-  }, [def.categoryOrder, displayScore])
+    return [...ordered, ...Object.keys(cats).filter(c => !ordered.includes(c))].filter(c => !dietMigrated || cats[c]?.m > 0)
+  }, [def.categoryOrder, displayScore, dietMigrated])
 
   useEffect(() => {
     setWeight(log?.weight == null ? '' : String(log.weight))
@@ -124,7 +142,7 @@ export const ExercisePage = memo(({ theme, onToggleTheme, onStartFocus }: Props)
       alert('请输入 3-75% 之间的有效体脂率。')
       return
     }
-    x.saveDay(numericWeight, day, done, total, x.planVersion === 'v4' ? undefined : score, rain ? 'rain' : 'gym', numericBodyFat)
+    x.saveDay(numericWeight, day, done, total, authoritative ? undefined : score, rain ? 'rain' : 'gym', numericBodyFat)
   }
 
   return (
@@ -132,7 +150,7 @@ export const ExercisePage = memo(({ theme, onToggleTheme, onStartFocus }: Props)
       <header className="ex-header">
         <div className="ex-header-top">
           <button type="button" className="plan-title" onClick={() => setShowVersions(value => !value)}>
-            每日打卡表
+            {x.planVersion === 'v6' ? '运动计划' : '每日打卡表'}
             <small>{x.planVersion}</small>
           </button>
           <div>{dateLabel[0]}年{Number(dateLabel[1])}月{Number(dateLabel[2])}日</div>
@@ -140,7 +158,7 @@ export const ExercisePage = memo(({ theme, onToggleTheme, onStartFocus }: Props)
         </div>
         {showVersions ? (
           <div className="plan-version-menu">
-            {x.planVersions.map((version: any) => (
+            {sortExercisePlanVersions(x.planVersions).map((version: any) => (
               <button
                 key={version.version}
                 type="button"
@@ -181,49 +199,54 @@ export const ExercisePage = memo(({ theme, onToggleTheme, onStartFocus }: Props)
           <button onClick={() => switchDay(todayTab())}>今</button>
         </div>
       </header>
-      {!x.planDefinition ? (
+      {!x.planReady || x.planDefinition?.version !== x.planVersion || x.loadedDate !== date || (!['v0', 'v5'].includes(x.planVersion) && x.authorityStatus !== 'ready') ? (
         <main>
           <section className="record-card">
-            <label>运动计划加载中</label>
-            <p>正在从数据库读取运动计划定义。</p>
+            <label>{x.authorityStatus === 'error' ? '运动计划同步失败' : '运动计划加载中'}</label>
+            <p>{x.authorityStatus === 'error' ? `无法取得完整的${x.planVersion === 'v6' ? '第六版' : '第五版'}计划，请重试。` : `正在获取${x.planVersion === 'v6' ? '第六版' : '第五版'}计划和所选日期记录。`}</p>
+            {x.authorityStatus === 'error' && <button type="button" onClick={x.retryAuthority}>重试</button>}
           </section>
         </main>
       ) : <main>
+        {x.planVersion === 'v5' && x.authorityStatus === 'error' && <p className="sync-warning">所选日期记录同步失败，当前展示已缓存的第五版计划。<button type="button" onClick={x.retryAuthority}>重试同步</button></p>}
+        {x.planVersion === 'v6' && x.v6EffectiveDate && date < x.v6EffectiveDate && <p className="sync-warning" role="status">已显示第六版完整训练计划。该账号从 {x.v6EffectiveDate} 起按 V6 打卡；当前日期已有第五版记录，V6 仅供查看。</p>}
         <section className="record-card">
-          <label>{x.locked ? '历史评分已固定' : '今日数据记录'}</label>
-          <div className="body-metrics">
+          <label>{x.planVersion === 'v6' ? '运动打卡记录' : x.locked ? '历史评分已固定' : '今日数据记录'}</label>
+          {x.planVersion !== 'v6' && <div id="exercise-body-metrics" className="body-metrics">
             <label className="body-metric"><span>体重</span><span className="body-metric-input"><input
               type="number" inputMode="decimal" min="30" max="200" step=".1" placeholder="体重" value={weight}
-              disabled={!canEditWeight} title="当天全天可录入；北京时间 06:00-09:00 计为按时称重" onPointerDown={event => requestCapacitorInputFocus(event.currentTarget)} onChange={event => setWeight(event.target.value)}
-            /><em>公斤</em></span><span className="body-metric-meta"><span>{weightScore}/5 分</span><span>{metricStatus(log?.weight, weightFact, weightScore)}</span></span></label>
+              disabled={!canEditWeight} title="当天可按实际情况记录体重" onPointerDown={event => requestCapacitorInputFocus(event.currentTarget)} onChange={event => setWeight(event.target.value)}
+            /><em>公斤</em></span><span className="body-metric-meta"><span>{bodyPoints === 0 ? '不计分' : `${weightScore}/5 分`}</span><span>{metricStatus(log?.weight, weightFact, weightScore)}</span></span></label>
             <label className="body-metric"><span>体脂率</span><span className="body-metric-input"><input
               type="number" inputMode="decimal" min="3" max="75" step=".1" placeholder="体脂率" value={bodyFatRate}
               disabled={!canEditWeight} title="请输入 3-75% 之间的体脂率" onPointerDown={event => requestCapacitorInputFocus(event.currentTarget)} onChange={event => setBodyFatRate(event.target.value)}
-            /><em>%</em></span><span className="body-metric-meta"><span>{bodyFatScore}/5 分</span><span>{metricStatus(log?.body_fat_rate, bodyFatFact, bodyFatScore)}</span></span></label>
+            /><em>%</em></span><span className="body-metric-meta"><span>{bodyPoints === 0 ? '不计分' : `${bodyFatScore}/5 分`}</span><span>{metricStatus(log?.body_fat_rate, bodyFatFact, bodyFatScore)}</span></span></label>
             <button disabled={!canEditWeight} onClick={saveWeightAndDay}>保存</button>
-          </div>
-          {!isWeightWindow && isBeijingToday && (isBodyMetricLocked || log?.weight == null) && (
-            <p>{isBodyMetricLocked ? '已超过北京时间 09:00，可补录体重和体脂率；-50 金币处罚不变。' : isWeightOverdue ? '已超过北京时间 09:00，正在等待服务端确认截止结果。' : '当前可记录体重；北京时间 06:00-09:00 计为按时称重。'}</p>
+          </div>}
+          {x.planVersion !== 'v6' && isBeijingToday && (isBodyMetricLocked || log?.weight == null) && (
+            <p>{isBodyMetricLocked ? '历史截止结果已固定，仍可补录体重和体脂率。' : '体重和体脂率可按实际情况自愿记录。'}</p>
           )}
           {x.syncError && <p className="sync-warning">打卡已保存，等待同步：{x.syncError}</p>}
-          {log && <p>✓ {log.weight == null ? '体重未填' : `${log.weight}公斤`} · {log.body_fat_rate == null ? '体脂率未填' : `${log.body_fat_rate}%`} | 打卡{log.completed_items}/{log.total_items}项({Math.round(log.completed_items / (log.total_items || 1) * 100)}%) | {log.date}</p>}
+          {log && <p>{x.planVersion === 'v6' ? `✓ 运动打卡 ${x.settlement?.completed_items ?? log.completed_items}/${x.settlement?.total_items ?? log.total_items}项 · ${log.date}` : `✓ ${log.weight == null ? '体重未填' : `${log.weight}公斤`} · ${log.body_fat_rate == null ? '体脂率未填' : `${log.body_fat_rate}%`} | 打卡${log.completed_items}/${log.total_items}项(${Math.round(log.completed_items / (log.total_items || 1) * 100)}%) | ${log.date}`}</p>}
         </section>
         <section className="score-card">
-          <label>今日评分</label>
+          <label>{x.planVersion === 'v6' ? '第六版 · 纯运动评分' : x.planVersion === 'v5' ? '第五版最新计划 · 评分' : '今日评分'}</label>
+          {x.planVersion === 'v5' && !hasCurrentV5Score && <p>{isRestPlanDay ? '休息日不计分；下方为第五版计划满分。' : '该日未按新版结算；下方为当前计划满分，实得分不计入新版进度条。'}</p>}
+          {historicalV5Score && <p>历史实际结算：{formatScore(historicalV5Score.total)}分（训练 {formatScore(historicalV5Score.cats['运动训练'].s)}/{formatScore(historicalV5Score.cats['运动训练'].m)}，饮食 {formatScore(historicalV5Score.cats['饮食约束'].s)}/{formatScore(historicalV5Score.cats['饮食约束'].m)}，身体 {formatScore(historicalV5Score.cats['身体记录'].s)}/{formatScore(historicalV5Score.cats['身体记录'].m)}）。</p>}
           <div className="score-body">
-            <div className="score-ring" style={{ background: `conic-gradient(${displayScore.total >= 85 ? '#3ab85a' : displayScore.total >= 65 ? '#e8a63a' : displayScore.total >= 45 ? '#e8523a' : '#a3a1b0'} ${displayScore.total * 3.6}deg,var(--border) 0)` }}>
-              <span><b>{formatScore(displayScore.total)}</b><small>/ 100分</small></span>
+            <div className="score-ring" style={{ background: x.planVersion === 'v6' && isRestPlanDay ? 'var(--border)' : `conic-gradient(${displayScore.total / scoreMaximum >= .85 ? '#3ab85a' : displayScore.total / scoreMaximum >= .65 ? '#e8a63a' : displayScore.total / scoreMaximum >= .45 ? '#e8523a' : '#a3a1b0'} ${displayScore.total / scoreMaximum * 360}deg,var(--border) 0)` }}>
+              <span><b>{x.planVersion === 'v6' && isRestPlanDay ? '休息' : x.planVersion === 'v5' && !hasCurrentV5Score ? '—' : formatScore(displayScore.total)}</b><small>{x.planVersion === 'v6' && isRestPlanDay ? '不计分' : `/ ${scoreMaximum}分`}</small></span>
             </div>
             <div className="score-cats">
               {displayScoreCategories.map(c => {
                 const v = displayScore.cats[c]
-                return <div key={c}><span>{c}</span><i><b style={{ width: `${Math.round(v.s / v.m * 100)}%` }} /></i><em>{formatScore(v.s)}/{formatScore(v.m)}</em></div>
+                return <div key={c}><span>{c}</span><i><b style={{ width: `${v.m ? Math.round(v.s / v.m * 100) : 0}%` }} /></i><em>{x.planVersion === 'v5' && !hasCurrentV5Score ? '—' : formatScore(v.s)}/{formatScore(v.m)}</em></div>
               })}
             </div>
           </div>
         </section>
-        <ExercisePanel day={day} date={date} rain={rain} setRain={next => { setRain(next); void x.setVariant(next ? 'rain' : 'gym') }} states={x.checkins} setState={x.setState} dietCheckins={x.dietCheckins} setDietState={x.setDietState} planVersion={x.planVersion} planDefinition={def} locked={x.locked} />
-        <ExerciseHistory rows={x.history} />
+        <ExercisePanel day={day} date={date} rain={rain} setRain={next => { setRain(next); void x.setVariant(next ? 'rain' : 'gym') }} states={x.checkins} setState={x.setState} dietCheckins={x.dietCheckins} setDietState={x.setDietState} planVersion={x.planVersion} planDefinition={def} locked={x.locked} dietMigrated={dietMigrated} />
+        <ExerciseHistory rows={x.history} exerciseOnly={x.planVersion === 'v6'} />
       </main>}
     </div>
   )

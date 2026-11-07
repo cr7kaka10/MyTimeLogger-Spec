@@ -11,11 +11,13 @@ import { SessionSummarySheet } from './SessionSummarySheet'
 import { StatusSwitchNoteSheet } from './StatusSwitchNoteSheet'
 import { TimerStats } from './TimerStats'
 import { TimerAiPrompt } from './TimerAiPrompt'
+import { DiaryQuickEntries, type DiaryType, type HomeDiary } from './DiaryQuickEntries'
 import { scheduleTimerInputFocus } from './summaryInputFocus'
 import { createTimerInputTrace, observeEventLoopLag, type TimerInputTrace } from './timerInputTelemetry'
 import { TIMER_NOTE_PRESETS } from './notePresets'
 
 interface TimerPageProps extends UseTimerReturn {
+  homeSlogan: string
   onNavigate: (tab: MainTab) => void
   onOpenLedger: () => void
   theme?: 'light' | 'dark'
@@ -23,8 +25,12 @@ interface TimerPageProps extends UseTimerReturn {
   onOpenSettings?: () => void
   runtime: ManagementPlanRuntime
   onRecordFlashCard: (text: string) => Promise<string | undefined>
+  diary: HomeDiary | null
+  onSaveDiary: (type: DiaryType, value: string) => void
+  onOpenLockedDiary: () => void
   focusAiRequest?: number
   onFocusAiHandled?: () => void
+  openEveningDiaryRequest?: number
 }
 
 export const TimerPage = memo((props: TimerPageProps) => {
@@ -32,6 +38,7 @@ export const TimerPage = memo((props: TimerPageProps) => {
     state,
     isPaused,
     totalTodayMinutes,
+    homeSlogan,
     elapsedMs,
     remainingMs,
     microBreakRemainingSeconds,
@@ -63,8 +70,12 @@ export const TimerPage = memo((props: TimerPageProps) => {
     onToggleTheme,
     runtime,
     onRecordFlashCard,
+    diary,
+    onSaveDiary,
+    onOpenLockedDiary,
     focusAiRequest,
     onFocusAiHandled,
+    openEveningDiaryRequest,
   } = props
   const [editingNote, setEditingNote] = useState(false)
   const [noteDraft, setNoteDraft] = useState('')
@@ -111,8 +122,8 @@ export const TimerPage = memo((props: TimerPageProps) => {
     : ''
 
   return (
-    <div className="flex min-h-full flex-col gap-4 bg-[#FAFAFA] p-5 pb-[calc(5rem+env(safe-area-inset-bottom,0px))]">
-      <TimerStats totalTodayMinutes={totalTodayMinutes} />
+    <div className="flex h-full min-h-0 flex-col gap-3 overflow-x-hidden overflow-y-auto bg-[#FAFAFA] p-5 md:gap-2 md:px-5 md:pt-2 md:pb-4">
+      <TimerStats totalTodayMinutes={totalTodayMinutes} compactSyncText={compactSyncText} homeSlogan={homeSlogan} />
       {!commandsEnabled ? (
         <div id="timer-readiness-status" className="rounded-xl bg-slate-100 px-3 py-2 text-sm text-slate-700" aria-live="polite">
           {timerSyncStatus === 'switching' ? '正在切换…' :
@@ -125,12 +136,7 @@ export const TimerPage = memo((props: TimerPageProps) => {
             '计时服务暂不可用，请检查账号和服务端配置'}
         </div>
       ) : null}
-      {compactSyncText ? (
-        <div data-testid="compact-sync-status" className="px-1 text-xs leading-5 text-slate-500 [overflow-wrap:anywhere]" aria-live="polite">
-          {compactSyncText}
-        </div>
-      ) : null}
-      <div className="flex min-w-0 flex-col gap-4">
+      <div className="flex min-w-0 shrink-0 flex-col gap-3 md:min-h-0 md:flex-1 md:gap-1">
         {/* 计时状态显示顶部状态栏 - 只有在有活跃分类时才显示 */}
         {state !== 'stopped' && currentCategory && (
           <>
@@ -155,18 +161,22 @@ export const TimerPage = memo((props: TimerPageProps) => {
           categories={categories}
           currentCategory={currentCategory}
           timerState={state}
+          isPaused={isPaused}
           commandsEnabled={commandsEnabled}
           onStart={start}
           onSwitch={switchCategory}
         />
       </div>
-      <div className="shrink-0 pt-2">
+      <div className="shrink-0 pt-2 md:pt-0">
         <TimerAiPrompt
           available={Boolean(runtime.serverUrl && runtime.authToken)}
           focusRequest={focusAiRequest}
           onFocusHandled={onFocusAiHandled}
           onSubmit={onRecordFlashCard}
         />
+      </div>
+      <div data-testid="timer-diary-slot" className="flex min-h-0 flex-1 items-center md:flex-none md:pt-1">
+        <DiaryQuickEntries diary={diary} onSave={onSaveDiary} onLockedClick={onOpenLockedDiary} openEveningRequest={openEveningDiaryRequest} />
       </div>
       {showPauseReason ? (
         <PauseReasonSheet onConfirm={submitPauseReason} onSkip={skipPauseReason} />

@@ -41,6 +41,7 @@ class TickTickClient:
         verify_tls: bool | None = None,
         timeout_seconds: float | None = None,
         request_id: str | None = None,
+        proxy_url: str | None = None,
     ):
         self.base_url = f"https://api.{host}/open/v1"
         self.headers = {
@@ -52,6 +53,8 @@ class TickTickClient:
             verify_tls = raw not in ("0", "false", "no", "off")
         self.verify_tls = verify_tls
         self.request_id = request_id
+        self.proxy_url = proxy_url or None
+        self.transport_mode = "explicit_proxy" if self.proxy_url else "direct"
         self.last_get_attempts = 0
         self.get_request_attempts = 0
         self._get_attempt_limit = 2
@@ -62,9 +65,15 @@ class TickTickClient:
     async def __aenter__(self):
         # 调用链路：SyncHub -> TickTickClient -> httpx.AsyncClient -> TickTick/Dida365 OpenAPI。
         # TLS/timeout 边界：生产默认校验证书；配置由 ticktick_config.py 集中读取后注入。
-        self._client = httpx.AsyncClient(
-            headers=self.headers, timeout=self.timeout_seconds, verify=self.verify_tls
-        )
+        options = {
+            "headers": self.headers,
+            "timeout": self.timeout_seconds,
+            "verify": self.verify_tls,
+            "trust_env": False,
+        }
+        if self.proxy_url:
+            options["proxy"] = self.proxy_url
+        self._client = httpx.AsyncClient(**options)
         return self
 
     async def __aexit__(self, *args):
@@ -300,6 +309,28 @@ class TickTickClient:
 
     async def get_habits(self) -> list[dict]:
         return await self._get("/habit")
+
+    async def get_habit_detail(self, habit_id: str) -> dict:
+        """Read evidence only: a 404 is NOT a confirmed deletion."""
+        from urllib.parse import quote
+
+        if not isinstance(habit_id, str) or not habit_id.strip() or habit_id in (".", ".."):
+            raise ValueError("habit_detail_invalid_id")
+        try:
+            record = await self._get(
+                f"/habit/{quote(habit_id, safe='')}",
+                endpoint_template="/habit/{habit_id}",
+            )
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code != 404:
+                raise
+            return {"state": "unresolved_missing", "status_code": 404, "record": None}
+        if not isinstance(record, dict) or record.get("id") != habit_id:
+            raise ValueError("habit_detail_invalid_response_id")
+        if type(record.get("status")) is not int:
+            raise ValueError("habit_detail_invalid_status")
+        # Preserve unknown integer states; only a verified lifecycle contract may interpret them.
+        return {"state": "present", "status_code": 200, "record": record}
 
     async def get_habit_checkins(
         self, habit_ids: list[str], from_stamp: str, to_stamp: str

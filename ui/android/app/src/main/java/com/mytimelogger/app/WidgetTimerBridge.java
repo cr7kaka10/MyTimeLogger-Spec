@@ -31,7 +31,12 @@ public final class WidgetTimerBridge implements AutoCloseable {
     @JavascriptInterface public boolean configureRuntime(String json) {
         return active == this && runtimeStore != null && runtimeStore.configure(json);
     }
-    @JavascriptInterface public void clearRuntime() { if (active == this && runtimeStore != null) runtimeStore.clear(); }
+    @JavascriptInterface public void clearRuntime() {
+        if (active != this || runtimeStore == null) return;
+        runtimeStore.clear();
+        DailyWidgetBridge bridge = DailyWidgetBridge.current();
+        if (bridge != null) DailyWidgetBridge.clear(bridge.contextForClear());
+    }
 
     void authoritativeStateChanged() {
         if (isReady()) scripts.send("window.dispatchEvent(new CustomEvent('mtl:timer-widget-snapshot-changed'))");

@@ -64,15 +64,16 @@ echo   =    Environment: testing                         =
 echo   =                                                =
 echo   ==================================================
 echo.
-echo     [1]  Deploy ALL (Server + Desktop EXE + Android APK)
+echo     [1]  Deploy ALL (Server + Android APK + Desktop EXE)
 echo     [2]  Server only (Docker)
 echo     [3]  Desktop EXE only
 echo     [4]  Android APK (Debug)
 echo     [5]  Backup test server database now (SQLite + S3)
+echo     [6]  一键迁移服务器
 echo     [0]  Exit
 echo.
 set "choice="
-set /p "choice=  Select [0-5]: "
+set /p "choice=  Select [0-6]: "
 if errorlevel 1 goto :quit
 if not defined choice goto :menu
 
@@ -81,6 +82,7 @@ if "%choice%"=="2" goto :run_server
 if "%choice%"=="3" goto :run_desktop
 if "%choice%"=="4" goto :run_android
 if "%choice%"=="5" goto :run_server_backup
+if "%choice%"=="6" goto :run_server_migration
 if "%choice%"=="0" goto :quit
 echo   [WARN] Invalid choice, try again.
 timeout /t 2 >nul
@@ -88,6 +90,7 @@ goto :menu
 
 :: -----------------------------------------------------------
 :deploy_all
+call :show_source
 echo.
 echo   ==================================================
 echo   Starting full deployment...
@@ -95,13 +98,7 @@ echo   ==================================================
 call :do_deploy_server
 if errorlevel 1 (
     echo.
-    echo   [FAIL] Server deploy failed. Desktop build skipped.
-    goto :failed
-)
-call :do_build_desktop
-if errorlevel 1 (
-    echo.
-    echo   [FAIL] Desktop build failed.
+    echo   [FAIL] Server deploy failed. Client builds skipped.
     goto :failed
 )
 echo.
@@ -112,6 +109,12 @@ if errorlevel 1 (
     echo   [FAIL] Android APK build failed.
     goto :failed
 )
+call :do_build_desktop
+if errorlevel 1 (
+    echo.
+    echo   [FAIL] Desktop build failed.
+    goto :failed
+)
 echo.
 echo   ==================================================
 echo   [OK] Full deployment completed!
@@ -120,16 +123,19 @@ goto :finished
 
 :: -----------------------------------------------------------
 :run_server
+call :show_source
 call :do_deploy_server
 if errorlevel 1 goto :failed
 goto :finished
 
 :run_desktop
+call :show_source
 call :do_build_desktop
 if errorlevel 1 goto :failed
 goto :finished
 
 :run_android
+call :show_source
 echo.
 powershell -NoProfile -ExecutionPolicy Bypass -File "%SCRIPT_DIR%build-android.ps1"
 if errorlevel 1 goto :failed
@@ -137,6 +143,15 @@ goto :finished
 
 :run_server_backup
 call :do_backup_server
+if errorlevel 1 goto :failed
+goto :finished
+
+:run_server_migration
+echo.
+echo   --- [Migration] One-click server migration ---
+  echo   Current test server will stop during final data transfer.
+  echo   Change client address only after migration reports success.
+powershell -NoProfile -ExecutionPolicy Bypass -File "%SCRIPT_DIR%migrate-server.ps1"
 if errorlevel 1 goto :failed
 goto :finished
 
@@ -266,6 +281,7 @@ exit /b 0
 ::  DESKTOP EXE BUILD
 :: ===========================================================
 :do_build_desktop
+set "EXPECTED_EXE=MyTimeLogger-2.0.0-portable.exe"
 echo.
 echo   --- [Desktop] Step 1/5: Checking Node.js ---
 node --version >nul 2>&1
@@ -320,6 +336,12 @@ if errorlevel 1 (
     exit /b 1
 )
 pushd "%PROJECT_ROOT%\desktop"
+if exist "dist\%EXPECTED_EXE%" del /f /q "dist\%EXPECTED_EXE%"
+if exist "dist\%EXPECTED_EXE%" (
+    popd
+    echo   [FAIL] Could not remove the previous desktop EXE.
+    exit /b 1
+)
 call npx electron-builder --win --config
 if errorlevel 1 (
     popd
@@ -329,25 +351,32 @@ if errorlevel 1 (
 popd
 echo   [OK] EXE packaged.
 
-:: Find and copy EXE to desktop
+:: Copy only the EXE produced by this version's successful build.
 echo.
 echo   Copying EXE to Desktop...
-set "FOUND_EXE="
-for /f "delims=" %%f in ('dir /b /o-d /a-d "%PROJECT_ROOT%\desktop\dist\MyTimeLogger-*-portable.exe" 2^>nul') do (
-    if not defined FOUND_EXE set "FOUND_EXE=%%f"
-)
-if not defined FOUND_EXE (
-    echo   [FAIL] No portable EXE found in desktop\dist. Check build output.
+if not exist "%PROJECT_ROOT%\desktop\dist\%EXPECTED_EXE%" (
+    echo   [FAIL] This build did not produce %EXPECTED_EXE%.
     exit /b 1
 )
-copy /y "%PROJECT_ROOT%\desktop\dist\%FOUND_EXE%" "%USERPROFILE%\Desktop\%FOUND_EXE%" >nul
-echo   [OK] Copied to Desktop: %FOUND_EXE%
+copy /y "%PROJECT_ROOT%\desktop\dist\%EXPECTED_EXE%" "%USERPROFILE%\Desktop\%EXPECTED_EXE%" >nul
+if errorlevel 1 exit /b 1
+echo   [OK] Copied to Desktop: %EXPECTED_EXE%
 
 echo.
 echo   ==================================================
 echo   [OK] Desktop EXE build completed!
 echo   Output: %PROJECT_ROOT%\desktop\dist
 echo   ==================================================
+exit /b 0
+
+:show_source
+echo.
+for /f "delims=" %%h in ('git -C "%PROJECT_ROOT%" rev-parse --short HEAD 2^>nul') do set "BUILD_REV=%%h"
+if not defined BUILD_REV set "BUILD_REV=unknown"
+set "BUILD_DIRTY=clean"
+for /f "delims=" %%s in ('git -C "%PROJECT_ROOT%" status --porcelain --untracked-files=normal 2^>nul') do set "BUILD_DIRTY=modified"
+echo   [SOURCE] Local HEAD: %BUILD_REV% ^| Worktree: %BUILD_DIRTY%
+powershell -NoProfile -Command "$b=[TimeZoneInfo]::ConvertTimeBySystemTimeZoneId([datetime]::UtcNow,'China Standard Time'); Write-Host ('  [SOURCE] Beijing build time: '+$b.ToString('yyyy-MM-dd HH:mm:ss'))"
 exit /b 0
 
 :: -----------------------------------------------------------

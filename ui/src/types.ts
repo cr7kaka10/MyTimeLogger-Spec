@@ -41,7 +41,10 @@ export interface Habit {
   is_active: number
   sort_order: number
   repeat_rule?: string | null
+  journal_prompt_enabled?: number
   category_id?: number | null
+  window_start_minute?: number | null
+  window_end_minute?: number | null
 }
 
 export interface HabitCheckin {
@@ -49,6 +52,7 @@ export interface HabitCheckin {
   habit_id: number | string
   checkin_date: string
   status: number
+  note?: string | null
 }
 
 export interface Goal {
@@ -58,6 +62,8 @@ export interface Goal {
   metric: string
   target_value: number
   period: string
+  weekdays?: number[]
+  weekdays_effective_from?: string
   reward_coins: number
   penalty_coins: number
   operator: string
@@ -71,19 +77,21 @@ export interface Reward {
   title: string
   icon: string
   price: number
-  redemption_mode?: 'coins' | 'task' | 'goal' | 'pending_binding' | 'custom_spend'
+  redemption_mode?: 'coins' | 'task' | 'goal' | 'pending_binding' | 'custom_spend' | 'compensation_credit'
   description: string
   is_active: number
   unlock_task_id?: string | null
   unlock_task_title?: string | null
   unlock_source_type?: 'checklist_task' | 'habit' | 'learning_task' | 'learning_objective' | 'exercise_checkin' | 'goal' | null
   unlock_source_id?: string | null
-  inventory_mode?: 'unlimited' | 'daily' | 'monthly'
+  inventory_mode?: 'unlimited' | 'daily' | 'weekly' | 'monthly'
   inventory_limit?: number | null
   unlock_required_count?: number
   fulfillment_mode?: 'immediate' | 'fragment'
   fragment_target_count?: number
+  fragment_measure_mode?: 'count' | 'percent'
   fragment_rule_version?: number
+  legacy_percent_binding_count?: number
   fragment_progress_units?: number
   inventory_used?: number
 }
@@ -95,6 +103,7 @@ export interface RewardFragment {
   source_id: string
   completion_event_key: string
   rule_version: number
+  fragment_measure_mode?: 'count' | 'percent'
   issued_at: string
   expires_at: string
   status: 'active' | 'consumed' | 'expired' | 'revoked'
@@ -115,14 +124,21 @@ export interface FragmentProgress {
   target: number
   activeUnits?: number
   targetUnits?: number
+  activePieces?: number | null
+  targetPieces?: number | null
   percent?: number
+  measureMode?: 'count' | 'percent'
+  availableItems?: number
+  periodUsed?: number
+  periodMode?: 'unlimited' | 'daily' | 'weekly' | 'monthly'
+  expiresAt?: string | null
   inventoryUsed?: number
   inventoryLimit?: number | null
   inventoryLimitReached?: boolean
   earliestExpiresAt?: string | null
 }
 
-export type SourceRewardType = 'checklist_task' | 'habit' | 'learning_task' | 'learning_objective'
+export type SourceRewardType = 'checklist_task' | 'habit' | 'learning_task' | 'learning_objective' | 'goal'
 
 export interface SourceRewardSummaryData {
   sourceType: SourceRewardType
@@ -164,6 +180,7 @@ export interface SleepData {
   synced_at?: string
   sync_status?: string
   sync_error?: string
+  image_uploaded_at?: string
   report_status?: number
   full_report_state?: 'generated' | 'insufficient_time_records' | 'no_main_sleep'
   tracked_duration_seconds?: number
@@ -186,6 +203,7 @@ export type SleepAutoScoreState = 'no_report' | 'scoring' | 'unavailable' | 'sco
 
 export interface ExerciseScoreSettlement {
   business_date: string; plan_version: string; score_total: number; coin_amount: number
+  completed_items?: number; total_items?: number
   score_snapshot?: string | Record<string, unknown> | null; category_scores?: string | null
   is_all_complete?: boolean | number; completion_reward_amount?: number; completion_reason?: string | null
 }
@@ -202,6 +220,7 @@ export interface SystemSettings {
   sync_interval: number
   statistics_start_date: string
   last_sync_at: string
+  home_slogan: string
   // aTimeLogger 备份同步
   atimelogger_enabled?: boolean
   atimelogger_username?: string
@@ -216,6 +235,7 @@ export interface SystemSettings {
   // 睡眠同步
   sleep_sync_enabled?: boolean
   sleep_sync_interval?: number
+  sleep_automation_consent?: boolean
   // AI 模型
   ai_text_model?: string
   ai_text_api_key?: string
@@ -257,6 +277,8 @@ export interface BackpackItem {
   unlock_task_title?: string
   is_used: boolean
   used_at?: string | null
+  expires_at?: string | null
+  is_expired?: boolean
 }
 
 export interface BackpackFragment {
@@ -270,15 +292,22 @@ export interface BackpackFragment {
   earliest_expires_at: string
   rule_version: number
   progress_percent?: number
+  measure_mode?: 'count' | 'percent'
   inventory_used?: number
   inventory_limit?: number | null
   inventory_limit_reached?: boolean
 }
 
+export interface ExpiredBackpackFragment extends BackpackFragment {
+  fragment_id: string
+  expired_at: string
+  status: 'expired'
+}
+
 export interface BackpackEvent {
   id: string
   ledger_id: string
-  event_type: 'acquired' | 'used' | 'discarded' | 'revoked' | 'fragment_acquired' | 'fragment_expired' | 'fragment_revoked' | 'fragment_composed'
+  event_type: 'acquired' | 'used' | 'discarded' | 'revoked' | 'backpack_expired' | 'fragment_acquired' | 'fragment_expired' | 'fragment_revoked' | 'fragment_composed' | 'fragment_batch_reversed' | 'fragment_debt_created' | 'fragment_debt_settled'
   created_at: string
   item_title: string
   quantity: number
@@ -286,6 +315,13 @@ export interface BackpackEvent {
 }
 
 // ======================== 清单 / TickTick ========================
+
+export interface ChecklistItem {
+  readonly id: string
+  readonly title: string
+  readonly status: number
+  readonly sortOrder: number
+}
 
 export interface TaskItem {
   id: string
@@ -304,6 +340,7 @@ export interface TaskItem {
   time_zone?: string
   is_all_day?: boolean
   repeat_flag?: string
+  readonly items?: readonly ChecklistItem[]
 }
 
 export interface TickTickHabit {
@@ -368,7 +405,9 @@ export interface GoalFormData {
   category_ids: number[]
   metric: 'duration' | 'count'
   target_value: number
-  period: 'daily' | 'weekly' | 'monthly' | 'per_session'
+  period: 'daily' | 'weekly' | 'monthly' | 'per_session' | 'custom_weekdays'
+  weekdays?: number[]
+  weekdays_effective_from?: string
   operator: '>=' | '<='
   reward_coins: number
   penalty_coins: number
